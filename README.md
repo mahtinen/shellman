@@ -9,7 +9,7 @@ sidebar means "open a terminal in this folder and (optionally) run this command"
 `C:\Projects\my-api` + `claude`. One click opens a new Claude Code session there.
 
 Built with Rust ([Tauri 2](https://tauri.app) + [portable-pty](https://crates.io/crates/portable-pty) over
-Windows ConPTY) and [xterm.js](https://xtermjs.org) with GPU rendering. The app is a 3.4 MB exe (1.3 MB
+Windows ConPTY) and [xterm.js](https://xtermjs.org) with GPU rendering. The app is a 5 MB exe (2 MB
 installer) and uses the WebView2 runtime that ships with Windows 11.
 
 ## Features
