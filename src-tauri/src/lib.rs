@@ -28,7 +28,7 @@ fn ssh_key_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 
 /// The keys the SSH agent (Windows ssh-agent or 1Password) offers.
 #[tauri::command]
-async fn ssh_agent_keys(ssh_path: String) -> Result<Vec<connect::AgentKey>, String> {
+async fn ssh_agent_keys(ssh_path: String) -> Result<connect::AgentKeys, String> {
     connect::agent_keys(&ssh_path)
 }
 

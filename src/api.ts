@@ -26,6 +26,12 @@ export interface AgentKey {
   publicKey: string;
 }
 
+/** `running` is false when no SSH agent (1Password, Windows ssh-agent) is serving the pipe. */
+export interface AgentKeys {
+  running: boolean;
+  keys: AgentKey[];
+}
+
 export const api = {
   spawn(request: SpawnRequest, onMessage: (msg: PtyMessage) => void): Promise<number> {
     const output = new Channel<PtyMessage>();
@@ -39,7 +45,7 @@ export const api = {
   killAll: () => invoke<void>('pty_kill_all'),
   hasChildren: (id: number) => invoke<boolean>('pty_has_children', { id }),
   listShells: () => invoke<ShellProfile[]>('list_shells'),
-  sshAgentKeys: (sshPath: string) => invoke<AgentKey[]>('ssh_agent_keys', { sshPath }),
+  sshAgentKeys: (sshPath: string) => invoke<AgentKeys>('ssh_agent_keys', { sshPath }),
   sshPublicKeyFile: (key: string) => invoke<string>('ssh_public_key_file', { key }),
   loadConfig: () => invoke<Partial<Config> | null>('config_load'),
   saveConfig: (config: Config) => invoke<void>('config_save', { config }),

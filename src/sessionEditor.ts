@@ -172,6 +172,7 @@ export function editSession(
     // Which key to offer. Servers give up after MaxAuthTries (usually 6) keys, so with many keys
     // in the agent (1Password) the session should name its key.
     let agentKeys: AgentKey[] = [];
+    let agentRunning = true;
     let agentError = '';
     let keysLoaded = false;
     let keysKnown = false;
@@ -185,7 +186,7 @@ export function editSession(
       const idx = agentKeys.findIndex((k) => sameKey(k.publicKey, chosenKey));
       const savedMissing = !!chosenKey && idx < 0;
       keySelect.replaceChildren(
-        h('option', { value: '' }, 'Any key the SSH agent offers'),
+        h('option', { value: '' }, 'Default: SSH agent keys and ~/.ssh key files'),
         ...agentKeys.map((k, i) => h('option', { value: `a${i}` }, keyLabel(k.publicKey))),
         ...(savedMissing ? [h('option', { value: 'saved' }, `${keyLabel(chosenKey)}${keysKnown && !agentError ? ', not in the agent now' : ''}`)] : []),
         h('option', { value: 'file' }, 'Key file on disk…'),
@@ -201,7 +202,9 @@ export function editSession(
             ? 'Only this key is offered (IdentitiesOnly). Its private key stays in the agent.'
             : useFile
               ? 'Only this key is offered (IdentitiesOnly). A .pub file works too when the private key is in the agent.'
-              : agentKeys.length > 5
+              : !agentRunning && keysKnown
+                ? 'No SSH agent is running, so ssh tries your key files in ~/.ssh. To pick a key here, turn on the SSH agent in 1Password, or start the Windows "OpenSSH Authentication Agent" service and add keys with ssh-add.'
+                : agentKeys.length > 5
                 ? `The agent has ${agentKeys.length} keys. Servers usually stop after 6 tries ("Too many authentication failures"), so choose this host's key, or Password.`
                 : '';
       keyHint.hidden = !keyHint.textContent;
@@ -218,8 +221,9 @@ export function editSession(
       if (keysLoaded) return;
       keysLoaded = true;
       api.sshAgentKeys(store.settings.sshPath).then(
-        (keys) => {
-          agentKeys = keys;
+        (r) => {
+          agentKeys = r.keys;
+          agentRunning = r.running;
           keysKnown = true;
           renderKeys();
         },

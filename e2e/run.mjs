@@ -482,9 +482,14 @@ if (phase === 'main') {
     assert(fields.join('|') === '127.0.0.1|1|nobody', 'fields: ' + fields.join('|'));
     // The SSH key picker lists the agent's keys (none on a machine without an agent).
     const keySel = `[...document.querySelectorAll('.dialog select')].find((s) => [...s.options].some((o) => o.value === 'file'))`;
-    await waitFor(`${keySel}?.options[0].textContent === 'Any key the SSH agent offers'`, 3000, 'key picker');
+    await waitFor(`${keySel}?.options[0].textContent === 'Default: SSH agent keys and ~/.ssh key files'`, 3000, 'key picker');
     await sleep(1500); // ssh-add -L
     const agentKeys = await ev(`[...${keySel}.options].filter((o) => /^a\\d+$/.test(o.value)).length`);
+    // Run with SSH_AUTH_SOCK=\\.\pipe\shellman-e2e-no-agent to test a machine without an agent.
+    if (/shellman-e2e-no-agent/.test(process.env.SSH_AUTH_SOCK ?? '')) {
+      assert(agentKeys === 0, 'keys listed without an agent');
+      assert(/No SSH agent is running/.test(await ev(`document.querySelector('.dialog').textContent`)), 'no-agent hint missing');
+    }
     if (agentKeys) await ev(`(() => { const s = ${keySel}; s.value = 'a0'; s.dispatchEvent(new Event('change')); return true; })()`);
     // Temporary by default: group and colour only show once "Remember" is ticked.
     const remember = `[...document.querySelectorAll('.dialog .check')].find((l) => l.textContent.includes('Remember this session')).querySelector('input')`;

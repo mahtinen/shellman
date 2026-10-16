@@ -27,8 +27,9 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   use Ctrl+Shift+N. Shellman runs Windows' own clients (OpenSSH's `ssh.exe` and the Telnet Client), so your
   keys, the Windows ssh-agent or 1Password's SSH agent, `~/.ssh/config` and `known_hosts` work as in any
   terminal, and Windows Update keeps the clients patched. Shellman never stores passwords or private keys.
-  With many keys in the agent, pick the session's **SSH key** from the agent's list (1Password shows its item
-  names): servers stop after about 6 offered keys ("Too many authentication failures"), so Shellman then offers
+  No agent is needed: without one, ssh uses your key files in `~/.ssh` (or a key file you choose). With many
+  keys in an agent (1Password or the Windows ssh-agent), pick the session's key under **Log in with**
+  (1Password shows its item names): servers stop after about 6 offered keys ("Too many authentication failures"), so Shellman then offers
   only that key (`-i <its public key> -o IdentitiesOnly=yes`) and the agent still does the signing. "Log in
   with: Password" offers no keys at all, and ssh asks for the password in the terminal (it isn't stored).
   Without a user name, the terminal asks `login as:` first (Enter keeps ssh's default user). Old servers that only offer ssh-rsa (SHA-1), DSA or CBC ciphers ("Unable to

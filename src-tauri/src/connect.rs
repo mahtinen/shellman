@@ -121,7 +121,30 @@ pub fn parse_agent_keys(out: &str) -> Vec<AgentKey> {
 }
 
 /// The keys the agent offers, listed with the `ssh-add.exe` next to the SSH client.
-pub fn agent_keys(ssh_path: &str) -> Result<Vec<AgentKey>, String> {
+/// What the SSH agent pipe answered. `running` is false when no agent serves it (the Windows
+/// ssh-agent service is disabled by default, and not everyone uses 1Password); ssh then simply
+/// uses the key files in ~/.ssh.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct AgentKeys {
+    pub running: bool,
+    pub keys: Vec<AgentKey>,
+}
+
+/// Reads `ssh-add -L`'s exit code and output.
+fn agent_result(code: Option<i32>, stdout: &str, stderr: &str) -> Result<AgentKeys, String> {
+    match code {
+        Some(0) => Ok(AgentKeys { running: true, keys: parse_agent_keys(stdout) }),
+        // "The agent has no identities."
+        Some(1) => Ok(AgentKeys { running: true, keys: Vec::new() }),
+        // "Error connecting to agent: No such file or directory"
+        _ if stderr.contains("connecting to agent") || stderr.contains("Could not open a connection") => {
+            Ok(AgentKeys { running: false, keys: Vec::new() })
+        }
+        _ => Err(if stderr.trim().is_empty() { "ssh-add failed".into() } else { stderr.trim().to_string() }),
+    }
+}
+
+pub fn agent_keys(ssh_path: &str) -> Result<AgentKeys, String> {
     let ssh_add = ssh_client(ssh_path)?.with_file_name("ssh-add.exe");
     if !ssh_add.is_file() {
         return Err(format!("{} not found", ssh_add.display()));
@@ -135,16 +158,7 @@ pub fn agent_keys(ssh_path: &str) -> Result<Vec<AgentKey>, String> {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     let out = cmd.output().map_err(|e| format!("Could not run ssh-add: {e}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    match out.status.code() {
-        Some(0) => Ok(parse_agent_keys(&stdout)),
-        // "The agent has no identities."
-        Some(1) => Ok(Vec::new()),
-        _ => {
-            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            Err(if err.is_empty() { "The SSH agent isn't running".into() } else { err })
-        }
-    }
+    agent_result(out.status.code(), &String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr))
 }
 
 /// 64-bit FNV-1a, for stable file names.
@@ -527,6 +541,29 @@ mod tests {
         assert_eq!(keys[0], AgentKey { kind: "ssh-ed25519".into(), comment: "Work laptop key".into(), public_key: KEY.into() });
         assert_eq!(keys[1].comment, "Home desktop");
         assert_eq!(keys[2].comment, "");
+    }
+
+    #[test]
+    fn no_agent_is_not_an_error() {
+        let none = AgentKeys { running: false, keys: Vec::new() };
+        assert_eq!(agent_result(Some(2), "", "Error connecting to agent: No such file or directory\r\n"), Ok(none));
+        assert_eq!(agent_result(Some(1), "The agent has no identities.\r\n", ""), Ok(AgentKeys { running: true, keys: Vec::new() }));
+        let found = agent_result(Some(0), &format!("{KEY}\r\n"), "").unwrap();
+        assert!(found.running && found.keys.len() == 1);
+        assert_eq!(agent_result(Some(2), "", "something else broke"), Err("something else broke".into()));
+    }
+
+    /// The real ssh-add, pointed at a pipe nobody serves.
+    #[test]
+    fn real_ssh_add_without_an_agent() {
+        let Ok(client) = ssh_client("") else { return };
+        let out = std::process::Command::new(client.with_file_name("ssh-add.exe"))
+            .arg("-L")
+            .env("SSH_AUTH_SOCK", r"\\.\pipe\shellman-test-no-agent")
+            .output()
+            .unwrap();
+        let r = agent_result(out.status.code(), &String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr));
+        assert_eq!(r, Ok(AgentKeys { running: false, keys: Vec::new() }));
     }
 
     #[test]
