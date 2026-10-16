@@ -130,6 +130,9 @@ export class Pane {
       const mode = host.settings().rightClick;
       if (e.shiftKey || mode === 'menu') return host.onContextMenu(this, e);
       host.onFocus(this);
+      // A program that reads the mouse (Claude Code, vim, tmux…) has already been sent this click and
+      // handles it itself; Claude Code pastes on right-click, so pasting here too would paste twice.
+      if (this.term.modes.mouseTrackingMode !== 'none') return;
       if (mode === 'copyPaste' && this.term.hasSelection()) void this.copySelection(true);
       else void this.paste();
     });

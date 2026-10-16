@@ -108,7 +108,7 @@ Only installers signed with the project's update key are accepted.
 | Toggle sidebar | Ctrl+Shift+B |
 | Settings | Ctrl+, |
 | Copy / paste | Ctrl+C (with selection) / Ctrl+V, or Ctrl+Shift+C / Ctrl+Shift+V |
-| Paste with the mouse | Right-click (Settings can switch it to "copy selection, otherwise paste" or "show menu") |
+| Paste with the mouse | Right-click (Settings can switch it to "copy selection, otherwise paste" or "show menu"). Programs that use the mouse, like Claude Code, get the right-click themselves (Claude Code pastes on its own) |
 | Terminal menu (split, save as session, find…) | Shift+Right-click |
 | Select text in Claude Code | Shift+drag |
 

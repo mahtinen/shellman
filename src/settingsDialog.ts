@@ -201,7 +201,7 @@ export function openSettings(): void {
           'div',
           { class: 'row two' },
           field('Close pane when the shell exits', closeOnExit),
-          field('Right-click in terminal', rightClick, 'Shift+right-click always opens the menu.'),
+          field('Right-click in terminal', rightClick, 'Programs that use the mouse (like Claude Code) handle right-click themselves. Shift+right-click always opens the menu.'),
         ),
         shiftEnterEl,
         copySelEl,

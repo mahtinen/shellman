@@ -259,6 +259,27 @@ if (phase === 'main') {
     assert(rgb > 0, 'claude output has no 24-bit colour');
   });
 
+  await step('right-click in Claude Code pastes once (Claude handles it, Shellman does not)', async () => {
+    const saved = await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_read')`);
+    try {
+      assert((await ev(`__t.active().term.modes.mouseTrackingMode`)) !== 'none', 'claude did not turn on mouse reporting');
+      await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_write', { text: 'rclick-once' })`);
+      const box = await ev(`(() => { const r = __t.active().el.querySelector('.pane-term').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        await c.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'right', buttons: type === 'mousePressed' ? 2 : 0, clickCount: 1 });
+      }
+      await waitFor(`__t.text().includes('rclick-once')`, 5000, 'pasted');
+      await sleep(1500);
+      const times = (await ev(`__t.text()`)).split('rclick-once').length - 1;
+      assert(times === 1, `pasted ${times} times`);
+      // Clear the prompt again.
+      await ev(`__t.active().sendInput('\\x15')`);
+    } finally {
+      await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_write', { text: ${js(saved ?? '')} })`).catch(() => undefined);
+    }
+  });
+
   await step('Shift+Enter inserts a newline in the Claude prompt instead of submitting', async () => {
     await ev(`__t.active().focus()`);
     await type('first-line-xyz');
