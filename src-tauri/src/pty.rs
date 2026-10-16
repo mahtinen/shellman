@@ -28,6 +28,8 @@ struct Session {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     pid: Option<u32>,
     busy_check: BusyCheck,
+    /// Git Bash's `ps.exe`, which still knows a program's parent when Windows doesn't.
+    msys_ps: Option<PathBuf>,
 }
 
 /// How to tell whether a terminal's shell is running a program.
@@ -195,6 +197,7 @@ impl PtyManager {
             killer: Mutex::new(child.clone_killer()),
             pid: child.process_id(),
             busy_check,
+            msys_ps: if busy_check == BusyCheck::ThroughLauncher { msys_ps(Path::new(&launch.program)) } else { None },
         });
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
@@ -288,7 +291,15 @@ impl PtyManager {
         let Some(pid) = session.pid else { return Ok(false) };
         match session.busy_check {
             BusyCheck::Unknown => Err("Programs running inside WSL can't be seen from Windows".into()),
-            check => Ok(busy(&processes(), pid, check == BusyCheck::ThroughLauncher)),
+            BusyCheck::Children => Ok(busy(&processes(), pid, false)),
+            BusyCheck::ThroughLauncher => {
+                let procs = processes();
+                let (shell, kids) = shell_and_children(&procs, pid, true);
+                if !kids.is_empty() {
+                    return Ok(true);
+                }
+                Ok(session.msys_ps.as_deref().and_then(run_ps).is_some_and(|out| msys_busy(&out, &shell)))
+            }
         }
     }
 
@@ -320,32 +331,90 @@ pub struct Proc {
     pub pid: u32,
     pub ppid: u32,
     pub exe: String,
+    /// Creation time (FILETIME ticks); 0 when it couldn't be read.
+    pub start: u64,
 }
 
+/// The processes whose parent is `pid`. Windows reuses process ids, and a process keeps the id
+/// of its parent after that parent has exited, so a long-running process can name an id that
+/// now belongs to someone else (e.g. csrss.exe "under" a new shell). A real child can't have
+/// started before its parent.
 fn children(procs: &[Proc], pid: u32) -> Vec<&Proc> {
-    procs.iter().filter(|p| p.ppid == pid && p.pid != pid).collect()
+    let parent_start = procs.iter().find(|p| p.pid == pid).map_or(0, |p| p.start);
+    procs
+        .iter()
+        .filter(|p| p.ppid == pid && p.pid != pid)
+        .filter(|p| parent_start == 0 || (p.start != 0 && p.start >= parent_start))
+        .collect()
 }
 
-/// Whether the shell `pid` runs a program. With `through_launcher`, a chain of single children
-/// with the shell's own executable name (a launcher, or the stub `exec` leaves) is the shell
-/// itself, so only what runs below it counts.
-pub fn busy(procs: &[Proc], pid: u32, through_launcher: bool) -> bool {
-    let mut shell = pid;
-    let mut kids = children(procs, shell);
+/// The shell's own processes and the processes it runs. With `through_launcher`, a chain of
+/// single children with the shell's own executable name (a launcher, or the stub `exec` leaves)
+/// is the shell itself, so only what runs below it counts.
+fn shell_and_children(procs: &[Proc], pid: u32, through_launcher: bool) -> (Vec<u32>, Vec<&Proc>) {
+    let mut chain = vec![pid];
+    let mut kids = children(procs, pid);
     if through_launcher {
         let name = procs.iter().find(|p| p.pid == pid).map(|p| p.exe.as_str()).unwrap_or("");
         // Bounded, in case process ids were reused into a loop.
         for _ in 0..8 {
             match kids.as_slice() {
                 [only] if !name.is_empty() && only.exe.eq_ignore_ascii_case(name) => {
-                    shell = only.pid;
-                    kids = children(procs, shell);
+                    chain.push(only.pid);
+                    kids = children(procs, only.pid);
                 }
                 _ => break,
             }
         }
     }
-    !kids.is_empty()
+    (chain, kids)
+}
+
+/// Whether the shell `pid` runs a program, judged by Windows' parent links.
+pub fn busy(procs: &[Proc], pid: u32, through_launcher: bool) -> bool {
+    !shell_and_children(procs, pid, through_launcher).1.is_empty()
+}
+
+/// Git Bash's `ps.exe` next to (or below) the given bash.
+fn msys_ps(program: &Path) -> Option<PathBuf> {
+    let dir = program.parent()?;
+    [dir.join("ps.exe"), dir.parent()?.join("usr").join("bin").join("ps.exe")]
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+/// Whether, in MSYS `ps` output, a process runs below the shell whose Windows pids are `shell`.
+///
+/// Newer Git for Windows starts programs through a short-lived process, so Windows' parent links
+/// lose them (the program's Windows parent no longer exists), while MSYS keeps its own parent ids.
+/// Columns: an optional status letter, then PID PPID PGID WINPID TTY UID STIME COMMAND.
+pub fn msys_busy(ps_output: &str, shell: &[u32]) -> bool {
+    let rows: Vec<(u32, u32, u32)> = ps_output
+        .lines()
+        .filter_map(|line| {
+            let mut cols = line.trim_start_matches(|c: char| c.is_ascii_alphabetic()).split_whitespace();
+            let pid = cols.next()?.parse().ok()?;
+            let ppid = cols.next()?.parse().ok()?;
+            let _pgid: u32 = cols.next()?.parse().ok()?;
+            let winpid = cols.next()?.parse().ok()?;
+            Some((pid, ppid, winpid))
+        })
+        .collect();
+    let shell_pids: Vec<u32> = rows.iter().filter(|(_, _, w)| shell.contains(w)).map(|(p, _, _)| *p).collect();
+    rows.iter().any(|(pid, ppid, _)| shell_pids.contains(ppid) && !shell_pids.contains(pid))
+}
+
+/// Runs `ps` (MSYS) without a console window.
+fn run_ps(ps: &Path) -> Option<String> {
+    let mut cmd = std::process::Command::new(ps);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok().filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// All running processes.
@@ -371,6 +440,7 @@ pub fn processes() -> Vec<Proc> {
                     pid: entry.th32ProcessID,
                     ppid: entry.th32ParentProcessID,
                     exe: String::from_utf16_lossy(&entry.szExeFile[..len]),
+                    start: start_time(entry.th32ProcessID),
                 });
                 if Process32NextW(snap, &mut entry) == 0 {
                     break;
@@ -380,6 +450,29 @@ pub fn processes() -> Vec<Proc> {
         CloseHandle(snap);
     }
     out
+}
+
+/// When process `pid` was created, or 0 if that can't be read.
+#[cfg(windows)]
+fn start_time(pid: u32) -> u64 {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: plain Win32 calls on a handle that is closed before returning.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return 0;
+        }
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0;
+        CloseHandle(handle);
+        if ok {
+            (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
+        } else {
+            0
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -614,8 +707,20 @@ mod tests {
         assert!(text.contains("<<{\"exit\":255}>>"), "expected ssh's exit code 255:\n{text}");
     }
 
+    /// A process started at "time" `pid`, so higher ids started later.
     fn proc(pid: u32, ppid: u32, exe: &str) -> Proc {
-        Proc { pid, ppid, exe: exe.into() }
+        Proc { pid, ppid, exe: exe.into(), start: u64::from(pid) }
+    }
+
+    #[test]
+    fn reused_parent_ids_are_not_children() {
+        // csrss.exe still names its long-gone parent's id, which Windows has given to a new shell.
+        let procs = [proc(5, 50, "csrss.exe"), proc(50, 1, "bash.exe"), proc(51, 50, "bash.exe")];
+        assert!(!busy(&procs, 50, true), "an older process with a reused parent id counted");
+        assert!(busy(&[proc(5, 50, "csrss.exe"), proc(50, 1, "pwsh.exe"), proc(60, 50, "node.exe")], 50, false));
+        // A child whose start time can't be read is left out; an unknown parent time keeps the old behaviour.
+        assert!(!busy(&[proc(50, 1, "pwsh.exe"), Proc { start: 0, ..proc(60, 50, "x.exe") }], 50, false));
+        assert!(busy(&[Proc { start: 0, ..proc(50, 1, "pwsh.exe") }, proc(5, 50, "x.exe")], 50, false));
     }
 
     #[test]
@@ -632,6 +737,27 @@ mod tests {
         let cmd = [proc(20, 1, "cmd.exe"), proc(21, 20, "ping.exe")];
         assert!(busy(&cmd, 20, true));
         assert!(!busy(&[proc(30, 1, "pwsh.exe")], 30, false));
+    }
+
+    #[test]
+    fn msys_ps_knows_parents_windows_lost() {
+        // Shell: Windows pids 7492 (launcher) and 2480 (bash, MSYS pid 6013). `sleep` (MSYS 6023,
+        // parent 6013) was started through a process that has exited, so Windows can't link it.
+        let ps = "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
+     6013       1    6013       2480  cons0      4096 17:21:30 /usr/bin/bash
+     6023    6013    6023       1652  cons0      4096 17:21:32 /usr/bin/sleep
+     6024       1    6024      28432  ?          4096 17:21:34 /usr/bin/ps
+I    7000       1    7000       9999  ?          4096 17:00:00 /usr/bin/bash
+";
+        assert!(msys_busy(ps, &[7492, 2480]));
+        // Idle: nothing has the shell as its parent (another bash elsewhere doesn't count).
+        let idle = "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
+     6013       1    6013       2480  cons0      4096 17:21:30 /usr/bin/bash
+I    7000       1    7000       9999  ?          4096 17:00:00 /usr/bin/bash
+     7001    7000    7001       9998  ?          4096 17:00:01 /usr/bin/sleep
+";
+        assert!(!msys_busy(idle, &[7492, 2480]));
+        assert!(!msys_busy("", &[1]));
     }
 
     /// Spawns `shell` with `command`, answers ConPTY's start-up cursor query and waits until
@@ -689,10 +815,19 @@ mod tests {
             return;
         };
         let mgr = Arc::new(PtyManager::default());
+        // What Git Bash's own `ps` says, checked separately: newer Git for Windows needs it
+        // because Windows loses the program's parent (see `msys_busy`).
+        let ps_says = |id: u32| -> Option<bool> {
+            let session = mgr.get(id)?;
+            let (shell, _) = shell_and_children(&processes(), session.pid?, true);
+            Some(msys_busy(&run_ps(session.msys_ps.as_deref()?)?, &shell))
+        };
         // A startup command makes bash `exec` a new shell afterwards, which leaves a stub process.
         let idle = spawn_ready(&mgr, bash.clone(), Some("echo idle-$((40+2))"), "idle-42");
         std::thread::sleep(Duration::from_millis(1500));
-        assert!(!mgr.has_children(idle).unwrap(), "idle Git Bash reported as busy:\n{:#?}", processes().iter().filter(|p| p.exe.eq_ignore_ascii_case("bash.exe")).collect::<Vec<_>>());
+        let tree = process_tree(mgr.get(idle).and_then(|s| s.pid).unwrap_or(0));
+        assert!(!mgr.has_children(idle).unwrap(), "idle Git Bash reported as busy; process tree:\n{tree}");
+        assert_eq!(ps_says(idle), Some(false), "ps: idle Git Bash reported as busy; process tree:\n{tree}");
         mgr.kill(idle);
 
         let running = spawn_ready(&mgr, bash, Some("echo running-$((40+2)); sleep 30"), "running-42");
@@ -702,18 +837,11 @@ mod tests {
             found = mgr.has_children(running).unwrap();
             std::thread::sleep(Duration::from_millis(100));
         }
-        let procs = processes();
-        let sleeps: Vec<String> = procs
-            .iter()
-            .filter(|p| p.exe.eq_ignore_ascii_case("sleep.exe"))
-            .map(|p| {
-                let parent = procs.iter().find(|q| q.pid == p.ppid).map(|q| q.exe.as_str()).unwrap_or("?");
-                format!("sleep.exe {} parent {} {}", p.pid, p.ppid, parent)
-            })
-            .collect();
-        let tree = format!("{}\nall sleep.exe: {sleeps:?}", process_tree(mgr.get(running).and_then(|s| s.pid).unwrap_or(0)));
+        let by_ps = ps_says(running);
+        let tree = process_tree(mgr.get(running).and_then(|s| s.pid).unwrap_or(0));
         mgr.kill(running);
         assert!(found, "sleep in Git Bash was not detected; process tree:\n{tree}");
+        assert_eq!(by_ps, Some(true), "ps: sleep in Git Bash was not detected; process tree:\n{tree}");
     }
 
     /// `pid` and everything below it, for failure messages.
