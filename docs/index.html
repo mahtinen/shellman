@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shellman: terminal manager for Claude Code on Windows</title>
+  <meta name="description" content="Shellman is a free, open-source Windows terminal manager built around your project folders. One click opens Claude Code, PowerShell, Git Bash or WSL in the right directory, with tabs, splits and a live tree of every open terminal.">
+  <link rel="canonical" href="https://shellman.app/">
+  <meta name="theme-color" content="#16181d">
+  <meta name="color-scheme" content="dark">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Shellman">
+  <meta property="og:url" content="https://shellman.app/">
+  <meta property="og:title" content="Shellman: terminal manager for Claude Code on Windows">
+  <meta property="og:description" content="Save the folders you work in. One click opens Claude Code, PowerShell, Git Bash or WSL there, in tabs and splits you can find again.">
+  <meta property="og:image" content="https://shellman.app/img/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Shellman running Claude Code next to a test runner, with saved sessions in the sidebar">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Shellman: terminal manager for Claude Code on Windows">
+  <meta name="twitter:description" content="Save the folders you work in. One click opens Claude Code, PowerShell, Git Bash or WSL there.">
+  <meta name="twitter:image" content="https://shellman.app/img/og.png">
+
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="preload" as="image" href="/img/hero.webp" type="image/webp">
+  <link rel="stylesheet" href="/styles.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Shellman",
+    "url": "https://shellman.app/",
+    "description": "A Windows terminal manager built around saved project directories, made for Claude Code. Tabs, splits, a tree of open terminals, PowerShell, cmd, Git Bash and WSL.",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Windows 10, Windows 11",
+    "softwareVersion": "0.1.0",
+    "fileSize": "1.4MB",
+    "downloadUrl": "https://github.com/mahtinen/shellman/releases/latest/download/Shellman-setup.exe",
+    "installUrl": "https://github.com/mahtinen/shellman/releases/latest/download/Shellman-setup.exe",
+    "screenshot": "https://shellman.app/img/hero.png",
+    "license": "https://opensource.org/licenses/MIT",
+    "isAccessibleForFree": true,
+    "codeRepository": "https://github.com/mahtinen/shellman",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "author": { "@type": "Person", "name": "Markus Ahtinen", "url": "https://github.com/mahtinen" }
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      { "@type": "Question", "name": "Is Shellman free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Shellman is free and open source under the MIT license." } },
+      { "@type": "Question", "name": "Do I need Claude Code to use Shellman?", "acceptedAnswer": { "@type": "Answer", "text": "No. Shellman works with any shell or command. It has extra support for Claude Code: Shift+Enter newlines, pasting images, and notifications when Claude finishes or needs input." } },
+      { "@type": "Question", "name": "Which shells does Shellman support?", "acceptedAnswer": { "@type": "Answer", "text": "PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically, and you can add any other shell in Settings." } },
+      { "@type": "Question", "name": "How does Shellman update?", "acceptedAnswer": { "@type": "Answer", "text": "New versions download in the background and install the next time you restart Shellman. Updates are signed, and you can switch to notifications only or turn checks off." } },
+      { "@type": "Question", "name": "Why does Windows SmartScreen warn about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The installer is not code-signed with a paid certificate yet, so SmartScreen asks you to confirm. Choose More info, then Run anyway. The source code and build scripts are on GitHub." } }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="/" aria-label="Shellman home">
+        <img src="/favicon.svg" width="28" height="28" alt="">
+        <span>Shellman</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="#features">Features</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="#faq">FAQ</a>
+        <a class="nav-gh" href="https://github.com/mahtinen/shellman" rel="noopener">
+          <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span>GitHub</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="wrap">
+        <p class="eyebrow">Free &amp; open source · Windows 10 and 11</p>
+        <h1>Your projects, one click from <span class="accent">Claude Code</span>.</h1>
+        <p class="lede">Shellman is a Windows terminal manager built around the folders you work in. Save a directory with a startup command like <code>claude</code>, then open it in a tab or split with one click, in PowerShell, Git Bash, cmd or WSL.</p>
+        <div class="cta">
+          <a class="btn primary" href="https://github.com/mahtinen/shellman/releases/latest/download/Shellman-setup.exe">
+            <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M8 2v8m0 0l-3-3m3 3l3-3M3 13.5h10"/></svg>
+            Download for Windows
+          </a>
+          <a class="btn" href="https://github.com/mahtinen/shellman" rel="noopener">View source on GitHub</a>
+        </div>
+        <p class="fine">1.4 MB installer · no admin rights needed · updates itself</p>
+
+        <figure class="shot hero-shot">
+          <picture>
+            <source srcset="/img/hero.webp" type="image/webp">
+            <img src="/img/hero.png" width="1400" height="860" alt="Shellman with Claude Code explaining a source file in one pane and passing unit tests in another. The sidebar lists saved sessions in groups, each with its open terminals underneath." fetchpriority="high">
+          </picture>
+        </figure>
+      </div>
+    </section>
+
+    <section id="features" class="features">
+      <div class="wrap">
+        <h2>Everything you open, in the place you expect it</h2>
+        <p class="section-lede">Most terminals start in your home folder and forget everything when you close them. Shellman remembers where you work.</p>
+        <div class="grid">
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 014.5 6H9l2 2h8.5A1.5 1.5 0 0121 9.5v8a1.5 1.5 0 01-1.5 1.5h-15A1.5 1.5 0 013 17.5z"/><path d="M8 13l2 2-2 2"/></svg></div>
+            <h3>Saved sessions</h3>
+            <p>A session is a folder plus an optional command, shell, colour and environment variables. Group them by client or project and open a whole group at once.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4v16M5 8h5M5 14h5M5 20h5"/><rect x="12" y="5.5" width="8" height="5" rx="1.5"/><rect x="12" y="11.5" width="8" height="5" rx="1.5"/></svg></div>
+            <h3>A tree of open terminals</h3>
+            <p>Every session lists the terminals running in it. Click one to jump to its tab, even with twenty tabs open. Collapse what you don't need.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12.5 15H17"/></svg></div>
+            <h3>Any shell, any time</h3>
+            <p>PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are found automatically. Open a session in another shell, or switch a running terminal from the status bar.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M12 12h9"/></svg></div>
+            <h3>Tabs and splits</h3>
+            <p>Split right or down to any depth, drag dividers, maximise a pane, move focus with Alt+arrows. New tabs and splits start in the current terminal's folder.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M18.5 15.5l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg></div>
+            <h3>Made for Claude Code</h3>
+            <p>Shift+Enter for newlines, Ctrl+V pastes screenshots into Claude, and tabs take Claude's task title. When Claude finishes or needs input, the tab lights up and the taskbar flashes.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></div>
+            <h3>Quick open</h3>
+            <p>Ctrl+Shift+P fuzzy-searches your sessions. Enter opens a tab, Ctrl+Enter splits right, Shift+Enter splits down.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 01-14.3 4.9M4 12A8 8 0 0118.3 7.1"/><path d="M18.5 3v4.5H14M5.5 21v-4.5H10"/></svg></div>
+            <h3>Updates itself</h3>
+            <p>New versions download quietly in the background and install the next time you restart. Every update is signed.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/></svg></div>
+            <h3>Small and fast</h3>
+            <p>Written in Rust with Tauri, on Windows' own ConPTY. A 3.4 MB app with GPU-rendered terminals that starts instantly.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="screenshots" class="screens">
+      <div class="wrap">
+        <h2>See it in action</h2>
+        <div class="gallery">
+          <figure class="shot">
+            <a href="/img/quick-open.png"><picture>
+              <source srcset="/img/quick-open.webp" type="image/webp">
+              <img src="/img/quick-open.png" width="1400" height="860" loading="lazy" alt="The quick open palette filtering saved sessions as you type">
+            </picture></a>
+            <figcaption><strong>Quick open.</strong> Type a few letters, press Enter, and you're in.</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="/img/session-editor.png"><picture>
+              <source srcset="/img/session-editor.webp" type="image/webp">
+              <img src="/img/session-editor.png" width="1400" height="860" loading="lazy" alt="The new session dialog with a name, directory, startup command, shell, group and colour">
+            </picture></a>
+            <figcaption><strong>Sessions.</strong> A folder, a command, a shell and a colour. It starts in your home folder.</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="/img/open-with-shell.png"><picture>
+              <source srcset="/img/open-with-shell.webp" type="image/webp">
+              <img src="/img/open-with-shell.png" width="1400" height="860" loading="lazy" alt="A session's menu with Open with shell expanded, listing PowerShell, Command Prompt, Git Bash and WSL">
+            </picture></a>
+            <figcaption><strong>Open with another shell.</strong> Same folder, same command, the shell you want right now.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="keys">
+      <div class="wrap keys-inner">
+        <div>
+          <h2>Keyboard first</h2>
+          <p class="section-lede">Every action has a shortcut, and none of them use Ctrl+Alt, so AltGr keeps working on Nordic and other European layouts.</p>
+        </div>
+        <dl class="shortcuts">
+          <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd></dt><dd>Quick open a session</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></dt><dd>New tab in this folder</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>E</kbd> / <kbd>O</kbd></dt><dd>Split right / down</dd></div>
+          <div><dt><kbd>Alt</kbd><kbd>←↑→↓</kbd></dt><dd>Move between panes</dd></div>
+          <div><dt><kbd>Alt</kbd><kbd>1…9</kbd></dt><dd>Go to tab</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F</kbd></dt><dd>Find in terminal</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section id="faq" class="faq">
+      <div class="wrap narrow">
+        <h2>Questions</h2>
+        <details>
+          <summary>Is Shellman free?</summary>
+          <p>Yes. It's free and open source under the MIT license. The code is <a href="https://github.com/mahtinen/shellman">on GitHub</a>.</p>
+        </details>
+        <details>
+          <summary>Do I need Claude Code to use it?</summary>
+          <p>No. Shellman works with any shell or command. Claude Code gets some extras: Shift+Enter newlines, pasting images, and a flashing taskbar when Claude finishes or needs input.</p>
+        </details>
+        <details>
+          <summary>Which shells are supported?</summary>
+          <p>PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically. You can add any other shell in Settings.</p>
+        </details>
+        <details>
+          <summary>How do updates work?</summary>
+          <p>Shellman checks for new versions in the background, downloads them and installs them the next time you restart it. Updates are signed. In Settings you can switch to notifications only or turn checks off.</p>
+        </details>
+        <details>
+          <summary>Why does Windows SmartScreen warn about the installer?</summary>
+          <p>The installer isn't signed with a paid code-signing certificate yet, so SmartScreen asks you to confirm. Choose <em>More info</em>, then <em>Run anyway</em>. You can read the source code and build it yourself.</p>
+        </details>
+        <details>
+          <summary>Where are my sessions stored?</summary>
+          <p>In <code>%APPDATA%\app.shellman.desktop\config.json</code> on your own machine. Every save keeps the previous version as a backup. Nothing is sent anywhere.</p>
+        </details>
+      </div>
+    </section>
+
+    <section id="download" class="download">
+      <div class="wrap narrow">
+        <img src="/favicon.svg" width="72" height="72" alt="">
+        <h2>Get Shellman</h2>
+        <p class="section-lede">Windows 10 or 11, 64-bit. Installs per user, no admin rights needed.</p>
+        <div class="cta center">
+          <a class="btn primary" href="https://github.com/mahtinen/shellman/releases/latest/download/Shellman-setup.exe">Download for Windows</a>
+          <a class="btn" href="https://github.com/mahtinen/shellman/releases" rel="noopener">All releases</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <p>© 2026 Markus Ahtinen · <a href="https://github.com/mahtinen/shellman/blob/main/LICENSE">MIT license</a> · <a href="https://github.com/mahtinen/shellman">GitHub</a> · <a href="https://github.com/mahtinen/shellman/issues">Report an issue</a></p>
+      <p class="muted">Claude and Claude Code are trademarks of Anthropic. Shellman is an independent project and is not affiliated with or endorsed by Anthropic.</p>
+    </div>
+  </footer>
+</body>
+</html>

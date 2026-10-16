@@ -1,0 +1,455 @@
+//! Pseudo-terminal sessions backed by Windows ConPTY (via `portable-pty`).
+//!
+//! Each session has:
+//! - a reader thread that streams decoded UTF-8 output to the frontend over a
+//!   Tauri channel, followed by a final `{"exit": code}` message;
+//! - a waiter thread that blocks on the child and, once it exits, closes the
+//!   pseudoconsole. On Windows the output pipe only reports EOF after the
+//!   pseudoconsole is closed, so this is what lets the reader finish.
+
+use crate::shell::{build_launch, ShellProfile};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tauri::ipc::{Channel, InvokeResponseBody};
+
+struct Session {
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+    /// Input queue drained by a dedicated writer thread, so a full input pipe
+    /// never blocks the caller and writes stay ordered.
+    input: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    pid: Option<u32>,
+}
+
+impl Session {
+    /// Closes the pseudoconsole. Console clients still attached to it are
+    /// sent CTRL_CLOSE_EVENT by conhost.
+    fn close(&self) {
+        self.input.lock().unwrap().take();
+        self.master.lock().unwrap().take();
+    }
+}
+
+#[derive(Default)]
+pub struct PtyManager {
+    sessions: Mutex<HashMap<u32, Arc<Session>>>,
+    next_id: AtomicU32,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SpawnRequest {
+    pub shell: ShellProfile,
+    pub cwd: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default = "default_true")]
+    pub shell_integration: bool,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn size(cols: u16, rows: u16) -> PtySize {
+    PtySize {
+        cols: cols.max(2),
+        rows: rows.max(1),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+/// Incremental UTF-8 decoder that never splits a multi-byte character across
+/// two messages. Invalid sequences become U+FFFD.
+#[derive(Default)]
+pub struct Utf8Stream {
+    pending: Vec<u8>,
+}
+
+impl Utf8Stream {
+    pub fn push(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut out = String::with_capacity(self.pending.len());
+        let mut rest: &[u8] = &self.pending;
+        loop {
+            match std::str::from_utf8(rest) {
+                Ok(s) => {
+                    out.push_str(s);
+                    rest = &[];
+                    break;
+                }
+                Err(e) => {
+                    let (valid, after) = rest.split_at(e.valid_up_to());
+                    // SAFETY: `valid_up_to` guarantees this prefix is valid UTF-8.
+                    out.push_str(unsafe { std::str::from_utf8_unchecked(valid) });
+                    match e.error_len() {
+                        Some(len) => {
+                            out.push('\u{FFFD}');
+                            rest = &after[len..];
+                        }
+                        // Incomplete trailing sequence: keep it for the next read.
+                        None => {
+                            rest = after;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        self.pending = rest.to_vec();
+        out
+    }
+}
+
+impl PtyManager {
+    pub fn spawn(&self, req: SpawnRequest, output: Channel<InvokeResponseBody>) -> Result<u32, String> {
+        if !Path::new(&req.cwd).is_dir() {
+            return Err(format!("Directory not found: {}", req.cwd));
+        }
+
+        let launch = build_launch(&req.shell, &req.cwd, req.command.as_deref(), req.shell_integration);
+
+        let pair = native_pty_system()
+            .openpty(size(req.cols, req.rows))
+            .map_err(|e| format!("Could not create pseudo console: {e}"))?;
+
+        let mut cmd = CommandBuilder::new(&launch.program);
+        cmd.args(&launch.args);
+        cmd.cwd(&req.cwd);
+        cmd.env("TERM_PROGRAM", "Shellman");
+        cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        cmd.env("COLORTERM", "truecolor");
+        for (k, v) in &launch.env {
+            cmd.env(k, v);
+        }
+        for (k, v) in &req.env {
+            cmd.env(k, v);
+        }
+
+        let mut child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("Could not start {}: {e}", launch.program))?;
+        drop(pair.slave);
+
+        let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+        let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
+        if let Some(text) = &launch.typed_input {
+            let _ = input_tx.send(text.as_bytes().to_vec());
+        }
+
+        let session = Arc::new(Session {
+            master: Mutex::new(Some(pair.master)),
+            input: Mutex::new(Some(input_tx)),
+            killer: Mutex::new(child.clone_killer()),
+            pid: child.process_id(),
+        });
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        self.sessions.lock().unwrap().insert(id, session.clone());
+
+        std::thread::Builder::new()
+            .name(format!("pty-{id}-write"))
+            .spawn(move || {
+                for data in input_rx {
+                    if writer.write_all(&data).and_then(|_| writer.flush()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+
+        let (exit_tx, exit_rx) = mpsc::channel::<u32>();
+
+        std::thread::Builder::new()
+            .name(format!("pty-{id}-wait"))
+            .spawn(move || {
+                let code = child.wait().map(|s| s.exit_code()).unwrap_or(1);
+                let _ = exit_tx.send(code);
+                session.close();
+            })
+            .map_err(|e| e.to_string())?;
+
+        std::thread::Builder::new()
+            .name(format!("pty-{id}-read"))
+            .spawn(move || {
+                let mut buf = vec![0u8; 64 * 1024];
+                let mut decoder = Utf8Stream::default();
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let text = decoder.push(&buf[..n]);
+                            if text.is_empty() {
+                                continue;
+                            }
+                            let json = serde_json::to_string(&text).unwrap_or_default();
+                            if output.send(InvokeResponseBody::Json(json)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+                let code = exit_rx.recv_timeout(Duration::from_secs(10)).ok();
+                let msg = serde_json::json!({ "exit": code }).to_string();
+                let _ = output.send(InvokeResponseBody::Json(msg));
+            })
+            .map_err(|e| e.to_string())?;
+
+        Ok(id)
+    }
+
+    fn get(&self, id: u32) -> Option<Arc<Session>> {
+        self.sessions.lock().unwrap().get(&id).cloned()
+    }
+
+    pub fn write(&self, id: u32, data: &[u8]) -> Result<(), String> {
+        let session = self.get(id).ok_or("No such terminal")?;
+        if let Some(tx) = session.input.lock().unwrap().as_ref() {
+            let _ = tx.send(data.to_vec());
+        }
+        Ok(())
+    }
+
+    pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
+        let session = self.get(id).ok_or("No such terminal")?;
+        let guard = session.master.lock().unwrap();
+        match guard.as_ref() {
+            Some(m) => m.resize(size(cols, rows)).map_err(|e| e.to_string()),
+            None => Ok(()),
+        }
+    }
+
+    /// True when the terminal's shell has started programs that are still
+    /// running (e.g. `claude` or a dev server), i.e. closing it would lose work.
+    pub fn has_children(&self, id: u32) -> bool {
+        self.get(id)
+            .and_then(|s| s.pid)
+            .map(|pid| !child_processes(pid).is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Closes the terminal and terminates its process. Returns immediately.
+    pub fn kill(&self, id: u32) {
+        let Some(session) = self.sessions.lock().unwrap().remove(&id) else {
+            return;
+        };
+        // ClosePseudoConsole can block while conhost flushes, so do it off the
+        // IPC thread.
+        std::thread::spawn(move || {
+            session.close();
+            let _ = session.killer.lock().unwrap().kill();
+        });
+    }
+
+    pub fn kill_all(&self) {
+        let sessions: Vec<_> = self.sessions.lock().unwrap().drain().map(|(_, s)| s).collect();
+        for s in sessions {
+            s.close();
+            let _ = s.killer.lock().unwrap().kill();
+        }
+    }
+}
+
+/// Process ids whose parent is `pid`.
+#[cfg(windows)]
+pub fn child_processes(pid: u32) -> Vec<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    let mut out = Vec::new();
+    // SAFETY: plain Win32 calls; the snapshot handle is closed before returning.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return out;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snap, &mut entry) != 0 {
+            loop {
+                if entry.th32ParentProcessID == pid && entry.th32ProcessID != pid {
+                    out.push(entry.th32ProcessID);
+                }
+                if Process32NextW(snap, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+    }
+    out
+}
+
+#[cfg(not(windows))]
+pub fn child_processes(_pid: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::detect_shells;
+    use std::time::Instant;
+
+    #[test]
+    fn utf8_stream_handles_split_characters() {
+        let mut d = Utf8Stream::default();
+        let bytes = "aä€😀b".as_bytes();
+        let mut out = String::new();
+        for b in bytes {
+            out.push_str(&d.push(std::slice::from_ref(b)));
+        }
+        assert_eq!(out, "aä€😀b");
+    }
+
+    #[test]
+    fn utf8_stream_replaces_invalid_bytes() {
+        let mut d = Utf8Stream::default();
+        assert_eq!(d.push(b"a\xffb"), "a\u{FFFD}b");
+        assert_eq!(d.push(b"\xe2\x82"), "");
+        assert_eq!(d.push(b"\xac"), "€");
+    }
+
+    /// Spawns each detected shell through a real ConPTY and checks that the
+    /// startup command runs in the requested directory and that shell
+    /// integration reports the directory with OSC 9;9.
+    #[test]
+    fn real_shells_run_startup_command() {
+        let dir = std::env::temp_dir().join("shellman test dir ä");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir_s = dir.to_string_lossy().to_string();
+
+        for shell in detect_shells() {
+            let (command, expect) = match shell.kind {
+                crate::shell::ShellKind::Powershell => ("Write-Output \"ok-$((Get-Location).Path)\"", "ok-"),
+                crate::shell::ShellKind::Cmd => ("echo ok-%CD% & echo \"quoted & stuff\"", "\"quoted & stuff\""),
+                crate::shell::ShellKind::Bash => ("echo \"ok-$(pwd)\" 'single'", "single"),
+                _ => continue,
+            };
+
+            let out = Arc::new(Mutex::new(String::new()));
+            let sink = out.clone();
+            let channel = Channel::new(move |body| {
+                if let InvokeResponseBody::Json(s) = body {
+                    if let Ok(serde_json::Value::String(text)) = serde_json::from_str(&s) {
+                        sink.lock().unwrap().push_str(&text);
+                    }
+                }
+                Ok(())
+            });
+
+            let mgr = PtyManager::default();
+            let id = mgr
+                .spawn(
+                    SpawnRequest {
+                        shell: shell.clone(),
+                        cwd: dir_s.clone(),
+                        command: Some(command.into()),
+                        env: HashMap::new(),
+                        shell_integration: true,
+                        cols: 200,
+                        rows: 40,
+                    },
+                    channel,
+                )
+                .unwrap();
+
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut ok = false;
+            let mut answered_dsr = false;
+            while Instant::now() < deadline {
+                let text = out.lock().unwrap().clone();
+                // ConPTY asks for the cursor position on start-up and waits
+                // for the reply; xterm.js answers this in the real app.
+                if !answered_dsr && text.contains("\x1b[6n") {
+                    mgr.write(id, b"\x1b[1;1R").unwrap();
+                    answered_dsr = true;
+                }
+                if text.contains(expect) && text.contains("]9;9;") {
+                    ok = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let text = out.lock().unwrap().clone();
+            mgr.kill(id);
+            assert!(ok, "{}: expected {expect:?} and OSC 9;9 in output:\n{text}", shell.name);
+            assert!(
+                text.contains("shellman test dir"),
+                "{}: cwd not reported:\n{text}",
+                shell.name
+            );
+        }
+    }
+
+    #[test]
+    fn detects_running_child_programs() {
+        let cmd = detect_shells()
+            .into_iter()
+            .find(|s| s.kind == crate::shell::ShellKind::Cmd)
+            .expect("cmd.exe");
+        let mgr = Arc::new(PtyManager::default());
+        let answered = Arc::new(Mutex::new(false));
+        let (mgr2, answered2) = (mgr.clone(), answered.clone());
+        let id_cell = Arc::new(Mutex::new(0u32));
+        let id_cell2 = id_cell.clone();
+        let channel = Channel::new(move |body| {
+            if let InvokeResponseBody::Json(s) = body {
+                let mut a = answered2.lock().unwrap();
+                let id = *id_cell2.lock().unwrap();
+                if !*a && id != 0 && s.contains("[6n") {
+                    let _ = mgr2.write(id, b"[1;1R");
+                    *a = true;
+                }
+            }
+            Ok(())
+        });
+        let id = mgr
+            .spawn(
+                SpawnRequest {
+                    shell: cmd,
+                    cwd: std::env::temp_dir().to_string_lossy().into(),
+                    command: Some("ping -n 30 127.0.0.1".into()),
+                    env: HashMap::new(),
+                    shell_integration: false,
+                    cols: 80,
+                    rows: 24,
+                },
+                channel,
+            )
+            .unwrap();
+        *id_cell.lock().unwrap() = id;
+        // The DSR may have arrived before the id was known; answer it anyway.
+        let _ = mgr.write(id, b"[1;1R");
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut found = false;
+        while Instant::now() < deadline {
+            if mgr.has_children(id) {
+                found = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        mgr.kill(id);
+        assert!(found, "ping was not detected as a child of cmd.exe");
+        assert!(!mgr.has_children(id), "killed session must report no children");
+    }
+}

@@ -1,0 +1,215 @@
+﻿mod config;
+mod pty;
+mod shell;
+
+use pty::{PtyManager, SpawnRequest};
+use serde::Serialize;
+use serde_json::Value;
+use shell::ShellProfile;
+use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::{Manager, RunEvent, State};
+
+#[tauri::command]
+async fn pty_spawn(
+    state: State<'_, PtyManager>,
+    request: SpawnRequest,
+    output: Channel<InvokeResponseBody>,
+) -> Result<u32, String> {
+    state.spawn(request, output)
+}
+
+// Writes stay synchronous so keystrokes are delivered in order; the actual
+// pipe write happens on the session's writer thread.
+#[tauri::command]
+fn pty_write(state: State<'_, PtyManager>, id: u32, data: String) -> Result<(), String> {
+    state.write(id, data.as_bytes())
+}
+
+#[tauri::command]
+fn pty_write_bytes(state: State<'_, PtyManager>, id: u32, data: Vec<u8>) -> Result<(), String> {
+    state.write(id, &data)
+}
+
+#[tauri::command]
+fn pty_resize(state: State<'_, PtyManager>, id: u32, cols: u16, rows: u16) -> Result<(), String> {
+    state.resize(id, cols, rows)
+}
+
+#[tauri::command]
+fn pty_kill(state: State<'_, PtyManager>, id: u32) {
+    state.kill(id);
+}
+
+/// Ends every terminal. Used before the updater exits the app, which skips `RunEvent::Exit`.
+#[tauri::command]
+fn pty_kill_all(state: State<'_, PtyManager>) {
+    state.kill_all();
+}
+
+#[tauri::command]
+async fn pty_has_children(state: State<'_, PtyManager>, id: u32) -> Result<bool, String> {
+    Ok(state.has_children(id))
+}
+
+#[tauri::command]
+async fn list_shells() -> Vec<ShellProfile> {
+    shell::detect_shells()
+}
+
+fn config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path().app_config_dir().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn config_load(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    config::load(&config_dir(&app)?)
+}
+
+#[tauri::command]
+async fn config_save(app: tauri::AppHandle, config: Value) -> Result<(), String> {
+    config::save(&config_dir(&app)?, &config)
+}
+
+#[tauri::command]
+async fn clipboard_read() -> Result<String, String> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.get_text())
+        .or_else(|e| match e {
+            arboard::Error::ContentNotAvailable => Ok(String::new()),
+            e => Err(e),
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn clipboard_write(text: String) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.set_text(text))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn dir_exists(path: String) -> bool {
+    std::path::Path::new(&path).is_dir()
+}
+
+/// Opens an http(s) link in the default browser.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err("Only http(s) links can be opened".into());
+    }
+    std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", &url])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Opens a directory in Explorer.
+#[tauri::command]
+fn open_dir(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).is_dir() {
+        return Err(format!("Directory not found: {path}"));
+    }
+    std::process::Command::new("explorer.exe")
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemInfo {
+    home_dir: String,
+    config_dir: String,
+    windows_build: u32,
+    version: String,
+}
+
+fn windows_build() -> u32 {
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        .and_then(|k| k.get_value::<String, _>("CurrentBuildNumber"))
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn system_info(app: tauri::AppHandle) -> SystemInfo {
+    let home = app
+        .path()
+        .home_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "C:\\".into());
+    SystemInfo {
+        home_dir: home,
+        config_dir: config_dir(&app)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        windows_build: windows_build(),
+        // The version the updater compares against (tauri.conf.json).
+        version: app.package_info().version.to_string(),
+    }
+}
+
+/// Per-session markers that Claude Code sets for its own child processes. When
+/// Shellman is launched from inside a Claude Code session they would leak into
+/// every terminal and make a fresh `claude` think it is a nested child session.
+const INHERITED_SESSION_VARS: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SSE_PORT",
+];
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // Runs before any other thread exists. Values the user set globally are
+    // re-read from the registry when each terminal's environment is built.
+    for var in INHERITED_SESSION_VARS {
+        std::env::remove_var(var);
+    }
+
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .manage(PtyManager::default())
+        .invoke_handler(tauri::generate_handler![
+            pty_spawn,
+            pty_write,
+            pty_write_bytes,
+            pty_resize,
+            pty_kill,
+            pty_kill_all,
+            pty_has_children,
+            list_shells,
+            config_load,
+            config_save,
+            clipboard_read,
+            clipboard_write,
+            dir_exists,
+            open_url,
+            open_dir,
+            system_info,
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building Shellman");
+
+    app.run(|handle, event| {
+        if let RunEvent::Exit = event {
+            handle.state::<PtyManager>().kill_all();
+        }
+    });
+}

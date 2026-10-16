@@ -1,0 +1,88 @@
+import { describe, expect, it } from 'vitest';
+import { baseName, defaultConfig, formatEnv, guessShellKind, normalizeConfig, parseEnv, pathKey } from './config';
+
+describe('normalizeConfig', () => {
+  it('returns defaults for garbage', () => {
+    expect(normalizeConfig(null)).toEqual(defaultConfig());
+    expect(normalizeConfig('x')).toEqual(defaultConfig());
+    expect(normalizeConfig([])).toEqual(defaultConfig());
+  });
+
+  it('keeps valid sessions and fills in missing fields', () => {
+    const c = normalizeConfig({ sessions: [{ id: 's1', name: 'My API', cwd: 'C:\\Projects\\my-api', command: 'claude' }] });
+    expect(c.sessions).toEqual([
+      { id: 's1', name: 'My API', groupId: null, cwd: 'C:\\Projects\\my-api', command: 'claude', shellId: '', color: '', env: {}, collapsed: false },
+    ]);
+  });
+
+  it('drops references to groups that do not exist', () => {
+    const c = normalizeConfig({ groups: [{ id: 'g1', name: 'Work' }], sessions: [{ id: 'a', groupId: 'g1' }, { id: 'b', groupId: 'nope' }] });
+    expect(c.sessions.map((s) => s.groupId)).toEqual(['g1', null]);
+  });
+
+  it('dedupes ids', () => {
+    const c = normalizeConfig({ sessions: [{ id: 'a', name: '1' }, { id: 'a', name: '2' }], groups: [{ id: 'g' }, { id: 'g' }] });
+    expect(new Set(c.sessions.map((s) => s.id)).size).toBe(2);
+    expect(c.groups).toHaveLength(1);
+  });
+
+  it('clamps and validates settings', () => {
+    const c = normalizeConfig({ settings: { fontSize: 1000, cursorStyle: 'weird', closeOnExit: 'never', copyOnSelect: true, scrollback: -5 } });
+    expect(c.settings.fontSize).toBe(48);
+    expect(c.settings.cursorStyle).toBe('block');
+    expect(c.settings.closeOnExit).toBe('never');
+    expect(c.settings.copyOnSelect).toBe(true);
+    expect(c.settings.scrollback).toBe(0);
+  });
+
+  it('defaults right-click to paste and keeps valid choices', () => {
+    expect(normalizeConfig({}).settings.rightClick).toBe('paste');
+    expect(normalizeConfig({ settings: { rightClick: 'menu' } }).settings.rightClick).toBe('menu');
+    expect(normalizeConfig({ settings: { rightClick: 'copyPaste' } }).settings.rightClick).toBe('copyPaste');
+    expect(normalizeConfig({ settings: { rightClick: 'bogus' } }).settings.rightClick).toBe('paste');
+  });
+
+  it('keeps only valid env entries and custom shells', () => {
+    const c = normalizeConfig({
+      sessions: [{ id: 'a', env: { A: '1', B: 2, '': 'x' } }],
+      settings: { customShells: [{ path: 'C:\\x\\nu.exe', kind: 'other' }, { name: 'no path' }] },
+    });
+    expect(c.sessions[0].env).toEqual({ A: '1' });
+    expect(c.settings.customShells).toHaveLength(1);
+    expect(c.settings.customShells[0].name).toBe('C:\\x\\nu.exe');
+  });
+
+  it('is idempotent', () => {
+    const once = normalizeConfig({ groups: [{ id: 'g', name: 'G' }], sessions: [{ id: 's', name: 'S', groupId: 'g' }] });
+    expect(normalizeConfig(JSON.parse(JSON.stringify(once)))).toEqual(once);
+  });
+});
+
+describe('helpers', () => {
+  it('baseName', () => {
+    expect(baseName('C:\\Projects\\my-api')).toBe('my-api');
+    expect(baseName('C:\\Projects\\my-api\\')).toBe('my-api');
+    expect(baseName('/home/x/proj')).toBe('proj');
+    expect(baseName('C:\\')).toBe('C:');
+  });
+
+  it('pathKey', () => {
+    expect(pathKey('C:/Projects/My-API/')).toBe(pathKey('c:\\projects\\my-api'));
+    expect(pathKey('C:\\a')).not.toBe(pathKey('C:\\ab'));
+    expect(pathKey('')).toBe('');
+  });
+
+  it('parseEnv / formatEnv', () => {
+    const env = parseEnv('# comment\nA=1\n\n B = two=2 \nbad\n=x');
+    expect(env).toEqual({ A: '1', B: ' two=2' });
+    expect(parseEnv(formatEnv({ X: 'y', Z: 'a=b' }))).toEqual({ X: 'y', Z: 'a=b' });
+  });
+
+  it('guessShellKind', () => {
+    expect(guessShellKind('C:\\Program Files\\PowerShell\\7\\pwsh.exe')).toBe('powershell');
+    expect(guessShellKind('C:\\Windows\\System32\\cmd.exe')).toBe('cmd');
+    expect(guessShellKind('C:\\msys64\\usr\\bin\\bash.exe')).toBe('bash');
+    expect(guessShellKind('C:\\Windows\\System32\\wsl.exe')).toBe('wsl');
+    expect(guessShellKind('nu.exe')).toBe('other');
+  });
+});
