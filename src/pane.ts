@@ -7,6 +7,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { api, type PtyMessage } from './api';
 import { claudeCommand, isTrackableClaude } from './claude';
 import { uid } from './config';
+import { connectionError, connectionLabel, connectionRequest, connectionTarget, needsLegacyAlgorithms } from './connection';
 import { h } from './dom';
 import { icons } from './icons';
 import { matchKey, type Match } from './keys';
@@ -14,12 +15,18 @@ import { isWindowsPath, parseOsc7, parseOsc777, parseOsc9 } from './osc';
 import { getTheme } from './themes';
 import type { LaunchSpec, Settings, ShellProfile } from './types';
 
-export type PaneState = 'starting' | 'running' | 'exited' | 'error';
+/**
+ * idle: a restored connection waiting for Enter before it connects.
+ * login: an SSH connection without a user name, asking for one ("login as:") before it connects.
+ */
+export type PaneState = 'idle' | 'login' | 'starting' | 'running' | 'exited' | 'error';
 
 export interface PaneHost {
   settings(): Settings;
   resolveShell(id: string): ShellProfile | null;
   windowsBuild: number;
+  /** Where SSH/Telnet clients run. */
+  homeDir: string;
   onFocus(pane: Pane): void;
   /** Title, cwd, progress or state changed. */
   onInfoChange(pane: Pane): void;
@@ -27,6 +34,8 @@ export interface PaneHost {
   onBell(pane: Pane): void;
   onNotify(pane: Pane, title: string, body: string): void;
   onExit(pane: Pane, code: number | null): void;
+  /** The pane's connection settings changed (e.g. old algorithms were allowed); keep its session in step. */
+  onConnectionChange(pane: Pane): void;
   /** An app shortcut was pressed inside the terminal; return true if handled. */
   onShortcut(pane: Pane, match: Match): boolean;
   onContextMenu(pane: Pane, e: MouseEvent): void;
@@ -85,6 +94,14 @@ export class Pane {
   private fitQueued = false;
   private resizeTimer: number | undefined;
   private resizeObserver: ResizeObserver;
+  /** A connection's latest output, to recognise why it ended. */
+  private recentOutput = '';
+  /** The connection ended because the server only has old algorithms; A allows them. */
+  private offerLegacy = false;
+  /** What is typed at the "login as:" prompt. */
+  private loginInput = '';
+  /** The user name was asked once (an empty answer keeps ssh's default on reconnects too). */
+  private loginAsked = false;
 
   constructor(spec: LaunchSpec, host: PaneHost) {
     // A terminal that starts Claude gets its own conversation (kept when it is restored or restarted).
@@ -113,6 +130,9 @@ export class Pane {
       const mode = host.settings().rightClick;
       if (e.shiftKey || mode === 'menu') return host.onContextMenu(this, e);
       host.onFocus(this);
+      // A program that reads the mouse (Claude Code, vim, tmux…) has already been sent this click and
+      // handles it itself; Claude Code pastes on right-click, so pasting here too would paste twice.
+      if (this.term.modes.mouseTrackingMode !== 'none') return;
       if (mode === 'copyPaste' && this.term.hasSelection()) void this.copySelection(true);
       else void this.paste();
     });
@@ -165,9 +185,20 @@ export class Pane {
     return this.spec.name;
   }
 
-  /** Console hosts default the title to the shell's path, which is just noise. */
+  /** SSH/Telnet connection, if this pane connects to a remote host. */
+  get connection() {
+    return this.spec.connection;
+  }
+
+  /** The current directory, or for a connection "ssh user@host". */
+  get location(): string {
+    return this.spec.connection ? connectionLabel(this.spec.connection) : this.cwd;
+  }
+
+  /** Console hosts default the title to the program's path, which is just noise. */
   private isShellPathTitle(title: string): boolean {
-    const exe = this.shell?.path.split(/[\\/]/).pop()?.toLowerCase();
+    const program = this.spec.connection ? `${this.spec.connection.kind}.exe` : this.shell?.path;
+    const exe = program?.split(/[\\/]/).pop()?.toLowerCase();
     const t = title.trim().toLowerCase();
     return !!exe && (t === exe || t.endsWith(`\\${exe}`) || t.endsWith(`/${exe}`));
   }
@@ -176,9 +207,10 @@ export class Pane {
     return this.state === 'running' || this.state === 'starting';
   }
 
-  /** True when the shell has started a program that is still running. */
+  /** True when the shell has started a program that is still running, or a connection is open. */
   async hasRunningProgram(): Promise<boolean> {
     if (this.ptyId === null || this.state !== 'running') return false;
+    if (this.spec.connection) return true;
     // If the check fails, assume a pane started with a command (e.g. claude) is busy.
     return api.hasChildren(this.ptyId).catch(() => this.spec.command.trim() !== '');
   }
@@ -193,7 +225,17 @@ export class Pane {
     this.fitNow();
   }
 
+  /** Shows a connection without connecting; Enter connects (used for restored tabs). */
+  showIdle(): void {
+    this.generation++;
+    this.state = 'idle';
+    this.term.write(`\x1b[90m[${connectionLabel(this.spec.connection!)}: press Enter to connect.]\x1b[0m\r\n`);
+    this.updateHeader();
+    this.host.onInfoChange(this);
+  }
+
   async start(): Promise<void> {
+    if (this.spec.connection) return this.connect();
     const gen = ++this.generation;
     this.state = 'starting';
     this.exitCode = null;
@@ -222,22 +264,121 @@ export class Pane {
         },
         (msg) => this.onPtyMessage(gen, msg),
       );
-      if (gen !== this.generation || this.disposed) {
-        void api.kill(id);
-        return;
-      }
-      this.ptyId = id;
-      if (claudeId && !this.spec.claudeStarted) this.spec = { ...this.spec, claudeStarted: true };
-      if (this.state === 'starting') this.state = 'running';
-      const queued = this.pendingInput.join('');
-      this.pendingInput = [];
-      if (queued) void api.write(id, queued);
-      // The size may have changed while the process was starting.
-      void api.resize(id, this.term.cols, this.term.rows);
-      this.host.onInfoChange(this);
+      if (this.started(gen, id) && claudeId && !this.spec.claudeStarted) this.spec = { ...this.spec, claudeStarted: true };
     } catch (err) {
       if (gen === this.generation) this.fail(String(err));
     }
+  }
+
+  /** Starts ssh.exe / telnet.exe for the pane's connection. */
+  private async connect(): Promise<void> {
+    const conn = this.spec.connection!;
+    if (conn.kind === 'ssh' && !conn.user && !this.loginAsked) return this.askLogin();
+    const gen = ++this.generation;
+    this.recentOutput = '';
+    this.offerLegacy = false;
+    this.state = 'starting';
+    this.exitCode = null;
+    this.progress = null;
+    this.shell = null;
+    this.host.onInfoChange(this);
+    this.fitNow();
+    try {
+      const id = await api.spawn(
+        {
+          shell: null,
+          connection: connectionRequest(conn),
+          sshPath: this.host.settings().sshPath,
+          cwd: this.spec.cwd || this.host.homeDir,
+          command: null,
+          env: this.spec.env,
+          shellIntegration: false,
+          cols: this.term.cols,
+          rows: this.term.rows,
+        },
+        (msg) => this.onPtyMessage(gen, msg),
+      );
+      this.started(gen, id);
+    } catch (err) {
+      if (gen === this.generation) this.fail(String(err));
+    }
+  }
+
+  /** Asks for the SSH user name in the terminal, like PuTTY. */
+  private askLogin(): void {
+    this.generation++;
+    this.state = 'login';
+    this.loginInput = '';
+    this.term.write(`\x1b[90m[ssh ${connectionTarget(this.spec.connection!)}] Enter = ssh's default user (Windows or ~/.ssh/config), Esc = cancel\x1b[0m\r\nlogin as: `);
+    this.updateHeader();
+    this.host.onInfoChange(this);
+  }
+
+  private loginKeys(data: string): void {
+    if (data === '\x1b' || data === '\x03') {
+      this.state = 'idle';
+      this.term.write('\r\n\x1b[90m[Cancelled. Press Enter to connect.]\x1b[0m\r\n');
+      this.updateHeader();
+      this.host.onInfoChange(this);
+      return;
+    }
+    if (data.startsWith('\x1b')) return; // arrows and other keys
+    for (const ch of data) {
+      if (ch === '\r') return this.submitLogin();
+      if (ch === '\x7f' || ch === '\b') {
+        if (!this.loginInput) continue;
+        this.loginInput = [...this.loginInput].slice(0, -1).join('');
+        this.term.write('\b \b');
+      } else if (ch >= ' ' && ch !== '\x7f') {
+        this.loginInput += ch;
+        this.term.write(ch);
+      }
+    }
+  }
+
+  private submitLogin(): void {
+    const user = this.loginInput.trim();
+    const conn = { ...this.spec.connection!, user };
+    this.term.write('\r\n');
+    const problem = user ? connectionError(conn) : null;
+    if (problem) {
+      this.loginInput = '';
+      this.term.write(`\x1b[31m${problem}\x1b[0m\r\nlogin as: `);
+      return;
+    }
+    this.loginAsked = true;
+    // Kept for reconnects, duplicates and when the tab is reopened.
+    if (user) this.spec = { ...this.spec, connection: conn };
+    void this.connect();
+  }
+
+  /**
+   * Takes over the started process `id`. Returns false (and ends the process) when the pane was
+   * restarted or closed while it was starting.
+   */
+  private started(gen: number, id: number): boolean {
+    if (gen !== this.generation || this.disposed) {
+      void api.kill(id);
+      return false;
+    }
+    this.ptyId = id;
+    if (this.state === 'starting') this.state = 'running';
+    const queued = this.pendingInput.join('');
+    this.pendingInput = [];
+    if (queued) void api.write(id, queued);
+    // The size may have changed while the process was starting.
+    void api.resize(id, this.term.cols, this.term.rows);
+    this.host.onInfoChange(this);
+    return true;
+  }
+
+  /** Reconnects with old algorithms allowed, and keeps that for the pane's session. */
+  allowLegacyAlgorithms(): void {
+    const conn = this.spec.connection;
+    if (!conn) return;
+    this.spec = { ...this.spec, connection: { ...conn, legacyAlgorithms: true } };
+    this.host.onConnectionChange(this);
+    this.restart();
   }
 
   restart(): void {
@@ -264,6 +405,7 @@ export class Pane {
     if (gen !== this.generation || this.disposed) return;
     if (typeof msg === 'string') {
       this.term.write(msg);
+      if (this.spec.connection) this.recentOutput = (this.recentOutput + msg).slice(-4000);
       this.lastOutput = performance.now();
       this.host.onOutput(this);
       return;
@@ -273,7 +415,15 @@ export class Pane {
     this.exitCode = msg.exit;
     this.progress = null;
     const code = msg.exit === null ? 'unknown' : String(msg.exit);
-    this.term.write(`\r\n\x1b[90m[Process exited with code ${code}. Press Enter to restart.]\x1b[0m\r\n`);
+    const conn = this.spec.connection;
+    this.offerLegacy = conn?.kind === 'ssh' && !conn.legacyAlgorithms && needsLegacyAlgorithms(this.recentOutput);
+    this.term.write(
+      this.offerLegacy
+        ? `\r\n\x1b[33m[This server only offers old algorithms. Press A to reconnect allowing them for this host (weaker, e.g. ssh-rsa with SHA-1), or Enter to retry.]\x1b[0m\r\n`
+        : conn
+          ? `\r\n\x1b[90m[Connection closed (exit code ${code}). Press Enter to reconnect.]\x1b[0m\r\n`
+          : `\r\n\x1b[90m[Process exited with code ${code}. Press Enter to restart.]\x1b[0m\r\n`,
+    );
     this.updateHeader();
     this.host.onInfoChange(this);
     this.host.onExit(this, msg.exit);
@@ -281,8 +431,10 @@ export class Pane {
 
   sendInput(data: string): void {
     if (this.disposed) return;
-    if (this.state === 'exited' || this.state === 'error') {
+    if (this.state === 'login') return this.loginKeys(data);
+    if (this.state === 'exited' || this.state === 'error' || this.state === 'idle') {
       if (data === '\r') this.restart();
+      else if (this.offerLegacy && (data === 'a' || data === 'A')) this.allowLegacyAlgorithms();
       return;
     }
     this.lastInput = performance.now();
@@ -390,7 +542,7 @@ export class Pane {
     this.nameEl.textContent = name;
     this.titleEl.textContent = this.title && this.title !== name ? this.title : '';
     this.el.style.setProperty('--session-color', (this.identity?.color ?? this.spec.color) || 'transparent');
-    this.el.classList.toggle('exited', this.state === 'exited' || this.state === 'error');
+    this.el.classList.toggle('exited', this.state === 'exited' || this.state === 'error' || this.state === 'idle');
     this.dotEl.className = `pane-dot${this.progress ? ' busy' : ''}`;
   }
 

@@ -176,7 +176,7 @@ pub fn build_launch(
     }
 }
 
-fn find_on_path(exe: &str) -> Option<PathBuf> {
+pub(crate) fn find_on_path(exe: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(exe))

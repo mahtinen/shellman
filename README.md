@@ -4,7 +4,7 @@
 
 ![Shellman running Claude Code next to a test runner, with saved sessions in the sidebar](docs/img/hero.png)
 
-A lightweight Windows terminal manager built around **saved directories**. Each entry in the session
+A lightweight Windows terminal manager built around **saved directories** and **saved SSH/Telnet hosts**. Each entry in the session
 sidebar means "open a terminal in this folder and (optionally) run this command", for example
 `C:\Projects\my-api` + `claude`. One click opens a new Claude Code session there.
 
@@ -16,10 +16,28 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
 
 - **Session sidebar.** Saved directories with optional startup command, shell, colour, environment
   variables and groups. Click opens a new tab; the hover buttons or middle-click open it as a split.
+  The + button (and Ctrl+Shift+N for SSH/Telnet) opens a terminal or connection without saving it, unless
+  you tick "Remember this session"; Ctrl+Shift+S saves an open one later.
   Shift+click (or "Open plain terminal") opens the session's folder and shell *without* its startup command,
   e.g. for some git work next to Claude.
   Drag to reorder or move between groups. "Open all in tabs" on a group starts your whole workspace.
   New sessions start out in your home directory (or the default directory from Settings).
+- **SSH and Telnet sessions.** Save remote hosts next to your folders (same groups, colours and quick open),
+  or connect without saving: type `user@host`, `ssh -p 2222 host` or `telnet 10.0.0.1 2323` in quick open, or
+  use Ctrl+Shift+N. Shellman runs Windows' own clients (OpenSSH's `ssh.exe` and the Telnet Client), so your
+  keys, the Windows ssh-agent or 1Password's SSH agent, `~/.ssh/config` and `known_hosts` work as in any
+  terminal, and Windows Update keeps the clients patched. Shellman never stores passwords or private keys.
+  No agent is needed: without one, ssh uses your key files in `~/.ssh` (or a key file you choose). With many
+  keys in an agent (1Password or the Windows ssh-agent), pick the session's key under **Log in with**
+  (1Password shows its item names): servers stop after about 6 offered keys ("Too many authentication failures"), so Shellman then offers
+  only that key (`-i <its public key> -o IdentitiesOnly=yes`) and the agent still does the signing. "Log in
+  with: Password" offers no keys at all, and ssh asks for the password in the terminal (it isn't stored).
+  Without a user name, the terminal asks `login as:` first (Enter keeps ssh's default user). Old servers that only offer ssh-rsa (SHA-1), DSA or CBC ciphers ("Unable to
+  negotiate") can be allowed per session (SSH options → Allow old algorithms), or by pressing A when a
+  connection fails that way. Enter
+  reconnects a closed connection, Duplicate opens another connection to the same host, and new tabs or splits
+  next to it are local shells. Reopened connection tabs wait for Enter instead of logging in to every host at
+  start-up (Settings → Connections can change that). Telnet needs the optional Windows feature "Telnet Client".
 - **Open terminals tree.** Each session lists its open terminals underneath it: the ones opened from it, plus
   any other terminal sitting in its directory. Click one to jump to its tab, middle-click to close it,
   right-click for more. The chevron next to a session collapses its list, like a group, and the state is
@@ -73,7 +91,8 @@ Only installers signed with the project's update key are accepted.
 
 | Action | Keys |
 |---|---|
-| Quick open saved session | Ctrl+Shift+P |
+| Quick open saved session (or type `user@host` to connect) | Ctrl+Shift+P |
+| New SSH or Telnet connection | Ctrl+Shift+N |
 | New tab in current directory | Ctrl+Shift+T |
 | Split right / down (current directory) | Ctrl+Shift+E / Ctrl+Shift+O |
 | Duplicate pane (re-runs its command) | Ctrl+Shift+D |
@@ -89,7 +108,7 @@ Only installers signed with the project's update key are accepted.
 | Toggle sidebar | Ctrl+Shift+B |
 | Settings | Ctrl+, |
 | Copy / paste | Ctrl+C (with selection) / Ctrl+V, or Ctrl+Shift+C / Ctrl+Shift+V |
-| Paste with the mouse | Right-click (Settings can switch it to "copy selection, otherwise paste" or "show menu") |
+| Paste with the mouse | Right-click (Settings can switch it to "copy selection, otherwise paste" or "show menu"). Programs that use the mouse, like Claude Code, get the right-click themselves (Claude Code pastes on its own) |
 | Terminal menu (split, save as session, find…) | Shift+Right-click |
 | Select text in Claude Code | Shift+drag |
 
@@ -120,7 +139,8 @@ npm run test:rust      # Rust unit + real ConPTY integration tests
 npm run e2e            # drives the release build through WebView2 DevTools (see e2e/)
 ```
 
-`npm run e2e` runs the app with a throwaway profile (`SHELLMAN_CONFIG_DIR` in Temp), so it can run while you
+`npm run e2e` runs the app with a throwaway profile (`SHELLMAN_CONFIG_DIR` in Temp; set `SHELLMAN_EXE` to test a
+build from another target directory, e.g. while `target\release\shellman.exe` is open), so it can run while you
 use Shellman; your settings, open tabs and window position aren't touched. Its window may take keyboard focus
 when it starts, so don't type into it. Local and test builds never update themselves in the background; only
 builds from the Release workflow do.
@@ -157,10 +177,12 @@ backup: if it's lost, installed copies can't verify new versions and everyone ha
 |---|---|
 | `src-tauri/src/pty.rs` | ConPTY sessions: reader/writer/waiter threads, UTF-8 streaming, child-process detection |
 | `src-tauri/src/shell.rs` | Shell detection and launch arguments (startup commands, shell integration) |
+| `src-tauri/src/connect.rs` | SSH/Telnet: finds `ssh.exe`/`telnet.exe` and builds their arguments (checked against option injection) |
 | `src-tauri/src/config.rs` | Atomic config persistence with backup and corrupt-file quarantine |
 | `src/workspace.ts` | Tabs, split layout rendering, focus, activity tracking, GPU budget |
 | `src/pane.ts` | One terminal: xterm.js, input/clipboard handling, OSC parsing, search |
 | `src/layout.ts` | Pure split-tree operations (unit tested) |
+| `src/connection.ts` | Connection validation, labels and quick-open parsing (unit tested) |
 | `src/sidebar.ts`, `sessionEditor.ts`, `settingsDialog.ts`, `palette.ts` | UI |
 | `src/updater.ts` | Background update checks, download and install-on-restart |
 | `.github/workflows/` | CI checks and the Release workflow |

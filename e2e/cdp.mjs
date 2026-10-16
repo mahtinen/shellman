@@ -6,7 +6,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PORT = 9333;
-export const EXE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri', 'target', 'release', 'shellman.exe');
+// SHELLMAN_EXE tests another build, e.g. one from a separate target dir while the usual exe is in use.
+export const EXE = process.env.SHELLMAN_EXE
+  ? path.resolve(process.env.SHELLMAN_EXE)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri', 'target', 'release', 'shellman.exe');
 
 /** Resolves once nothing is listening on the debug port any more. */
 export async function portFree(timeout = 15000) {

@@ -1,4 +1,5 @@
 ﻿mod config;
+mod connect;
 mod pty;
 mod shell;
 
@@ -11,11 +12,30 @@ use tauri::{Manager, RunEvent, State};
 
 #[tauri::command]
 async fn pty_spawn(
+    app: tauri::AppHandle,
     state: State<'_, PtyManager>,
-    request: SpawnRequest,
+    mut request: SpawnRequest,
     output: Channel<InvokeResponseBody>,
 ) -> Result<u32, String> {
+    request.key_dir = Some(ssh_key_dir(&app)?);
     state.spawn(request, output)
+}
+
+/// Public key files of the agent keys chosen for SSH sessions.
+fn ssh_key_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(config_dir(app)?.join("ssh-keys"))
+}
+
+/// The keys the SSH agent (Windows ssh-agent or 1Password) offers.
+#[tauri::command]
+async fn ssh_agent_keys(ssh_path: String) -> Result<connect::AgentKeys, String> {
+    connect::agent_keys(&ssh_path)
+}
+
+/// The file `ssh -i` can use for a chosen agent key (for "Copy SSH command").
+#[tauri::command]
+async fn ssh_public_key_file(app: tauri::AppHandle, key: String) -> Result<String, String> {
+    connect::public_key_file(&ssh_key_dir(&app)?, &key).map(|p| p.to_string_lossy().into_owned())
 }
 
 // Writes stay synchronous so keystrokes are delivered in order; the actual
@@ -221,6 +241,8 @@ pub fn run() {
             pty_kill_all,
             pty_has_children,
             list_shells,
+            ssh_agent_keys,
+            ssh_public_key_file,
             config_load,
             config_save,
             workspace_load,

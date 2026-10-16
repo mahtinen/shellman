@@ -70,6 +70,12 @@ export function openSettings(): void {
   );
   restore.value = s.restoreTerminals;
   const [confirmEl, confirmClose] = check('Confirm before closing terminals with running programs', s.confirmClose);
+  const [reconnectEl, reconnect] = check(
+    'Reconnect SSH and Telnet tabs on start',
+    s.reconnectOnStart,
+    "Off: reopened connections wait until you press Enter, so starting Shellman doesn't log in to every host (or ask 1Password for every key) at once.",
+  );
+  const sshPath = h('input', { class: 'input mono', value: s.sshPath, placeholder: 'Windows OpenSSH (System32\\OpenSSH\\ssh.exe)', spellcheck: false });
 
   // Custom shells editor.
   let custom: ShellProfile[] = s.customShells.map((x) => ({ ...x, args: [...x.args] }));
@@ -195,7 +201,7 @@ export function openSettings(): void {
           'div',
           { class: 'row two' },
           field('Close pane when the shell exits', closeOnExit),
-          field('Right-click in terminal', rightClick, 'Shift+right-click always opens the menu.'),
+          field('Right-click in terminal', rightClick, 'Programs that use the mouse (like Claude Code) handle right-click themselves. Shift+right-click always opens the menu.'),
         ),
         shiftEnterEl,
         copySelEl,
@@ -203,6 +209,11 @@ export function openSettings(): void {
         confirmEl,
       ),
       section('Shells', h('small', { class: 'hint' }, 'Detected automatically:'), detected, h('small', { class: 'hint' }, 'Custom shells:'), customList),
+      section(
+        'Connections',
+        field('SSH client', sshPath, "Leave empty for Windows OpenSSH, which uses the Windows ssh-agent or 1Password's SSH agent. Telnet uses the Windows Telnet Client (an optional Windows feature)."),
+        reconnectEl,
+      ),
       section(
         'Updates',
         field('New versions', updates, 'Updates come from GitHub Releases and are signed; only signed installers are accepted.'),
@@ -244,6 +255,8 @@ export function openSettings(): void {
             confirmClose: confirmClose(),
             updates: updates.value as UpdateMode,
             restoreTerminals: restore.value as RestoreMode,
+            reconnectOnStart: reconnect(),
+            sshPath: sshPath.value.trim().replace(/^"(.*)"$/, '$1'),
             customShells: custom.filter((x) => x.path.trim()).map((x) => ({ ...x, name: x.name.trim() || x.path })),
           };
           store.update((c) => Object.assign(c.settings, next));

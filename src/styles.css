@@ -1639,3 +1639,26 @@ select.input {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* Session editor: fields for the chosen type (local / SSH / Telnet). */
+.type-fields[hidden] {
+  display: none;
+}
+
+.type-fields > .hint {
+  margin: -6px 0 12px;
+}
+
+.row.host-port > .field:first-child {
+  flex: 1;
+}
+
+.row.host-port > .field:last-child {
+  flex: none;
+  width: 96px;
+}
+
+/* "user@host:port" reads left to right; only paths are cut from the left. */
+.session-sub span.session-target {
+  direction: ltr;
+}

@@ -1,6 +1,7 @@
 // End-to-end test of the real Shellman app through CDP. Run it via `npm run e2e`
 // (all.mjs), which protects your real configuration.
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connect, HELPERS, launch, portFree } from './cdp.mjs';
@@ -51,7 +52,7 @@ if (phase === 'main') {
   });
   await shot(path.join(OUT, '01-welcome.png'));
 
-  await step('create session through the dialog (Save & open)', async () => {
+  await step('create session through the dialog (Remember + Open)', async () => {
     await click('.sidebar-header .icon-btn[title="New session"]');
     await waitFor(`!!document.querySelector('.dialog')`);
     await ev(`(() => {
@@ -62,8 +63,11 @@ if (phase === 'main') {
       set(inputs[2], "Write-Output ('startup-' + 'ok')");
       return true;
     })()`);
+    const remember = `[...document.querySelectorAll('.dialog .check')].find((l) => l.textContent.includes('Remember this session')).querySelector('input')`;
+    assert((await ev(`${remember}.checked`)) === false, 'Remember is off by default');
+    await ev(`(() => { const r = ${remember}; r.checked = true; r.dispatchEvent(new Event('change')); return true; })()`);
     await shot(path.join(OUT, '02-session-dialog.png'));
-    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Save & open').click()`);
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Open').click()`);
     await waitFor(`!document.querySelector('.dialog') && __t.ws.tabs.length === 1`, 5000, 'dialog closed + tab opened');
     assert((await ev(`document.querySelectorAll('.session-row').length`)) === 1, 'sidebar row missing');
   });
@@ -255,6 +259,27 @@ if (phase === 'main') {
     assert(rgb > 0, 'claude output has no 24-bit colour');
   });
 
+  await step('right-click in Claude Code pastes once (Claude handles it, Shellman does not)', async () => {
+    const saved = await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_read')`);
+    try {
+      assert((await ev(`__t.active().term.modes.mouseTrackingMode`)) !== 'none', 'claude did not turn on mouse reporting');
+      await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_write', { text: 'rclick-once' })`);
+      const box = await ev(`(() => { const r = __t.active().el.querySelector('.pane-term').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        await c.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'right', buttons: type === 'mousePressed' ? 2 : 0, clickCount: 1 });
+      }
+      await waitFor(`__t.text().includes('rclick-once')`, 5000, 'pasted');
+      await sleep(1500);
+      const times = (await ev(`__t.text()`)).split('rclick-once').length - 1;
+      assert(times === 1, `pasted ${times} times`);
+      // Clear the prompt again.
+      await ev(`__t.active().sendInput('\\x15')`);
+    } finally {
+      await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_write', { text: ${js(saved ?? '')} })`).catch(() => undefined);
+    }
+  });
+
   await step('Shift+Enter inserts a newline in the Claude prompt instead of submitting', async () => {
     await ev(`__t.active().focus()`);
     await type('first-line-xyz');
@@ -428,6 +453,198 @@ if (phase === 'main') {
     await waitFor(`__t.text().includes(${prompt(REPO)})`, 15000, 'plain prompt');
     assert(!(await ev(`__t.text().includes('startup-ok')`)), 'startup command ran');
     await waitFor(`!!document.querySelector('.session-row + .term-tree .term-row[data-pane="' + __t.active().id + '"]')`, 3000, 'listed under the session');
+  });
+
+  // SSH runs the real Windows ssh.exe against a closed local port, so no server or keys are needed.
+  await step('quick open connects to a typed ssh command', async () => {
+    await key('KeyP', 'P', 80, ['ctrl', 'shift']);
+    await waitFor(`!!document.querySelector('.palette-input')`, 3000, 'palette');
+    await type('ssh -o BatchMode=yes -p 1 nobody@127.0.0.1');
+    await waitFor(`document.querySelector('.palette-item.selected .palette-label')?.textContent === 'Connect to nobody@127.0.0.1:1'`, 3000, 'connect item first');
+    assert(
+      (await ev(`document.querySelectorAll('.palette-item .palette-label')[1]?.textContent`)) === 'Connect to nobody@127.0.0.1:1 with a password',
+      'password item second',
+    );
+    const before = await ev(`__t.ws.tabs.length`);
+    await key('Enter', 'Enter', 13);
+    await waitFor(`__t.ws.tabs.length === ${before + 1} && __t.active().connection?.host === '127.0.0.1'`, 3000, 'connection tab');
+    await waitFor(`__t.active().state === 'exited' && /Press Enter to reconnect/.test(__t.text())`, 20000, 'ssh ran and ended');
+    assert(/Connection/.test(await ev(`__t.text()`)), 'ssh error not shown: ' + (await ev(`__t.text()`)));
+    assert((await ev(`__t.active().exitCode`)) === 255, 'ssh exit code');
+    assert((await ev(`document.querySelector('.status-shell').textContent`)) === 'SSH', 'status bar kind');
+    assert((await ev(`document.querySelector('.status-state').textContent`)) === 'disconnected (255)', 'status bar state');
+    const row = `document.querySelector('.term-row[data-pane="' + __t.active().id + '"]')`;
+    assert((await ev(`${row}?.closest('.term-tree')?.previousElementSibling?.classList.contains('terms-head')`)) === true, 'listed under Other terminals');
+    assert((await ev(`${row}.querySelector('.term-shell')?.textContent`)) === 'SSH', 'tree shows SSH');
+    await shot(path.join(OUT, '10-ssh-adhoc.png'));
+  });
+
+  await step('Enter reconnects a closed connection', async () => {
+    const pid = await ev(`__t.active().id`);
+    await ev(`__t.active().focus()`);
+    await key('Enter', 'Enter', 13);
+    await waitFor(`__t.active().id === ${js(pid)} && __t.text().split('Press Enter to reconnect').length === 3`, 20000, 'second attempt ended');
+  });
+
+  await step('a new connection can be saved as an SSH session', async () => {
+    await key('KeyN', 'N', 78, ['ctrl', 'shift']);
+    await waitFor(`/New connection/.test(document.querySelector('.dialog h2')?.textContent)`, 3000, 'dialog');
+    assert((await ev(`document.querySelector('.dialog select').value`)) === 'ssh', 'type defaults to SSH');
+    await ev(`(() => {
+      const inputs = document.querySelectorAll('.dialog input.input');
+      const set = (el, v) => { el.value = v; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); };
+      set(inputs[0], 'Closed port');
+      set(inputs[3], 'nobody@127.0.0.1:1');
+      set(inputs[8], '-o BatchMode=yes');
+      return true;
+    })()`);
+    // user@host:port typed into Host is split into the fields.
+    const fields = await ev(`[...document.querySelectorAll('.dialog input.input')].slice(3, 6).map((i) => i.value)`);
+    assert(fields.join('|') === '127.0.0.1|1|nobody', 'fields: ' + fields.join('|'));
+    // The SSH key picker lists the agent's keys (none on a machine without an agent).
+    const keySel = `[...document.querySelectorAll('.dialog select')].find((s) => [...s.options].some((o) => o.value === 'file'))`;
+    await waitFor(`${keySel}?.options[0].textContent === 'Default: SSH agent keys and ~/.ssh key files'`, 3000, 'key picker');
+    await sleep(1500); // ssh-add -L
+    const agentKeys = await ev(`[...${keySel}.options].filter((o) => /^a\\d+$/.test(o.value)).length`);
+    // Run with SSH_AUTH_SOCK=\\.\pipe\shellman-e2e-no-agent to test a machine without an agent.
+    if (/shellman-e2e-no-agent/.test(process.env.SSH_AUTH_SOCK ?? '')) {
+      assert(agentKeys === 0, 'keys listed without an agent');
+      assert(/No SSH agent is running/.test(await ev(`document.querySelector('.dialog').textContent`)), 'no-agent hint missing');
+    }
+    if (agentKeys) await ev(`(() => { const s = ${keySel}; s.value = 'a0'; s.dispatchEvent(new Event('change')); return true; })()`);
+    // Temporary by default: group and colour only show once "Remember" is ticked.
+    const remember = `[...document.querySelectorAll('.dialog .check')].find((l) => l.textContent.includes('Remember this session')).querySelector('input')`;
+    assert((await ev(`document.querySelector('.dialog .btn.primary').textContent`)) === 'Connect', 'button says Connect for SSH');
+    assert((await ev(`${remember}.checked`)) === false, 'remember is off by default');
+    assert(await ev(`[...document.querySelectorAll('.dialog .field')].find((f) => f.firstChild?.textContent === 'Group').hidden`), 'group shown for a temporary connection');
+    await ev(`(() => { const r = ${remember}; r.checked = true; r.dispatchEvent(new Event('change')); return true; })()`);
+    assert(!(await ev(`[...document.querySelectorAll('.dialog .field')].find((f) => f.firstChild?.textContent === 'Group').hidden`)), 'group hidden after ticking Remember');
+    await shot(path.join(OUT, '11-new-connection.png'));
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Connect').click()`);
+    await waitFor(`!document.querySelector('.dialog') && __t.active().spec.sessionId && __t.active().connection?.user === 'nobody'`, 5000, 'saved and connecting');
+    // Settings are saved 300 ms after a change.
+    let saved;
+    for (let i = 0; i < 30 && !saved; i++, await sleep(100)) saved = JSON.parse(fs.readFileSync(CONFIG, 'utf8')).sessions.find((s) => s.name === 'Closed port');
+    assert(saved?.connection?.kind === 'ssh' && saved.connection.port === 1 && saved.connection.extraArgs === '-o BatchMode=yes', 'saved: ' + JSON.stringify(saved));
+    if (agentKeys) {
+      assert(/^(ssh-|ecdsa-|sk-)/.test(saved.connection.identityKey), 'agent key not saved: ' + JSON.stringify(saved.connection));
+      // The public half is written for `ssh -i` when connecting.
+      await waitFor(`__t.active().state !== 'starting'`, 10000, 'started');
+      const keyDir = path.join(path.dirname(CONFIG), 'ssh-keys');
+      assert(fs.existsSync(keyDir) && fs.readdirSync(keyDir).some((f) => f.endsWith('.pub')), 'no public key file in ' + keyDir);
+    } else console.log('       (no SSH agent keys here; key choice not tested)');
+    const sub = await ev(`[...document.querySelectorAll('.session-row')].find((r) => r.textContent.includes('Closed port'))?.querySelector('.session-sub').textContent`);
+    assert(sub === 'sshnobody@127.0.0.1:1', 'sidebar sub line: ' + sub);
+    await waitFor(`!!document.querySelector('.session-row + .term-tree .term-row[data-pane="' + __t.active().id + '"]')`, 3000, 'listed under its session');
+    await waitFor(`__t.active().state === 'exited'`, 20000, 'ssh ended');
+  });
+
+  await step('a temporary password connection is not saved', async () => {
+    const sessionsBefore = JSON.parse(fs.readFileSync(CONFIG, 'utf8')).sessions.length;
+    await key('KeyN', 'N', 78, ['ctrl', 'shift']);
+    await waitFor(`/New connection/.test(document.querySelector('.dialog h2')?.textContent)`, 3000, 'dialog');
+    await ev(`(() => {
+      const inputs = document.querySelectorAll('.dialog input.input');
+      const set = (el, v) => { el.value = v; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); };
+      set(inputs[3], '127.0.0.1');
+      set(inputs[4], '1');
+      const auth = [...document.querySelectorAll('.dialog select')].find((s) => [...s.options].some((o) => o.value === 'password'));
+      auth.value = 'password';
+      auth.dispatchEvent(new Event('change'));
+      return true;
+    })()`);
+    assert(/doesn't store it/.test(await ev(`document.querySelector('.dialog').textContent`)), 'password hint');
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Connect').click()`);
+    await waitFor(`!document.querySelector('.dialog') && __t.active().connection?.passwordAuth === true`, 5000, 'connecting');
+    assert((await ev(`__t.active().spec.sessionId`)) === null, 'temporary connection got a session');
+    assert((await ev(`__t.active().name`)) === '127.0.0.1:1', 'name defaults to the target');
+    // No user name: asked in the terminal first.
+    await waitFor(`__t.active().state === 'login' && /login as: $/m.test(__t.text())`, 3000, 'login prompt');
+    assert((await ev(`document.querySelector('.status-state').textContent`)) === 'waiting for a user name', 'status bar');
+    await ev(`__t.active().focus()`);
+    await type('testerx');
+    await key('Backspace', 'Backspace', 8);
+    await key('Enter', 'Enter', 13);
+    await waitFor(`__t.active().connection.user === 'tester'`, 3000, 'user name taken (with backspace)');
+    await waitFor(`__t.active().state === 'exited'`, 20000, 'ssh ended');
+    await sleep(500);
+    assert(JSON.parse(fs.readFileSync(CONFIG, 'utf8')).sessions.length === sessionsBefore, 'temporary connection was saved');
+  });
+
+  await step('+ opens a terminal without saving it', async () => {
+    const sessionsBefore = JSON.parse(fs.readFileSync(CONFIG, 'utf8')).sessions.length;
+    const tabsBefore = await ev(`__t.ws.tabs.length`);
+    await click('.sidebar-header .icon-btn[title="New session"]');
+    await waitFor(`!!document.querySelector('.dialog')`, 2000, 'dialog');
+    assert((await ev(`document.querySelector('.dialog .btn.primary').textContent`)) === 'Open', 'button says Open');
+    await ev(`(() => { const i = document.querySelectorAll('.dialog input.input'); i[1].value = ${js(PARENT)}; i[1].dispatchEvent(new Event('input')); return true; })()`);
+    await ev(`document.querySelector('.dialog .btn.primary').click()`);
+    await waitFor(`!document.querySelector('.dialog') && __t.ws.tabs.length === ${tabsBefore + 1}`, 5000, 'opened');
+    assert((await ev(`__t.active().spec.sessionId`)) === null, 'got a session');
+    await waitFor(`__t.text().includes(${prompt(PARENT)})`, 15000, 'prompt in the chosen folder');
+    await sleep(500);
+    assert(JSON.parse(fs.readFileSync(CONFIG, 'utf8')).sessions.length === sessionsBefore, 'it was saved');
+  });
+
+  await step('an old server offers to allow old algorithms (A)', async () => {
+    // Speaks just enough SSH to offer only ssh-rsa/ssh-dss host keys, like old network gear.
+    const nameList = (s) => { const b = Buffer.from(s); const l = Buffer.alloc(4); l.writeUInt32BE(b.length); return Buffer.concat([l, b]); };
+    const payload = Buffer.concat([
+      Buffer.from([20]), Buffer.alloc(16, 7),
+      nameList('curve25519-sha256'), nameList('ssh-rsa,ssh-dss'),
+      nameList('aes128-ctr'), nameList('aes128-ctr'), nameList('hmac-sha2-256'), nameList('hmac-sha2-256'),
+      nameList('none'), nameList('none'), nameList(''), nameList(''),
+      Buffer.from([0, 0, 0, 0, 0]),
+    ]);
+    let pad = 8 - ((5 + payload.length) % 8);
+    if (pad < 4) pad += 8;
+    const head = Buffer.alloc(5);
+    head.writeUInt32BE(1 + payload.length + pad);
+    head[4] = pad;
+    const kexinit = Buffer.concat([head, payload, Buffer.alloc(pad)]);
+    const server = net.createServer((sock) => {
+      sock.on('error', () => {});
+      sock.write('SSH-2.0-OldBox_1.0\r\n');
+      sock.write(kexinit);
+      setTimeout(() => sock.destroy(), 3000);
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    try {
+      await ev(`(__t.app.openConnection({ kind: 'ssh', host: '127.0.0.1', port: ${port}, user: 'nobody', identityFile: '', identityKey: '', passwordAuth: false, legacyAlgorithms: false, jumpHost: '', extraArgs: '-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL' }, 'tab'), true)`);
+      await waitFor(`__t.active().state === 'exited' && /Press A to reconnect/.test(__t.text())`, 20000, 'offer to allow old algorithms');
+      assert(/no matching host key type found/.test(await ev(`__t.text()`)), 'ssh negotiation error');
+      await ev(`__t.active().focus()`);
+      await type('a');
+      await waitFor(`__t.active().connection.legacyAlgorithms === true`, 3000, 'old algorithms allowed');
+      // With ssh-rsa allowed the host key type is agreed; the fake server then just hangs up.
+      await waitFor(`__t.active().state === 'exited' && __t.text().split('[Connection closed').length === 2`, 20000, 'second attempt ended');
+      const text = await ev(`__t.text()`);
+      assert(text.split('no matching host key type').length === 2, 'still failing on the host key type:\n' + text);
+    } finally {
+      server.close();
+    }
+  });
+
+  await step('a restored connection waits for Enter', async () => {
+    const spec = await ev(`JSON.stringify(__t.active().spec)`);
+    await ev(`(__t.ws.restoreTab({ title: null, activePane: 0, root: { pane: ${spec} } }), true)`);
+    await waitFor(`__t.active().state === 'idle' && /press Enter to connect/.test(__t.text())`, 3000, 'idle');
+    assert((await ev(`document.querySelector('.status-state').textContent`)) === 'not connected', 'status bar state');
+    await ev(`__t.active().focus()`);
+    await key('Enter', 'Enter', 13);
+    await waitFor(`__t.active().state === 'exited' && /Press Enter to reconnect/.test(__t.text())`, 20000, 'connected after Enter');
+  });
+
+  await step('a saved connection can be deleted', async () => {
+    await ev(`[...document.querySelectorAll('.session-row')].find((r) => r.textContent.includes('Closed port')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+    await waitFor(`!!document.querySelector('.menu')`, 2000, 'menu');
+    assert(await ev(`[...document.querySelectorAll('.menu-item')].some((i) => i.textContent.includes('Copy SSH command'))`), 'copy command entry');
+    assert(!(await ev(`[...document.querySelectorAll('.menu-item')].some((i) => i.textContent.includes('Explorer'))`)), 'no Explorer entry');
+    await ev(`[...document.querySelectorAll('.menu-item')].find((i) => i.textContent.includes('Delete')).click()`);
+    await waitFor(`!!document.querySelector('.dialog')`, 2000, 'confirm');
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Delete').click()`);
+    await waitFor(`document.querySelectorAll('.session-row').length === 1`, 3000, 'removed');
   });
 
   await step('open terminals are saved for the next start', async () => {

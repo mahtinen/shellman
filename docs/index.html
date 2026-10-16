@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Shellman: terminal manager for Claude Code on Windows</title>
-  <meta name="description" content="Shellman is a free, open-source Windows terminal manager built around your project folders. One click opens Claude Code, PowerShell, Git Bash or WSL in the right directory, with tabs, splits and a live tree of every open terminal.">
+  <title>Shellman: terminal and SSH session manager for Windows</title>
+  <meta name="description" content="Shellman is a free, open-source Windows terminal manager for the places you work: project folders and SSH or Telnet hosts. One click opens PowerShell, Git Bash, WSL, Claude Code or an SSH connection in the right place, with tabs, splits and a live tree of every open terminal.">
   <link rel="canonical" href="https://shellman.app/">
   <meta name="theme-color" content="#16181d">
   <meta name="color-scheme" content="dark">
@@ -12,15 +12,15 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Shellman">
   <meta property="og:url" content="https://shellman.app/">
-  <meta property="og:title" content="Shellman: terminal manager for Claude Code on Windows">
-  <meta property="og:description" content="Save the folders you work in. One click opens Claude Code, PowerShell, Git Bash or WSL there, in tabs and splits you can find again.">
+  <meta property="og:title" content="Shellman: terminal and SSH session manager for Windows">
+  <meta property="og:description" content="Save the folders and servers you work in. One click opens a shell, Claude Code or an SSH connection there, in tabs and splits you can find again.">
   <meta property="og:image" content="https://shellman.app/img/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="Shellman running Claude Code next to a test runner, with saved sessions in the sidebar">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Shellman: terminal manager for Claude Code on Windows">
-  <meta name="twitter:description" content="Save the folders you work in. One click opens Claude Code, PowerShell, Git Bash or WSL there.">
+  <meta name="twitter:title" content="Shellman: terminal and SSH session manager for Windows">
+  <meta name="twitter:description" content="Save the folders and servers you work in. One click opens a shell, Claude Code or an SSH connection there.">
   <meta name="twitter:image" content="https://shellman.app/img/og.png">
 
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -35,7 +35,7 @@
     "@type": "SoftwareApplication",
     "name": "Shellman",
     "url": "https://shellman.app/",
-    "description": "A Windows terminal manager built around saved project directories, made for Claude Code. Tabs, splits, a tree of open terminals, PowerShell, cmd, Git Bash and WSL.",
+    "description": "A Windows terminal manager built around saved project folders and SSH or Telnet hosts. Tabs, splits, a tree of open terminals, PowerShell, cmd, Git Bash and WSL, with extra support for Claude Code.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Windows 10, Windows 11",
     "fileSize": "1.9MB",
@@ -57,6 +57,8 @@
       { "@type": "Question", "name": "Is Shellman free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Shellman is free and open source under the MIT license." } },
       { "@type": "Question", "name": "Do I need Claude Code to use Shellman?", "acceptedAnswer": { "@type": "Answer", "text": "No. Shellman works with any shell or command. It has extra support for Claude Code: Shift+Enter newlines, pasting images, and notifications when Claude finishes or needs input." } },
       { "@type": "Question", "name": "Which shells does Shellman support?", "acceptedAnswer": { "@type": "Answer", "text": "PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically, and you can add any other shell in Settings." } },
+      { "@type": "Question", "name": "Can I use Shellman for SSH and Telnet?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Save hosts next to your folders, or connect without saving by typing user@host. Shellman runs Windows' own OpenSSH client, so your keys, the Windows ssh-agent or 1Password's SSH agent and ~/.ssh/config work as in any terminal. Telnet uses the Windows Telnet Client." } },
+      { "@type": "Question", "name": "Does Shellman store my passwords or SSH keys?", "acceptedAnswer": { "@type": "Answer", "text": "No. ssh asks for passwords in the terminal, and private keys stay in your key files or SSH agent. For a key you pick from the agent, Shellman keeps only its public half." } },
       { "@type": "Question", "name": "How does Shellman update?", "acceptedAnswer": { "@type": "Answer", "text": "New versions download in the background and install the next time you restart Shellman. Updates are signed, and you can switch to notifications only or turn checks off." } },
       { "@type": "Question", "name": "Why does Windows SmartScreen warn about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The installer is not code-signed with a paid certificate yet, so SmartScreen asks you to confirm. Choose More info, then Run anyway. The source code and build scripts are on GitHub." } }
     ]
@@ -88,8 +90,8 @@
     <section class="hero">
       <div class="wrap">
         <p class="eyebrow">Free &amp; open source · Windows 10 and 11</p>
-        <h1>Your projects, one click from <span class="accent">Claude Code</span>.</h1>
-        <p class="lede">Shellman is a Windows terminal manager built around the folders you work in. Save a directory with a startup command like <code>claude</code>, then open it in a tab or split with one click, in PowerShell, Git Bash, cmd or WSL.</p>
+        <h1>Your folders and servers, <span class="accent">one&nbsp;click&nbsp;away</span>.</h1>
+        <p class="lede">Shellman is a Windows terminal manager built around the places you work. Save a project folder with a startup command like <code>claude</code> or <code>npm run dev</code>, or an SSH or Telnet host, then open it in a tab or split with one click.</p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/mahtinen/shellman/releases/latest/download/Shellman-setup.exe">
             <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M8 2v8m0 0l-3-3m3 3l3-3M3 13.5h10"/></svg>
@@ -116,7 +118,12 @@
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 014.5 6H9l2 2h8.5A1.5 1.5 0 0121 9.5v8a1.5 1.5 0 01-1.5 1.5h-15A1.5 1.5 0 013 17.5z"/><path d="M8 13l2 2-2 2"/></svg></div>
             <h3>Saved sessions</h3>
-            <p>A session is a folder plus an optional command, shell, colour and environment variables. Group them by client or project, and your tabs and splits reopen where you left them.</p>
+            <p>A session is a folder plus an optional command, shell, colour and environment variables, or a remote host. Group them by client or project, and your tabs and splits reopen where you left them.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3z"/></svg></div>
+            <h3>SSH and Telnet</h3>
+            <p>Save hosts next to your folders, or just type <code>user@host</code> to connect without saving. Your keys, 1Password or the Windows ssh-agent and <code>~/.ssh/config</code> work as usual. Pick a key per host, log in with a password, or allow old algorithms for old gear.</p>
           </article>
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4v16M5 8h5M5 14h5M5 20h5"/><rect x="12" y="5.5" width="8" height="5" rx="1.5"/><rect x="12" y="11.5" width="8" height="5" rx="1.5"/></svg></div>
@@ -141,17 +148,12 @@
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg></div>
             <h3>Quick open</h3>
-            <p>Ctrl+Shift+P fuzzy-searches your sessions. Enter opens a tab, Ctrl+Enter splits right, Shift+Enter splits down.</p>
-          </article>
-          <article class="card">
-            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 01-14.3 4.9M4 12A8 8 0 0118.3 7.1"/><path d="M18.5 3v4.5H14M5.5 21v-4.5H10"/></svg></div>
-            <h3>Updates itself</h3>
-            <p>New versions download quietly in the background and install the next time you restart. Every update is signed.</p>
+            <p>Ctrl+Shift+P fuzzy-searches your sessions, or connects to a host you type. Enter opens a tab, Ctrl+Enter splits right, Shift+Enter splits down.</p>
           </article>
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/></svg></div>
-            <h3>Small and fast</h3>
-            <p>Written in Rust with Tauri, on Windows' own ConPTY. A 5 MB app with GPU-rendered terminals that starts instantly.</p>
+            <h3>Small, fast, up to date</h3>
+            <p>Written in Rust with Tauri, on Windows' own ConPTY: a 5 MB app with GPU-rendered terminals. Signed updates download in the background and install on the next restart.</p>
           </article>
         </div>
       </div>
@@ -171,9 +173,9 @@
           <figure class="shot">
             <a href="/img/session-editor.png"><picture>
               <source srcset="/img/session-editor.webp" type="image/webp">
-              <img src="/img/session-editor.png" width="1400" height="860" loading="lazy" alt="The new session dialog with a name, directory, startup command, shell, group and colour">
+              <img src="/img/session-editor.png" width="1400" height="860" loading="lazy" alt="The new connection dialog for an SSH host with port, user, password login, group and colour, over a sidebar of saved folders, SSH and Telnet hosts">
             </picture></a>
-            <figcaption><strong>Sessions.</strong> A folder, a command, a shell and a colour. It starts in your home folder.</figcaption>
+            <figcaption><strong>Folders and hosts.</strong> A folder with a command, or an SSH or Telnet host. Kept only if you tick Remember.</figcaption>
           </figure>
           <figure class="shot">
             <a href="/img/open-with-shell.png"><picture>
@@ -193,12 +195,14 @@
           <p class="section-lede">Every action has a shortcut, and none of them use Ctrl+Alt, so AltGr keeps working on Nordic and other European layouts.</p>
         </div>
         <dl class="shortcuts">
-          <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd></dt><dd>Quick open a session</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd></dt><dd>Quick open a session or host</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>N</kbd></dt><dd>New SSH or Telnet connection</dd></div>
           <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></dt><dd>New tab in this folder</dd></div>
           <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>E</kbd> / <kbd>O</kbd></dt><dd>Split right / down</dd></div>
           <div><dt><kbd>Alt</kbd><kbd>←↑→↓</kbd></dt><dd>Move between panes</dd></div>
           <div><dt><kbd>Alt</kbd><kbd>1…9</kbd></dt><dd>Go to tab</dd></div>
           <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F</kbd></dt><dd>Find in terminal</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>S</kbd></dt><dd>Save a tab as a session</dd></div>
         </dl>
       </div>
     </section>
@@ -217,6 +221,14 @@
         <details>
           <summary>Which shells are supported?</summary>
           <p>PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically. You can add any other shell in Settings.</p>
+        </details>
+        <details>
+          <summary>Can I use it for SSH and Telnet?</summary>
+          <p>Yes. Save hosts next to your folders, or connect without saving by typing <code>user@host</code> in quick open. Shellman runs Windows' own OpenSSH client, so your keys, the Windows ssh-agent or 1Password's SSH agent, <code>~/.ssh/config</code> and <code>known_hosts</code> work as in any terminal. With many keys in an agent, pick each host's key so servers don't give up after six tries. Telnet uses the Windows Telnet Client, an optional Windows feature.</p>
+        </details>
+        <details>
+          <summary>Does Shellman store my passwords or SSH keys?</summary>
+          <p>No. ssh asks for passwords in the terminal, and private keys stay in your key files or SSH agent. For a key you pick from the agent, Shellman keeps only its public half, so ssh knows which key to ask the agent for.</p>
         </details>
         <details>
           <summary>How do updates work?</summary>

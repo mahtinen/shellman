@@ -7,12 +7,13 @@
 //!   pseudoconsole. On Windows the output pipe only reports EOF after the
 //!   pseudoconsole is closed, so this is what lets the reader finish.
 
+use crate::connect::{self, Connection};
 use crate::shell::{build_launch, ShellProfile};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -46,7 +47,18 @@ pub struct PtyManager {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SpawnRequest {
-    pub shell: ShellProfile,
+    /// The shell to start; ignored when `connection` is set.
+    #[serde(default)]
+    pub shell: Option<ShellProfile>,
+    /// Connect to a remote host with ssh.exe / telnet.exe instead of starting a shell.
+    #[serde(default)]
+    pub connection: Option<Connection>,
+    /// ssh.exe from Settings; empty = Windows OpenSSH.
+    #[serde(default)]
+    pub ssh_path: String,
+    /// Where chosen agent keys' public key files are kept (set by the app, not the frontend).
+    #[serde(skip)]
+    pub key_dir: Option<PathBuf>,
     pub cwd: String,
     #[serde(default)]
     pub command: Option<String>,
@@ -119,7 +131,14 @@ impl PtyManager {
             return Err(format!("Directory not found: {}", req.cwd));
         }
 
-        let launch = build_launch(&req.shell, &req.cwd, req.command.as_deref(), req.shell_integration);
+        let launch = match (&req.connection, &req.shell) {
+            (Some(c), _) => {
+                let key_dir = req.key_dir.clone().unwrap_or_else(|| std::env::temp_dir().join("shellman-ssh-keys"));
+                connect::launch(c, &req.ssh_path, &key_dir)?
+            }
+            (None, Some(shell)) => build_launch(shell, &req.cwd, req.command.as_deref(), req.shell_integration),
+            (None, None) => return Err("Nothing to start: no shell or connection given".into()),
+        };
 
         let pair = native_pty_system()
             .openpty(size(req.cols, req.rows))
@@ -359,7 +378,10 @@ mod tests {
             let id = mgr
                 .spawn(
                     SpawnRequest {
-                        shell: shell.clone(),
+                        shell: Some(shell.clone()),
+                        connection: None,
+                        ssh_path: String::new(),
+                    key_dir: None,
                         cwd: dir_s.clone(),
                         command: Some(command.into()),
                         env: HashMap::new(),
@@ -424,7 +446,10 @@ mod tests {
         let id = mgr
             .spawn(
                 SpawnRequest {
-                    shell: cmd,
+                    shell: Some(cmd),
+                    connection: None,
+                    ssh_path: String::new(),
+                    key_dir: None,
                     cwd: std::env::temp_dir().to_string_lossy().into(),
                     command: Some("ping -n 30 127.0.0.1".into()),
                     env: HashMap::new(),
@@ -451,5 +476,97 @@ mod tests {
         mgr.kill(id);
         assert!(found, "ping was not detected as a child of cmd.exe");
         assert!(!mgr.has_children(id), "killed session must report no children");
+    }
+
+    /// Runs the real Windows ssh.exe through ConPTY against a closed local port: its error
+    /// shows up in the terminal and the session ends with ssh's exit code.
+    #[test]
+    fn ssh_connection_runs_the_client() {
+        if connect::ssh_client("").is_err() {
+            eprintln!("ssh.exe not installed; skipped");
+            return;
+        }
+        let out = Arc::new(Mutex::new(String::new()));
+        let sink = out.clone();
+        let channel = Channel::new(move |body| {
+            if let InvokeResponseBody::Json(s) = body {
+                match serde_json::from_str(&s) {
+                    Ok(serde_json::Value::String(text)) => sink.lock().unwrap().push_str(&text),
+                    Ok(other) => sink.lock().unwrap().push_str(&format!("\n<<{other}>>")),
+                    Err(_) => {}
+                }
+            }
+            Ok(())
+        });
+        let mgr = PtyManager::default();
+        let id = mgr
+            .spawn(
+                SpawnRequest {
+                    shell: None,
+                    connection: Some(Connection {
+                        kind: connect::ConnectionKind::Ssh,
+                        host: "127.0.0.1".into(),
+                        port: Some(1),
+                        user: "nobody".into(),
+                        identity_file: String::new(),
+                        identity_key: String::new(),
+                        password_auth: false,
+                        legacy_algorithms: false,
+                        jump_host: String::new(),
+                        extra_args: vec!["-o".into(), "BatchMode=yes".into(), "-o".into(), "ConnectTimeout=5".into()],
+                    }),
+                    ssh_path: String::new(),
+                    key_dir: None,
+                    cwd: std::env::temp_dir().to_string_lossy().into(),
+                    command: None,
+                    env: HashMap::new(),
+                    shell_integration: false,
+                    cols: 120,
+                    rows: 30,
+                },
+                channel,
+            )
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut answered_dsr = false;
+        while Instant::now() < deadline {
+            let text = out.lock().unwrap().clone();
+            if !answered_dsr && text.contains("\x1b[6n") {
+                let _ = mgr.write(id, b"\x1b[1;1R");
+                answered_dsr = true;
+            }
+            if text.contains("<<{\"exit\"") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let text = out.lock().unwrap().clone();
+        mgr.kill(id);
+        // e.g. "connect to host 127.0.0.1 port 1: Connection refused" (wording varies by version)
+        assert!(text.contains("Connection"), "ssh error not shown:\n{text:?}");
+        assert!(text.contains("<<{\"exit\":255}>>"), "expected ssh's exit code 255:\n{text}");
+    }
+
+    #[test]
+    fn spawn_needs_a_shell_or_connection() {
+        let err = PtyManager::default()
+            .spawn(
+                SpawnRequest {
+                    shell: None,
+                    connection: None,
+                    ssh_path: String::new(),
+                    key_dir: None,
+                    cwd: std::env::temp_dir().to_string_lossy().into(),
+                    command: None,
+                    env: HashMap::new(),
+                    shell_integration: false,
+                    cols: 80,
+                    rows: 24,
+                },
+                Channel::new(|_| Ok(())),
+            )
+            .unwrap_err();
+        assert!(err.contains("no shell or connection"), "{err}");
     }
 }

@@ -61,6 +61,7 @@ export class Workspace implements PaneHost {
   private readonly paneTab = new Map<string, Tab>();
   private gpuOrder: string[] = [];
   readonly windowsBuild = store.sys.windowsBuild;
+  readonly homeDir = store.sys.homeDir;
 
   constructor(
     private readonly tabsEl: HTMLElement,
@@ -104,6 +105,17 @@ export class Workspace implements PaneHost {
     if (mode === 'always' || (mode === 'graceful' && code === 0)) this.closePane(pane.id);
   }
 
+  onConnectionChange(pane: Pane): void {
+    const conn = pane.connection;
+    const session = store.session(pane.spec.sessionId);
+    if (!conn || !session?.connection) return;
+    store.update((c) => {
+      const s = c.sessions.find((x) => x.id === session.id);
+      if (s?.connection) s.connection = { ...conn };
+    });
+    if (conn.legacyAlgorithms && !session.connection.legacyAlgorithms) toast(`"${session.name}" now allows old algorithms (Edit → SSH options).`);
+  }
+
   onShortcut(_pane: Pane, match: Match): boolean {
     return this.events.onShortcut(match);
   }
@@ -144,8 +156,9 @@ export class Workspace implements PaneHost {
     return tab.customTitle ?? (pane ? this.paneLabel(pane) : 'Terminal');
   }
 
-  /** The saved session a pane is in now: it follows `cd` (see ownerSession). */
+  /** The saved session a pane is in now: it follows `cd` (see ownerSession). A connection stays with its session. */
   ownerOf(pane: Pane): SavedSession | undefined {
+    if (pane.connection) return store.session(pane.spec.sessionId);
     return ownerSession(store.config.sessions, pane.cwd, pane.spec.sessionId);
   }
 
@@ -172,10 +185,17 @@ export class Workspace implements PaneHost {
     for (const t of this.tabs) this.updateTabEl(t);
   }
 
-  /** Spec for a new terminal next to `pane`: same shell and directory. */
+  /**
+   * Spec for a new terminal next to `pane`: same shell and directory. For a connection, a duplicate
+   * connects to the same host again and anything else is a local shell in the default directory.
+   */
   specFrom(pane: Pane, rerunCommand: boolean): LaunchSpec {
     // A duplicate gets its own Claude conversation rather than sharing this one.
     if (rerunCommand) return { ...pane.spec, cwd: pane.cwd, claudeId: undefined, claudeStarted: undefined };
+    if (pane.connection) {
+      const cwd = store.defaultCwd();
+      return { name: baseName(cwd), cwd, command: '', shellId: '', env: {}, color: '', sessionId: null };
+    }
     return {
       name: baseName(pane.cwd),
       cwd: pane.cwd,
@@ -255,7 +275,10 @@ export class Workspace implements PaneHost {
     return { version: 1, activeTab, tabs };
   }
 
-  /** Reopens a saved tab with all its splits; every pane starts its shell again. */
+  /**
+   * Reopens a saved tab with all its splits; every pane starts its shell again. Connections wait
+   * for Enter unless Settings say to reconnect, so a start doesn't fire a burst of logins.
+   */
   restoreTab(saved: TabSnapshot): Tab {
     const created: Pane[] = [];
     const root = layoutFromSnapshot(saved.root, (spec) => {
@@ -275,7 +298,10 @@ export class Workspace implements PaneHost {
     for (const p of created) p.mount();
     this.setActivePane(active.id, false);
     this.ensureGpu(tab);
-    for (const p of created) void p.start();
+    for (const p of created) {
+      if (p.connection && !store.settings.reconnectOnStart) p.showIdle();
+      else void p.start();
+    }
     this.events.onChange();
     return tab;
   }
@@ -511,9 +537,9 @@ export class Workspace implements PaneHost {
     const active = this.panes.get(tab.activePaneId);
     const label = this.tabLabel(tab);
     const progress = panes.some((p) => p.progress);
-    const exited = panes.length > 0 && panes.every((p) => p.state === 'exited' || p.state === 'error');
+    const exited = panes.length > 0 && panes.every((p) => p.state === 'exited' || p.state === 'error' || p.state === 'idle');
     (el.querySelector('.tab-label') as HTMLElement).textContent = label;
-    el.title = [label, active?.title && active.title !== label ? active.title : '', active?.cwd, panes.length > 1 ? `${panes.length} panes` : '']
+    el.title = [label, active?.title && active.title !== label ? active.title : '', active?.location, panes.length > 1 ? `${panes.length} panes` : '']
       .filter(Boolean)
       .join('\n');
     el.classList.toggle('active', tab.id === this.activeTabId);
@@ -595,7 +621,8 @@ export class Workspace implements PaneHost {
     const pane = this.panes.get(paneId);
     if (!pane) return;
     if (store.settings.confirmClose && (await pane.hasRunningProgram())) {
-      const ok = await confirmDialog(`Close "${pane.name}"?`, 'A program is still running in this terminal.', 'Close', true);
+      const why = pane.connection ? 'The connection is still open.' : 'A program is still running in this terminal.';
+      const ok = await confirmDialog(`Close "${pane.name}"?`, why, 'Close', true);
       if (!ok) return pane.focus();
     }
     this.closePane(paneId);

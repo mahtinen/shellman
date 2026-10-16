@@ -11,8 +11,30 @@ describe('normalizeConfig', () => {
   it('keeps valid sessions and fills in missing fields', () => {
     const c = normalizeConfig({ sessions: [{ id: 's1', name: 'My API', cwd: 'C:\\Projects\\my-api', command: 'claude' }] });
     expect(c.sessions).toEqual([
-      { id: 's1', name: 'My API', groupId: null, cwd: 'C:\\Projects\\my-api', command: 'claude', shellId: '', color: '', env: {}, collapsed: false },
+      { id: 's1', name: 'My API', groupId: null, connection: null, cwd: 'C:\\Projects\\my-api', command: 'claude', shellId: '', color: '', env: {}, collapsed: false },
     ]);
+  });
+
+  it('keeps SSH and Telnet sessions and drops invalid connections', () => {
+    const c = normalizeConfig({
+      sessions: [
+        { id: 'a', connection: { kind: 'ssh', host: ' web1 ', port: 2222, user: 'bob' }, cwd: 'C:\\ignored' },
+        { id: 'b', connection: { kind: 'telnet', host: 'router', port: 99999 } },
+        { id: 'c', connection: { kind: 'rdp', host: 'x' }, cwd: 'C:\\x' },
+      ],
+    });
+    expect(c.sessions[0]).toMatchObject({
+      name: 'web1',
+      cwd: '',
+      connection: { kind: 'ssh', host: 'web1', port: 2222, user: 'bob', identityFile: '', jumpHost: '', extraArgs: '' },
+    });
+    expect(c.sessions[1].connection).toMatchObject({ kind: 'telnet', host: 'router', port: null });
+    expect(c.sessions[2]).toMatchObject({ connection: null, cwd: 'C:\\x' });
+  });
+
+  it('defaults connection settings', () => {
+    expect(normalizeConfig({}).settings).toMatchObject({ reconnectOnStart: false, sshPath: '' });
+    expect(normalizeConfig({ settings: { reconnectOnStart: true, sshPath: ' C:\\ssh.exe ' } }).settings).toMatchObject({ reconnectOnStart: true, sshPath: 'C:\\ssh.exe' });
   });
 
   it('drops references to groups that do not exist', () => {
@@ -64,6 +86,17 @@ describe('helpers', () => {
     expect(baseName('C:\\Projects\\my-api\\')).toBe('my-api');
     expect(baseName('/home/x/proj')).toBe('proj');
     expect(baseName('C:\\')).toBe('C:');
+  });
+
+  it('ownerSession never gives a local terminal to an SSH session', () => {
+    const { sessions } = normalizeConfig({
+      sessions: [
+        { id: 'web', connection: { kind: 'ssh', host: 'web1' } },
+        { id: 'home', cwd: 'C:\\Users\\me' },
+      ],
+    });
+    expect(ownerSession(sessions, 'C:\\Users\\me', 'web')?.id).toBe('home');
+    expect(ownerSession(sessions, 'C:\\Temp', 'web')).toBeUndefined();
   });
 
   it('ownerSession follows the current directory', () => {

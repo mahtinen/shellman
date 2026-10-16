@@ -3,6 +3,7 @@ import './styles.css';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { api } from './api';
 import { baseName, uid } from './config';
+import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, emptyConnection, parseQuickConnect } from './connection';
 import { confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
 import { clamp, h, isEditableTarget, setChildren } from './dom';
 import { icons } from './icons';
@@ -16,7 +17,7 @@ import { openSettings, openShortcuts } from './settingsDialog';
 import { Sidebar, type OpenTerminal } from './sidebar';
 import { store } from './store';
 import { applyUiTheme, getTheme } from './themes';
-import type { Group, LaunchSpec, SavedSession, SplitPlacement } from './types';
+import type { Connection, Group, LaunchSpec, SavedSession, SplitPlacement } from './types';
 import { updater } from './updater';
 import { Workspace, type Tab } from './workspace';
 
@@ -57,7 +58,8 @@ class App {
       open: (s, placement, shellId, plain) => this.openSession(s, placement, shellId, plain),
       openGroup: (g) => this.openGroup(g),
       edit: (s) => void this.editExisting(s),
-      create: (groupId) => void this.createSession({ groupId }),
+      // "New session in group" is meant to be kept, so Remember starts ticked there.
+      create: (groupId, remember) => void this.createSession({ groupId }, { remember: remember ?? !!groupId }),
       duplicate: (s) =>
         store.update((c) => {
           const i = c.sessions.findIndex((x) => x.id === s.id);
@@ -68,6 +70,7 @@ class App {
       renameGroup: (g) => void this.renameGroup(g),
       removeGroup: (g) => void this.removeGroup(g),
       openFolder: (s) => void api.openDir(s.cwd).catch((e) => toast(String(e), 'error')),
+      copyCommand: (s) => s.connection && void this.copyConnectionCommand(s.connection),
       terminals: () => this.openTerminals(),
       focusTerminal: (id) => this.workspace.setActivePane(id, true),
       closeTerminal: (id) => void this.workspace.requestClosePane(id),
@@ -186,23 +189,54 @@ class App {
       this.statusRight.replaceChildren(h('span', { class: 'muted' }, `${shortcutFor('palette')} quick open`));
       return;
     }
-    const cwd = h('button', { class: 'status-link', title: 'Open in Explorer', onclick: () => void api.openDir(pane.cwd).catch((e) => toast(String(e), 'error')) }, pane.cwd);
+    const conn = pane.connection;
     const state =
-      pane.state === 'exited' ? `exited (${pane.exitCode ?? '?'})` : pane.state === 'error' ? 'failed' : pane.state === 'starting' ? 'starting…' : '';
-    setChildren(
-      this.statusLeft,
-      h(
-        'button',
-        {
-          class: 'status-shell',
-          title: 'Change shell or open another one here',
-          onclick: (e: MouseEvent) => showMenu(e.clientX, e.clientY - 4, [...this.changeShellEntries(pane), 'separator', ...this.newHereEntries(pane)]),
-        },
-        pane.shell?.name ?? '',
-      ),
-      cwd,
-      pane.spec.command ? h('span', { class: 'muted mono' }, `> ${pane.spec.command}`) : null,
-    );
+      pane.state === 'exited'
+        ? `${conn ? 'disconnected' : 'exited'} (${pane.exitCode ?? '?'})`
+        : pane.state === 'error'
+          ? 'failed'
+          : pane.state === 'starting'
+            ? conn ? 'connecting…' : 'starting…'
+            : pane.state === 'idle'
+              ? 'not connected'
+              : pane.state === 'login'
+                ? 'waiting for a user name'
+                : '';
+    if (conn) {
+      setChildren(
+        this.statusLeft,
+        h(
+          'button',
+          {
+            class: 'status-shell',
+            title: 'Reconnect or copy the command',
+            onclick: (e: MouseEvent) =>
+              showMenu(e.clientX, e.clientY - 4, [
+                { label: 'Reconnect', icon: 'globe', action: () => this.reconnect(pane) },
+                { label: `Copy ${connectionKindName(conn.kind)} command`, icon: 'copy', action: () => void this.copyConnectionCommand(conn) },
+              ]),
+          },
+          connectionKindName(conn.kind),
+        ),
+        h('span', { class: 'muted mono' }, connectionTarget(conn)),
+      );
+    } else {
+      const cwd = h('button', { class: 'status-link', title: 'Open in Explorer', onclick: () => void api.openDir(pane.cwd).catch((e) => toast(String(e), 'error')) }, pane.cwd);
+      setChildren(
+        this.statusLeft,
+        h(
+          'button',
+          {
+            class: 'status-shell',
+            title: 'Change shell or open another one here',
+            onclick: (e: MouseEvent) => showMenu(e.clientX, e.clientY - 4, [...this.changeShellEntries(pane), 'separator', ...this.newHereEntries(pane)]),
+          },
+          pane.shell?.name ?? '',
+        ),
+        cwd,
+        pane.spec.command ? h('span', { class: 'muted mono' }, `> ${pane.spec.command}`) : null,
+      );
+    }
     setChildren(
       this.statusRight,
       state ? h('span', { class: 'status-state' }, state) : null,
@@ -222,10 +256,15 @@ class App {
     const card = (s: SavedSession) =>
       h(
         'button',
-        { class: 'welcome-card', style: s.color ? `--session-color:${s.color}` : undefined, title: s.cwd, onclick: () => this.openSession(s, 'tab') },
-        h('span', { class: 'welcome-card-icon', html: icons.terminal }),
+        {
+          class: 'welcome-card',
+          style: s.color ? `--session-color:${s.color}` : undefined,
+          title: s.connection ? connectionLabel(s.connection) : s.cwd,
+          onclick: () => this.openSession(s, 'tab'),
+        },
+        h('span', { class: 'welcome-card-icon', html: s.connection ? icons.globe : icons.terminal }),
         h('span', { class: 'welcome-card-name' }, s.name),
-        h('span', { class: 'welcome-card-sub' }, s.command || baseName(s.cwd)),
+        h('span', { class: 'welcome-card-sub' }, s.connection ? connectionLabel(s.connection) : s.command || baseName(s.cwd)),
       );
     setChildren(
       this.welcomeEl,
@@ -240,6 +279,7 @@ class App {
           h('button', { class: 'btn primary', onclick: () => this.newTerminal('tab') }, h('span', { html: icons.terminal }), 'New terminal'),
           h('button', { class: 'btn', onclick: () => void this.openDirectory() }, h('span', { html: icons.folder }), 'Open directory…'),
           h('button', { class: 'btn', onclick: () => void this.createSession({}) }, h('span', { html: icons.plus }), 'New session…'),
+          h('button', { class: 'btn', onclick: () => this.newConnection() }, h('span', { html: icons.globe }), 'New connection…'),
         ),
         sessions.length ? h('div', { class: 'welcome-grid' }, ...sessions.slice(0, 24).map(card)) : null,
         h(
@@ -247,7 +287,8 @@ class App {
           { class: 'welcome-tips' },
           ...(
             [
-              ['palette', 'quick open a saved session'],
+              ['palette', 'quick open a saved session, or type user@host'],
+              ['newConnection', 'new SSH or Telnet connection'],
               ['newTab', 'new tab in the current directory'],
               ['splitRight', 'split right'],
               ['splitDown', 'split down'],
@@ -353,7 +394,44 @@ class App {
   }
 
   private sessionSpec(s: SavedSession): LaunchSpec {
+    if (s.connection) return this.connectionSpec(s.connection, s);
     return { name: s.name, cwd: s.cwd, command: s.command, shellId: s.shellId, env: { ...s.env }, color: s.color, sessionId: s.id };
+  }
+
+  /** A connection, from a saved session or typed (ad hoc). The client runs in the home directory. */
+  private connectionSpec(c: Connection, s?: SavedSession): LaunchSpec {
+    return {
+      name: s?.name ?? connectionTarget(c),
+      cwd: store.sys.homeDir,
+      command: '',
+      shellId: '',
+      env: { ...s?.env },
+      color: s?.color ?? '',
+      sessionId: s?.id ?? null,
+      connection: { ...c },
+    };
+  }
+
+  private openConnection(c: Connection, placement: SplitPlacement): void {
+    const pane = this.workspace.activePane();
+    this.workspace.open(this.connectionSpec(c), pane ? placement : 'tab', pane?.id);
+  }
+
+  private newConnection(): void {
+    void this.createSession({ connection: emptyConnection('ssh') });
+  }
+
+  private reconnect(pane: Pane): void {
+    pane.restart();
+    this.workspace.setActivePane(pane.id, true);
+  }
+
+  private async copyConnectionCommand(c: Connection): Promise<void> {
+    const keyFile = c.kind === 'ssh' && c.identityKey ? await api.sshPublicKeyFile(c.identityKey).catch(() => '') : '';
+    await api.clipboardWrite(connectionCommand(c, keyFile)).then(
+      () => toast('Command copied'),
+      (e) => toast(String(e), 'error'),
+    );
   }
 
   /** New plain shell next to the active pane (same directory and shell). */
@@ -368,7 +446,7 @@ class App {
   openSession(s: SavedSession, placement: SplitPlacement, shellId?: string, plain = false): void {
     const pane = this.workspace.activePane();
     const spec = this.sessionSpec(s);
-    if (shellId !== undefined) spec.shellId = shellId;
+    if (shellId !== undefined && !s.connection) spec.shellId = shellId;
     if (plain) spec.command = '';
     this.workspace.open(spec, pane ? placement : 'tab', pane?.id);
   }
@@ -410,7 +488,7 @@ class App {
       for (const p of panes) {
         // Opened from a session, or (for ad-hoc terminals) sitting in a session's directory.
         const owner = this.workspace.ownerOf(p)?.id ?? null;
-        const shell = p.shell?.name ?? '';
+        const shell = p.connection ? connectionKindName(p.connection.kind) : (p.shell?.name ?? '');
         // Same name as the tab (a renamed tab's name applies when it is the only pane).
         const label = (panes.length === 1 ? tab.customTitle : null) || this.workspace.paneLabel(p);
         const status: OpenTerminal['status'] =
@@ -431,7 +509,7 @@ class App {
           tab: i + 1,
           label,
           shell: label === shell ? '' : shell,
-          tooltip: [`Tab ${i + 1}${panes.length > 1 ? ` (${panes.length} panes)` : ''}: ${this.workspace.tabLabel(tab)}`, p.cwd, '', 'Click: focus · Middle-click: close'].join('\n'),
+          tooltip: [`Tab ${i + 1}${panes.length > 1 ? ` (${panes.length} panes)` : ''}: ${this.workspace.tabLabel(tab)}`, p.location, '', 'Click: focus · Middle-click: close'].join('\n'),
           active: p === active,
           status,
         });
@@ -461,6 +539,7 @@ class App {
       { label: 'Open directory…', icon: 'folder', action: () => void this.openDirectory() },
       { label: 'New terminal in default directory', icon: 'terminal', action: () => this.workspace.open(this.defaultSpec(), 'tab') },
       { label: 'Quick open saved session…', icon: 'search', shortcut: shortcutFor('palette'), action: () => this.palette() },
+      { label: 'New connection…', icon: 'globe', shortcut: shortcutFor('newConnection'), action: () => this.newConnection() },
       'separator',
       { label: 'Settings', icon: 'gear', shortcut: shortcutFor('settings'), action: () => openSettings() },
       { label: 'Keyboard shortcuts', icon: 'keyboard', action: () => openShortcuts() },
@@ -470,7 +549,8 @@ class App {
   private palette(): void {
     const items: PaletteItem[] = store.config.sessions.map((s) => ({
       label: s.name,
-      detail: s.command ? `${s.command} · ${s.cwd}` : s.cwd,
+      detail: s.connection ? connectionLabel(s.connection) : s.command ? `${s.command} · ${s.cwd}` : s.cwd,
+      icon: s.connection ? 'globe' : undefined,
       color: s.color,
       keywords: [store.config.groups.find((g) => g.id === s.groupId)?.name ?? ''],
       run: (placement) => this.openSession(s, placement),
@@ -485,13 +565,42 @@ class App {
       });
     }
     items.push({ label: 'Open directory…', icon: 'folder', run: (placement) => void this.openDirectory(placement) });
-    showPalette(items);
+    items.push({ label: 'New connection…', icon: 'globe', detail: 'SSH or Telnet', run: () => this.newConnection() });
+    showPalette(items, 'Open a saved session, or type user@host to connect…', (q) => {
+      const c = parseQuickConnect(q);
+      if (!c) return [];
+      const connect = (conn: Connection, label: string): PaletteItem => ({
+        label,
+        detail: connectionCommand(conn),
+        icon: 'globe',
+        run: (placement) => this.openConnection(conn, placement),
+      });
+      const items = [connect(c, `Connect to ${connectionTarget(c)}`)];
+      // Password servers may never get to ask when the agent offers many keys first.
+      if (c.kind === 'ssh' && !c.passwordAuth) items.push(connect({ ...c, passwordAuth: true }, `Connect to ${connectionTarget(c)} with a password`));
+      return items;
+    });
   }
 
   // ---- sessions & groups ----------------------------------------------
 
-  private async createSession(initial: Partial<SavedSession>, fromPane?: Pane): Promise<void> {
-    const res = await editSession(initial, true);
+  /** Opens a new terminal or connection from the dialog; it is saved only if "Remember" was ticked. */
+  private async createSession(initial: Partial<SavedSession>, opts: { remember?: boolean } = {}): Promise<void> {
+    const res = await editSession(initial, 'new', opts);
+    if (!res) return;
+    const pane = this.workspace.activePane();
+    if (!res.save) {
+      this.workspace.open({ ...this.sessionSpec(res.session), sessionId: null }, 'tab', pane?.id);
+      return;
+    }
+    store.update((c) => c.sessions.push(res.session));
+    this.openSession(res.session, 'tab');
+    toast(`Saved "${res.session.name}"`);
+  }
+
+  /** Saves a session, from an open pane (which then belongs to it) or from scratch. */
+  private async saveSession(initial: Partial<SavedSession>, fromPane?: Pane): Promise<void> {
+    const res = await editSession(initial, 'save');
     if (!res) return;
     store.update((c) => c.sessions.push(res.session));
     if (fromPane && !fromPane.spec.sessionId) {
@@ -499,15 +608,15 @@ class App {
       fromPane.rename(res.session.name);
       this.sidebar.render();
     }
-    if (res.openAfter) this.openSession(res.session, 'tab');
     toast(`Saved "${res.session.name}"`);
   }
 
   private saveAsSession(pane: Pane): void {
-    void this.createSession(
+    void this.saveSession(
       {
         name: pane.spec.sessionId ? `${pane.name} (copy)` : pane.name,
-        cwd: pane.cwd,
+        connection: pane.connection ? { ...pane.connection } : null,
+        cwd: pane.connection ? '' : pane.cwd,
         command: pane.spec.command,
         shellId: pane.spec.shellId,
         color: pane.spec.color,
@@ -518,7 +627,7 @@ class App {
   }
 
   private async editExisting(s: SavedSession): Promise<void> {
-    const res = await editSession(s, false);
+    const res = await editSession(s, 'edit');
     if (!res) return;
     store.update((c) => {
       const i = c.sessions.findIndex((x) => x.id === s.id);
@@ -559,6 +668,8 @@ class App {
 
   private paneMenu(pane: Pane, e: MouseEvent): void {
     const hasSel = pane.term.hasSelection();
+    const conn = pane.connection;
+    const localOnly = (entries: MenuEntry[]): MenuEntry[] => (conn ? [] : entries);
     showMenu(e.clientX, e.clientY, [
       { label: 'Copy', icon: 'copy', shortcut: 'Ctrl+C', disabled: !hasSel, action: () => void pane.copySelection(true) },
       { label: 'Paste', icon: 'paste', shortcut: 'Ctrl+V', action: () => void pane.paste() },
@@ -569,18 +680,27 @@ class App {
         label: 'Duplicate',
         icon: 'duplicate',
         shortcut: shortcutFor('duplicate'),
-        disabled: !pane.spec.command,
+        disabled: !pane.spec.command && !conn,
         action: () => this.workspace.open(this.workspace.specFrom(pane, true), 'right', pane.id),
       },
-      { label: 'New tab here', icon: 'terminal', shortcut: shortcutFor('newTab'), action: () => this.workspace.open(this.workspace.specFrom(pane, false), 'tab') },
-      { label: 'New tab here with', icon: 'terminal', submenu: this.newHereEntries(pane) },
-      { label: 'Switch shell', icon: 'terminal', submenu: this.changeShellEntries(pane) },
+      {
+        label: conn ? 'New local tab' : 'New tab here',
+        icon: 'terminal',
+        shortcut: shortcutFor('newTab'),
+        action: () => this.workspace.open(this.workspace.specFrom(pane, false), 'tab'),
+      },
+      ...localOnly([
+        { label: 'New tab here with', icon: 'terminal', submenu: this.newHereEntries(pane) },
+        { label: 'Switch shell', icon: 'terminal', submenu: this.changeShellEntries(pane) },
+      ]),
       'separator',
       { label: 'Find…', icon: 'search', shortcut: shortcutFor('find'), action: () => pane.openSearch() },
       { label: 'Save as session…', icon: 'save', shortcut: shortcutFor('saveSession'), action: () => this.saveAsSession(pane) },
-      { label: 'Open folder in Explorer', icon: 'openExternal', action: () => void api.openDir(pane.cwd).catch((err) => toast(String(err), 'error')) },
+      conn
+        ? { label: `Copy ${connectionKindName(conn.kind)} command`, icon: 'copy', action: () => void this.copyConnectionCommand(conn) }
+        : { label: 'Open folder in Explorer', icon: 'openExternal', action: () => void api.openDir(pane.cwd).catch((err) => toast(String(err), 'error')) },
       { label: 'Clear', action: () => pane.term.clear() },
-      { label: 'Restart', action: () => pane.restart() },
+      { label: conn ? 'Reconnect' : 'Restart', action: () => pane.restart() },
       'separator',
       { label: 'Close pane', icon: 'x', danger: true, shortcut: shortcutFor('closePane'), action: () => void this.workspace.requestClosePane(pane.id) },
     ]);
@@ -589,6 +709,19 @@ class App {
   /** Context menu for a terminal in the sidebar tree. */
   private terminalMenu(pane: Pane, e: MouseEvent): void {
     const tab = this.workspace.tabOf(pane);
+    if (pane.connection) {
+      showMenu(e.clientX, e.clientY, [
+        { label: 'Focus', icon: 'globe', action: () => this.workspace.setActivePane(pane.id, true) },
+        { label: 'Connect again in split right', icon: 'splitRight', action: () => this.workspace.open(this.workspace.specFrom(pane, true), 'right', pane.id) },
+        { label: 'Connect again in split down', icon: 'splitDown', action: () => this.workspace.open(this.workspace.specFrom(pane, true), 'down', pane.id) },
+        'separator',
+        { label: 'Rename tab…', icon: 'edit', disabled: !tab, action: () => tab && void this.renameTab(tab) },
+        { label: 'Reconnect', action: () => this.reconnect(pane) },
+        'separator',
+        { label: 'Close', icon: 'x', danger: true, action: () => void this.workspace.requestClosePane(pane.id) },
+      ]);
+      return;
+    }
     showMenu(e.clientX, e.clientY, [
       { label: 'Focus', icon: 'terminal', action: () => this.workspace.setActivePane(pane.id, true) },
       { label: 'Split right here', icon: 'splitRight', action: () => this.openHere(pane, pane.spec.shellId, 'right') },
@@ -691,6 +824,9 @@ class App {
       case 'palette':
         this.palette();
         return true;
+      case 'newConnection':
+        this.newConnection();
+        return true;
       case 'toggleSidebar':
         this.toggleSidebar();
         return true;
@@ -699,7 +835,7 @@ class App {
         return true;
       case 'saveSession':
         if (pane) this.saveAsSession(pane);
-        else void this.createSession({});
+        else void this.saveSession({});
         return true;
       case 'renameTab':
         if (ws.activeTab) void this.renameTab(ws.activeTab);

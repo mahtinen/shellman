@@ -7,6 +7,7 @@ export const icons = {
   chevronDown: svg('<path d="M4 6l4 4 4-4"/>'),
   chevronRight: svg('<path d="M6 4l4 4-4 4"/>'),
   folder: svg('<path d="M1.75 4.25c0-.69.56-1.25 1.25-1.25h3l1.5 1.5H13c.69 0 1.25.56 1.25 1.25v6c0 .69-.56 1.25-1.25 1.25H3c-.69 0-1.25-.56-1.25-1.25z"/>'),
+  globe: svg('<circle cx="8" cy="8" r="6.25"/><path d="M1.75 8h12.5M8 1.75c1.65 1.75 2.5 3.85 2.5 6.25S9.65 12.5 8 14.25C6.35 12.5 5.5 10.4 5.5 8S6.35 3.5 8 1.75z"/>'),
   folderPlus: svg('<path d="M1.75 4.25c0-.69.56-1.25 1.25-1.25h3l1.5 1.5H13c.69 0 1.25.56 1.25 1.25v6c0 .69-.56 1.25-1.25 1.25H3c-.69 0-1.25-.56-1.25-1.25z"/><path d="M8 7v4M6 9h4"/>'),
   terminal: svg('<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><path d="M4.5 6l2 2-2 2M8.5 10.5h3"/>'),
   splitRight: svg('<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><path d="M8 2.75v10.5"/>'),
