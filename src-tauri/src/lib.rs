@@ -61,14 +61,16 @@ fn pty_kill(state: State<'_, PtyManager>, id: u32) {
 }
 
 /// Ends every terminal. Used before the updater exits the app, which skips `RunEvent::Exit`.
+/// Async: closing pseudoconsoles can block, and must not freeze the window.
 #[tauri::command]
-fn pty_kill_all(state: State<'_, PtyManager>) {
+async fn pty_kill_all(state: State<'_, PtyManager>) -> Result<(), String> {
     state.kill_all();
+    Ok(())
 }
 
 #[tauri::command]
 async fn pty_has_children(state: State<'_, PtyManager>, id: u32) -> Result<bool, String> {
-    Ok(state.has_children(id))
+    state.has_children(id)
 }
 
 #[tauri::command]
@@ -92,7 +94,7 @@ fn config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 #[tauri::command]
-async fn config_load(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+async fn config_load(app: tauri::AppHandle) -> Result<config::Loaded, String> {
     config::load(&config_dir(&app)?)
 }
 
@@ -102,7 +104,7 @@ async fn config_save(app: tauri::AppHandle, config: Value) -> Result<(), String>
 }
 
 #[tauri::command]
-async fn workspace_load(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+async fn workspace_load(app: tauri::AppHandle) -> Result<config::Loaded, String> {
     config::load_file(&config_dir(&app)?, config::WORKSPACE_FILE)
 }
 
@@ -130,7 +132,8 @@ async fn clipboard_write(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn dir_exists(path: String) -> bool {
+// Async (off the main thread): a folder on an offline network drive can take many seconds.
+async fn dir_exists(path: String) -> bool {
     std::path::Path::new(&path).is_dir()
 }
 
@@ -150,7 +153,7 @@ fn open_url(url: String) -> Result<(), String> {
 
 /// Opens a directory in Explorer.
 #[tauri::command]
-fn open_dir(path: String) -> Result<(), String> {
+async fn open_dir(path: String) -> Result<(), String> {
     if !std::path::Path::new(&path).is_dir() {
         return Err(format!("Directory not found: {path}"));
     }
@@ -225,6 +228,16 @@ pub fn run() {
     // The window-state plugin always writes to the real profile; a separate profile must not
     // overwrite the window position of the Shellman that is in use.
     if config_dir_override().is_none() {
+        // One Shellman per profile: a second one would reopen the same tabs (and Claude
+        // conversations) and overwrite the other's settings. Starting it again focuses this one.
+        // A separate profile (the e2e tests) may run next to it.
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }));
         builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     }
     let app = builder

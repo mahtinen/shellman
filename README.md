@@ -63,7 +63,8 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   - Ctrl+V forwards to Claude when the clipboard holds an image.
   - Background tabs show when a session is producing output or has finished.
   - Bells and OSC 9 / OSC 777 notifications flash the taskbar and show a toast.
-  - Closing a pane, tab or the window warns if a program (like `claude`) is still running.
+  - Closing a pane, tab or the window warns if a program (like `claude`) is still running. (Programs inside
+    WSL can't be seen from Windows, so there it warns when the terminal was started with a command.)
 - **Quick open** (Ctrl+Shift+P): fuzzy-search saved sessions; Enter = tab, Ctrl+Enter = split right,
   Shift+Enter = split down.
 - **Other terminal features.** Find (Ctrl+Shift+F), clickable links (Ctrl+Click), copy on select, right-click paste,
@@ -77,7 +78,9 @@ SmartScreen may ask you to confirm (More info → Run anyway). If you build it y
 `src-tauri\target\release\bundle\nsis\`.
 
 Settings and sessions are stored in `%APPDATA%\app.shellman.desktop\config.json`. Every save also keeps
-the previous version as `config.json.bak`.
+the previous version as `config.json.bak`. If `config.json` can't be parsed (say, after a hand edit), it is
+moved aside as `config.json.corrupt-…` and the backup is loaded instead, with a message saying so. Only one
+Shellman runs at a time: starting it again brings the open window to the front.
 
 ### Updates
 

@@ -5,6 +5,12 @@ import type { Config, ShellProfile, SystemInfo } from './types';
 
 export type PtyMessage = string | { exit: number | null };
 
+/** A loaded file. `notice` says it was corrupt (and whether its backup was used instead). */
+export interface Loaded<T> {
+  value: T | null;
+  notice: string | null;
+}
+
 export interface SpawnRequest {
   /** Null when connecting to a remote host. */
   shell: ShellProfile | null;
@@ -47,9 +53,9 @@ export const api = {
   listShells: () => invoke<ShellProfile[]>('list_shells'),
   sshAgentKeys: (sshPath: string) => invoke<AgentKeys>('ssh_agent_keys', { sshPath }),
   sshPublicKeyFile: (key: string) => invoke<string>('ssh_public_key_file', { key }),
-  loadConfig: () => invoke<Partial<Config> | null>('config_load'),
+  loadConfig: () => invoke<Loaded<Partial<Config>>>('config_load'),
   saveConfig: (config: Config) => invoke<void>('config_save', { config }),
-  loadWorkspace: () => invoke<unknown>('workspace_load'),
+  loadWorkspace: () => invoke<Loaded<unknown>>('workspace_load'),
   saveWorkspace: (workspace: WorkspaceSnapshot) => invoke<void>('workspace_save', { workspace }),
   clipboardRead: () => invoke<string>('clipboard_read'),
   clipboardWrite: (text: string) => invoke<void>('clipboard_write', { text }),

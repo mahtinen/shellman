@@ -62,6 +62,8 @@ export class Workspace implements PaneHost {
   private gpuOrder: string[] = [];
   readonly windowsBuild = store.sys.windowsBuild;
   readonly homeDir = store.sys.homeDir;
+  /** Set while an update is being installed: its ended terminals must not close their panes. */
+  keepPanesOnExit = false;
 
   constructor(
     private readonly tabsEl: HTMLElement,
@@ -101,6 +103,7 @@ export class Workspace implements PaneHost {
   }
 
   onExit(pane: Pane, code: number | null): void {
+    if (this.keepPanesOnExit) return;
     const mode = store.settings.closeOnExit;
     if (mode === 'always' || (mode === 'graceful' && code === 0)) this.closePane(pane.id);
   }
@@ -109,9 +112,11 @@ export class Workspace implements PaneHost {
     const conn = pane.connection;
     const session = store.session(pane.spec.sessionId);
     if (!conn || !session?.connection) return;
+    // Only the flag: the pane's copy may also hold a user name typed at "login as:", and the
+    // session may have been edited since the pane opened.
     store.update((c) => {
       const s = c.sessions.find((x) => x.id === session.id);
-      if (s?.connection) s.connection = { ...conn };
+      if (s?.connection) s.connection.legacyAlgorithms = conn.legacyAlgorithms;
     });
     if (conn.legacyAlgorithms && !session.connection.legacyAlgorithms) toast(`"${session.name}" now allows old algorithms (Edit → SSH options).`);
   }

@@ -8,7 +8,7 @@
 //!   pseudoconsole is closed, so this is what lets the reader finish.
 
 use crate::connect::{self, Connection};
-use crate::shell::{build_launch, ShellProfile};
+use crate::shell::{build_launch, ShellKind, ShellProfile};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -27,6 +27,19 @@ struct Session {
     input: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     pid: Option<u32>,
+    busy_check: BusyCheck,
+}
+
+/// How to tell whether a terminal's shell is running a program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BusyCheck {
+    /// Any child process of the shell.
+    Children,
+    /// Git Bash's `bin\bash.exe` is a launcher for `usr\bin\bash.exe` (and `exec` leaves a stub
+    /// bash behind), so look through bash children with the same name first.
+    ThroughLauncher,
+    /// WSL: programs run inside Linux and aren't Windows processes.
+    Unknown,
 }
 
 impl Session {
@@ -40,7 +53,8 @@ impl Session {
 
 #[derive(Default)]
 pub struct PtyManager {
-    sessions: Mutex<HashMap<u32, Arc<Session>>>,
+    /// Shared with the reader threads, which remove their session once it has ended.
+    sessions: Arc<Mutex<HashMap<u32, Arc<Session>>>>,
     next_id: AtomicU32,
 }
 
@@ -139,6 +153,11 @@ impl PtyManager {
             (None, Some(shell)) => build_launch(shell, &req.cwd, req.command.as_deref(), req.shell_integration),
             (None, None) => return Err("Nothing to start: no shell or connection given".into()),
         };
+        let busy_check = match (&req.connection, &req.shell) {
+            (None, Some(shell)) if shell.kind == ShellKind::Bash => BusyCheck::ThroughLauncher,
+            (None, Some(shell)) if shell.kind == ShellKind::Wsl => BusyCheck::Unknown,
+            _ => BusyCheck::Children,
+        };
 
         let pair = native_pty_system()
             .openpty(size(req.cols, req.rows))
@@ -175,10 +194,12 @@ impl PtyManager {
             input: Mutex::new(Some(input_tx)),
             killer: Mutex::new(child.clone_killer()),
             pid: child.process_id(),
+            busy_check,
         });
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         self.sessions.lock().unwrap().insert(id, session.clone());
+        let sessions = self.sessions.clone();
 
         std::thread::Builder::new()
             .name(format!("pty-{id}-write"))
@@ -227,6 +248,9 @@ impl PtyManager {
                 let code = exit_rx.recv_timeout(Duration::from_secs(10)).ok();
                 let msg = serde_json::json!({ "exit": code }).to_string();
                 let _ = output.send(InvokeResponseBody::Json(msg));
+                // The terminal has ended: drop it here, or it stays (with its process handle)
+                // until the pane is closed.
+                sessions.lock().unwrap().remove(&id);
             })
             .map_err(|e| e.to_string())?;
 
@@ -237,8 +261,10 @@ impl PtyManager {
         self.sessions.lock().unwrap().get(&id).cloned()
     }
 
+    /// Writing to a terminal that has just ended is not an error: the frontend learns about the
+    /// exit a moment later.
     pub fn write(&self, id: u32, data: &[u8]) -> Result<(), String> {
-        let session = self.get(id).ok_or("No such terminal")?;
+        let Some(session) = self.get(id) else { return Ok(()) };
         if let Some(tx) = session.input.lock().unwrap().as_ref() {
             let _ = tx.send(data.to_vec());
         }
@@ -246,7 +272,7 @@ impl PtyManager {
     }
 
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
-        let session = self.get(id).ok_or("No such terminal")?;
+        let Some(session) = self.get(id) else { return Ok(()) };
         let guard = session.master.lock().unwrap();
         match guard.as_ref() {
             Some(m) => m.resize(size(cols, rows)).map_err(|e| e.to_string()),
@@ -256,11 +282,14 @@ impl PtyManager {
 
     /// True when the terminal's shell has started programs that are still
     /// running (e.g. `claude` or a dev server), i.e. closing it would lose work.
-    pub fn has_children(&self, id: u32) -> bool {
-        self.get(id)
-            .and_then(|s| s.pid)
-            .map(|pid| !child_processes(pid).is_empty())
-            .unwrap_or(false)
+    /// An error means it can't be told (WSL); the caller decides.
+    pub fn has_children(&self, id: u32) -> Result<bool, String> {
+        let Some(session) = self.get(id) else { return Ok(false) };
+        let Some(pid) = session.pid else { return Ok(false) };
+        match session.busy_check {
+            BusyCheck::Unknown => Err("Programs running inside WSL can't be seen from Windows".into()),
+            check => Ok(busy(&processes(), pid, check == BusyCheck::ThroughLauncher)),
+        }
     }
 
     /// Closes the terminal and terminates its process. Returns immediately.
@@ -285,9 +314,43 @@ impl PtyManager {
     }
 }
 
-/// Process ids whose parent is `pid`.
+/// One running process.
+#[derive(Clone, Debug)]
+pub struct Proc {
+    pub pid: u32,
+    pub ppid: u32,
+    pub exe: String,
+}
+
+fn children(procs: &[Proc], pid: u32) -> Vec<&Proc> {
+    procs.iter().filter(|p| p.ppid == pid && p.pid != pid).collect()
+}
+
+/// Whether the shell `pid` runs a program. With `through_launcher`, a chain of single children
+/// with the shell's own executable name (a launcher, or the stub `exec` leaves) is the shell
+/// itself, so only what runs below it counts.
+pub fn busy(procs: &[Proc], pid: u32, through_launcher: bool) -> bool {
+    let mut shell = pid;
+    let mut kids = children(procs, shell);
+    if through_launcher {
+        let name = procs.iter().find(|p| p.pid == pid).map(|p| p.exe.as_str()).unwrap_or("");
+        // Bounded, in case process ids were reused into a loop.
+        for _ in 0..8 {
+            match kids.as_slice() {
+                [only] if !name.is_empty() && only.exe.eq_ignore_ascii_case(name) => {
+                    shell = only.pid;
+                    kids = children(procs, shell);
+                }
+                _ => break,
+            }
+        }
+    }
+    !kids.is_empty()
+}
+
+/// All running processes.
 #[cfg(windows)]
-pub fn child_processes(pid: u32) -> Vec<u32> {
+pub fn processes() -> Vec<Proc> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -303,9 +366,12 @@ pub fn child_processes(pid: u32) -> Vec<u32> {
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         if Process32FirstW(snap, &mut entry) != 0 {
             loop {
-                if entry.th32ParentProcessID == pid && entry.th32ProcessID != pid {
-                    out.push(entry.th32ProcessID);
-                }
+                let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                out.push(Proc {
+                    pid: entry.th32ProcessID,
+                    ppid: entry.th32ParentProcessID,
+                    exe: String::from_utf16_lossy(&entry.szExeFile[..len]),
+                });
                 if Process32NextW(snap, &mut entry) == 0 {
                     break;
                 }
@@ -317,7 +383,7 @@ pub fn child_processes(pid: u32) -> Vec<u32> {
 }
 
 #[cfg(not(windows))]
-pub fn child_processes(_pid: u32) -> Vec<u32> {
+pub fn processes() -> Vec<Proc> {
     Vec::new()
 }
 
@@ -467,7 +533,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut found = false;
         while Instant::now() < deadline {
-            if mgr.has_children(id) {
+            if mgr.has_children(id).unwrap() {
                 found = true;
                 break;
             }
@@ -475,7 +541,7 @@ mod tests {
         }
         mgr.kill(id);
         assert!(found, "ping was not detected as a child of cmd.exe");
-        assert!(!mgr.has_children(id), "killed session must report no children");
+        assert!(!mgr.has_children(id).unwrap(), "killed session must report no children");
     }
 
     /// Runs the real Windows ssh.exe through ConPTY against a closed local port: its error
@@ -546,6 +612,112 @@ mod tests {
         // e.g. "connect to host 127.0.0.1 port 1: Connection refused" (wording varies by version)
         assert!(text.contains("Connection"), "ssh error not shown:\n{text:?}");
         assert!(text.contains("<<{\"exit\":255}>>"), "expected ssh's exit code 255:\n{text}");
+    }
+
+    fn proc(pid: u32, ppid: u32, exe: &str) -> Proc {
+        Proc { pid, ppid, exe: exe.into() }
+    }
+
+    #[test]
+    fn busy_looks_through_the_git_bash_launcher() {
+        // bin\bash.exe (10) -> usr\bin\bash.exe (11) [-> stub after exec -> bash (12)]
+        let idle = [proc(10, 1, "bash.exe"), proc(11, 10, "bash.exe")];
+        assert!(!busy(&idle, 10, true));
+        assert!(busy(&idle, 10, false), "without looking through, the launcher's child counts");
+        let after_exec = [proc(10, 1, "bash.exe"), proc(11, 10, "bash.exe"), proc(12, 11, "bash.exe")];
+        assert!(!busy(&after_exec, 10, true));
+        let running = [proc(10, 1, "bash.exe"), proc(11, 10, "bash.exe"), proc(13, 11, "node.exe")];
+        assert!(busy(&running, 10, true));
+        // A shell that isn't a launcher: its only child is a real program.
+        let cmd = [proc(20, 1, "cmd.exe"), proc(21, 20, "ping.exe")];
+        assert!(busy(&cmd, 20, true));
+        assert!(!busy(&[proc(30, 1, "pwsh.exe")], 30, false));
+    }
+
+    /// Spawns `shell` with `command`, answers ConPTY's start-up cursor query and waits until
+    /// `ready` appears in the output.
+    fn spawn_ready(mgr: &Arc<PtyManager>, shell: ShellProfile, command: Option<&str>, ready: &str) -> u32 {
+        let out = Arc::new(Mutex::new(String::new()));
+        let sink = out.clone();
+        let channel = Channel::new(move |body| {
+            if let InvokeResponseBody::Json(s) = body {
+                if let Ok(serde_json::Value::String(text)) = serde_json::from_str(&s) {
+                    sink.lock().unwrap().push_str(&text);
+                }
+            }
+            Ok(())
+        });
+        let id = mgr
+            .spawn(
+                SpawnRequest {
+                    shell: Some(shell),
+                    connection: None,
+                    ssh_path: String::new(),
+                    key_dir: None,
+                    cwd: std::env::temp_dir().to_string_lossy().into(),
+                    command: command.map(Into::into),
+                    env: HashMap::new(),
+                    shell_integration: false,
+                    cols: 120,
+                    rows: 30,
+                },
+                channel,
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut answered = false;
+        while Instant::now() < deadline {
+            let text = out.lock().unwrap().clone();
+            if !answered && text.contains("\x1b[6n") {
+                mgr.write(id, b"\x1b[1;1R").unwrap();
+                answered = true;
+            }
+            if text.contains(ready) {
+                return id;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("{ready:?} never appeared:\n{}", out.lock().unwrap());
+    }
+
+    /// An idle Git Bash is not busy (its launcher and the `exec` stub are bash itself), one
+    /// running a program is.
+    #[test]
+    fn git_bash_busy_only_when_running_a_program() {
+        let Some(bash) = detect_shells().into_iter().find(|s| s.kind == crate::shell::ShellKind::Bash) else {
+            eprintln!("Git Bash not installed; skipped");
+            return;
+        };
+        let mgr = Arc::new(PtyManager::default());
+        // A startup command makes bash `exec` a new shell afterwards, which leaves a stub process.
+        let idle = spawn_ready(&mgr, bash.clone(), Some("echo idle-$((40+2))"), "idle-42");
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!mgr.has_children(idle).unwrap(), "idle Git Bash reported as busy:\n{:#?}", processes().iter().filter(|p| p.exe.eq_ignore_ascii_case("bash.exe")).collect::<Vec<_>>());
+        mgr.kill(idle);
+
+        let running = spawn_ready(&mgr, bash, Some("echo running-$((40+2)); sleep 30"), "running-42");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut found = false;
+        while Instant::now() < deadline && !found {
+            found = mgr.has_children(running).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        mgr.kill(running);
+        assert!(found, "sleep in Git Bash was not detected");
+    }
+
+    #[test]
+    fn ended_terminals_are_removed() {
+        let cmd = detect_shells().into_iter().find(|s| s.kind == crate::shell::ShellKind::Cmd).expect("cmd.exe");
+        let mgr = Arc::new(PtyManager::default());
+        let id = spawn_ready(&mgr, cmd, Some("echo bye-%NUMBER_OF_PROCESSORS%& exit"), "bye-");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline && mgr.get(id).is_some() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(mgr.get(id).is_none(), "the ended terminal is still registered");
+        // Input or a resize that races with the exit is ignored, not an error.
+        assert!(mgr.write(id, b"x").is_ok() && mgr.resize(id, 80, 24).is_ok());
     }
 
     #[test]

@@ -361,6 +361,8 @@ export class Pane {
       void api.kill(id);
       return false;
     }
+    // It may already have ended (a client that fails at once) before the spawn call returned.
+    if (this.state === 'exited') return true;
     this.ptyId = id;
     if (this.state === 'starting') this.state = 'running';
     const queued = this.pendingInput.join('');
@@ -499,7 +501,8 @@ export class Pane {
 
   private registerOscHandlers(): void {
     const setCwd = (path: string) => {
-      if (!isWindowsPath(path) || path === this.cwd) return;
+      // A remote shell's folder means nothing on this machine.
+      if (this.spec.connection || !isWindowsPath(path) || path === this.cwd) return;
       this.cwd = path;
       this.host.onInfoChange(this);
     };

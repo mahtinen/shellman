@@ -305,6 +305,22 @@ if (phase === 'main') {
     await waitFor(`!document.querySelector('.dialog') && __t.ws.tabs.length === 3`, 5000, 'tab closed');
   });
 
+  await step('an idle Git Bash closes without asking', async () => {
+    if (!(await ev(`__t.app.constructor && !!window.__shellman.workspace.resolveShell('gitbash') && window.__shellman.workspace.resolveShell('gitbash').id === 'gitbash'`))) {
+      console.log('       (Git Bash not installed; skipped)');
+      return;
+    }
+    const tabs = await ev(`__t.ws.tabs.length`);
+    await ev(`void __t.ws.open({ name: 'bash', cwd: ${js(REPO)}, command: 'echo bash-ready', shellId: 'gitbash', env: {}, color: '', sessionId: null }, 'tab')`);
+    await waitFor(`__t.text().includes('bash-ready')`, 15000, 'bash ready');
+    await sleep(1500);
+    assert(!(await ev(`__t.active().hasRunningProgram()`)), 'idle Git Bash counts as running a program');
+    await ev(`void __t.ws.requestClosePane(__t.active().id)`);
+    await sleep(800);
+    assert(!(await ev(`!!document.querySelector('.dialog')`)), 'asked to confirm closing an idle Git Bash');
+    await waitFor(`__t.ws.tabs.length === ${tabs}`, 3000, 'closed');
+  });
+
   await step('a missing directory shows an error and Enter retries', async () => {
     await ev(`void __t.ws.open({ name: 'gone', cwd: 'C:\\\\does\\\\not\\\\exist', command: '', shellId: '', env: {}, color: '', sessionId: null }, 'tab')`);
     await waitFor(`__t.text().includes('Directory not found') && __t.active().state === 'error'`, 5000, 'error shown');

@@ -134,8 +134,10 @@ pub struct AgentKeys {
 fn agent_result(code: Option<i32>, stdout: &str, stderr: &str) -> Result<AgentKeys, String> {
     match code {
         Some(0) => Ok(AgentKeys { running: true, keys: parse_agent_keys(stdout) }),
-        // "The agent has no identities."
-        Some(1) => Ok(AgentKeys { running: true, keys: Vec::new() }),
+        // Exit code 1 is both "The agent has no identities." and "error fetching identities: …".
+        Some(1) if stdout.contains("has no identities") || stderr.contains("has no identities") => {
+            Ok(AgentKeys { running: true, keys: Vec::new() })
+        }
         // "Error connecting to agent: No such file or directory"
         _ if stderr.contains("connecting to agent") || stderr.contains("Could not open a connection") => {
             Ok(AgentKeys { running: false, keys: Vec::new() })
@@ -551,6 +553,10 @@ mod tests {
         let found = agent_result(Some(0), &format!("{KEY}\r\n"), "").unwrap();
         assert!(found.running && found.keys.len() == 1);
         assert_eq!(agent_result(Some(2), "", "something else broke"), Err("something else broke".into()));
+        assert_eq!(
+            agent_result(Some(1), "", "error fetching identities: agent refused operation\r\n"),
+            Err("error fetching identities: agent refused operation".into())
+        );
     }
 
     /// The real ssh-add, pointed at a pipe nobody serves.

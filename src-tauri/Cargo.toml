@@ -25,6 +25,7 @@ winreg = "0.56"
 windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
 tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2"
 
 [profile.release]
 # Optimise for a small, fast binary.
