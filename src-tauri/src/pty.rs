@@ -702,7 +702,16 @@ mod tests {
             found = mgr.has_children(running).unwrap();
             std::thread::sleep(Duration::from_millis(100));
         }
-        let tree = process_tree(mgr.get(running).and_then(|s| s.pid).unwrap_or(0));
+        let procs = processes();
+        let sleeps: Vec<String> = procs
+            .iter()
+            .filter(|p| p.exe.eq_ignore_ascii_case("sleep.exe"))
+            .map(|p| {
+                let parent = procs.iter().find(|q| q.pid == p.ppid).map(|q| q.exe.as_str()).unwrap_or("?");
+                format!("sleep.exe {} parent {} {}", p.pid, p.ppid, parent)
+            })
+            .collect();
+        let tree = format!("{}\nall sleep.exe: {sleeps:?}", process_tree(mgr.get(running).and_then(|s| s.pid).unwrap_or(0)));
         mgr.kill(running);
         assert!(found, "sleep in Git Bash was not detected; process tree:\n{tree}");
     }
