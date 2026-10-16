@@ -369,10 +369,20 @@ export class Pane {
     });
   }
 
+  /** Name and colour of the session the terminal is in now (it follows `cd`); null = its own. */
+  private identity: { name: string; color: string } | null = null;
+
+  setIdentity(name: string, color: string): void {
+    if (this.identity?.name === name && this.identity.color === color) return;
+    this.identity = { name, color };
+    this.updateHeader();
+  }
+
   private updateHeader(): void {
-    this.nameEl.textContent = this.spec.name;
-    this.titleEl.textContent = this.title && this.title !== this.spec.name ? this.title : '';
-    this.el.style.setProperty('--session-color', this.spec.color || 'transparent');
+    const name = this.identity?.name ?? this.spec.name;
+    this.nameEl.textContent = name;
+    this.titleEl.textContent = this.title && this.title !== name ? this.title : '';
+    this.el.style.setProperty('--session-color', (this.identity?.color ?? this.spec.color) || 'transparent');
     this.el.classList.toggle('exited', this.state === 'exited' || this.state === 'error');
     this.dotEl.className = `pane-dot${this.progress ? ' busy' : ''}`;
   }

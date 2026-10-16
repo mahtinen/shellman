@@ -56,8 +56,19 @@ async fn list_shells() -> Vec<ShellProfile> {
     shell::detect_shells()
 }
 
+/// Set to keep a separate profile (config, open tabs), e.g. so the end-to-end tests can run
+/// next to a Shellman that is in use.
+const CONFIG_DIR_VAR: &str = "SHELLMAN_CONFIG_DIR";
+
+fn config_dir_override() -> Option<std::path::PathBuf> {
+    std::env::var_os(CONFIG_DIR_VAR).filter(|d| !d.is_empty()).map(Into::into)
+}
+
 fn config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    app.path().app_config_dir().map_err(|e| e.to_string())
+    match config_dir_override() {
+        Some(dir) => Ok(dir),
+        None => app.path().app_config_dir().map_err(|e| e.to_string()),
+    }
 }
 
 #[tauri::command]
@@ -190,9 +201,14 @@ pub fn run() {
         std::env::remove_var(var);
     }
 
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // The window-state plugin always writes to the real profile; a separate profile must not
+    // overwrite the window position of the Shellman that is in use.
+    if config_dir_override().is_none() {
+        builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
+    }
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(PtyManager::default())

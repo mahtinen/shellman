@@ -1,5 +1,5 @@
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
-import { baseName, pathKey, uid } from './config';
+import { baseName, ownerSession, uid } from './config';
 import { confirmDialog, toast } from './dialogs';
 import { h } from './dom';
 import { icons } from './icons';
@@ -144,10 +144,14 @@ export class Workspace implements PaneHost {
     return tab.customTitle ?? (pane ? this.paneLabel(pane) : 'Terminal');
   }
 
-  /** The saved session a pane belongs to: the one it was opened from, else the first one whose directory it is in. */
+  /** The saved session a pane is in now: it follows `cd` (see ownerSession). */
   ownerOf(pane: Pane): SavedSession | undefined {
-    const dir = pathKey(pane.cwd);
-    return store.session(pane.spec.sessionId) ?? store.config.sessions.find((s) => s.cwd && pathKey(s.cwd) === dir);
+    return ownerSession(store.config.sessions, pane.cwd, pane.spec.sessionId);
+  }
+
+  /** Colour of the session a pane is in now (tab stripe and pane header). */
+  private paneColor(pane: Pane): string {
+    return this.ownerOf(pane)?.color ?? pane.spec.color;
   }
 
   /** A terminal's name, shared by its tab and its entry in the sidebar tree. */
@@ -513,7 +517,11 @@ export class Workspace implements PaneHost {
       .join('\n');
     el.classList.toggle('active', tab.id === this.activeTabId);
     el.classList.toggle('exited', exited);
-    el.style.setProperty('--session-color', active?.spec.color || 'transparent');
+    el.style.setProperty('--session-color', (active ? this.paneColor(active) : '') || 'transparent');
+    for (const p of panes) {
+      const owner = this.ownerOf(p);
+      p.setIdentity(owner?.name ?? p.spec.name, owner?.color ?? p.spec.color);
+    }
     const status = el.querySelector('.tab-status') as HTMLElement;
     const state = progress ? 'progress' : tab.bell ? 'bell' : tab.busy ? 'busy' : tab.unread ? 'unread' : '';
     if (status.dataset.state !== state) {

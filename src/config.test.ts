@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { baseName, defaultConfig, formatEnv, guessShellKind, normalizeConfig, parseEnv, pathKey } from './config';
+import { baseName, defaultConfig, formatEnv, guessShellKind, normalizeConfig, ownerSession, parseEnv, pathKey } from './config';
 
 describe('normalizeConfig', () => {
   it('returns defaults for garbage', () => {
@@ -64,6 +64,28 @@ describe('helpers', () => {
     expect(baseName('C:\\Projects\\my-api\\')).toBe('my-api');
     expect(baseName('/home/x/proj')).toBe('proj');
     expect(baseName('C:\\')).toBe('C:');
+  });
+
+  it('ownerSession follows the current directory', () => {
+    const { sessions } = normalizeConfig({
+      sessions: [
+        { id: 'api', cwd: 'C:\\Projects\\api' },
+        { id: 'web', cwd: 'C:\\Projects\\web' },
+        { id: 'web-ui', cwd: 'C:\\Projects\\web\\ui' },
+        { id: 'web-2', cwd: 'c:/projects/web/' },
+        { id: 'wsl', cwd: '\\\\wsl.localhost\\Ubuntu\\home\\me\\proj' },
+      ],
+    });
+    const owner = (cwd: string, from: string | null = null) => ownerSession(sessions, cwd, from)?.id;
+    expect(owner('C:\\Projects\\api', 'web')).toBe('api'); // moved into another session's folder
+    expect(owner('C:\\Projects\\api\\src\\lib')).toBe('api'); // a subfolder stays with its session
+    expect(owner('C:\\Projects\\web\\ui\\components', 'api')).toBe('web-ui'); // the deepest session wins
+    expect(owner('C:\\Projects\\apis')).toBeUndefined(); // not a subfolder, just a similar name
+    expect(owner('C:\\', 'api')).toBe('api'); // outside every session: stays where it was opened
+    expect(owner('C:\\')).toBeUndefined();
+    expect(owner('C:\\Projects\\web', 'web-2')).toBe('web-2'); // same folder twice: opened-from wins
+    expect(owner('C:\\Projects\\web')).toBe('web');
+    expect(owner('\\\\wsl.localhost\\Ubuntu\\home\\me\\proj\\src')).toBe('wsl');
   });
 
   it('pathKey', () => {

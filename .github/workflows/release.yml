@@ -84,6 +84,8 @@ jobs:
 
       - name: Build and sign
         env:
+          # Marks this as an official build, which updates itself in the background (src/updater.ts).
+          VITE_SHELLMAN_RELEASE: '1'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash

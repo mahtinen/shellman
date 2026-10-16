@@ -153,6 +153,26 @@ export function pathKey(path: string): string {
   return path.trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
 }
 
+/**
+ * The saved session a terminal belongs to: the one whose directory contains the terminal's
+ * current directory (the deepest one; the session it was opened from wins a tie). Outside every
+ * session directory it stays with the session it was opened from.
+ */
+export function ownerSession(sessions: SavedSession[], cwd: string, openedFrom: string | null): SavedSession | undefined {
+  const dir = pathKey(cwd);
+  let best: SavedSession | undefined;
+  let bestLen = -1;
+  for (const s of sessions) {
+    const k = pathKey(s.cwd);
+    if (!k || !(dir === k || dir.startsWith(`${k}\\`))) continue;
+    if (k.length > bestLen || (k.length === bestLen && s.id === openedFrom)) {
+      best = s;
+      bestLen = k.length;
+    }
+  }
+  return best ?? (openedFrom ? sessions.find((s) => s.id === openedFrom) : undefined);
+}
+
 /** Parses "KEY=value" lines; blank lines and lines starting with # are ignored. */
 export function parseEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};

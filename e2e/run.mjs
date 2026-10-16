@@ -7,7 +7,12 @@ import { connect, HELPERS, launch, portFree } from './cdp.mjs';
 
 const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'shots');
 fs.mkdirSync(OUT, { recursive: true });
-const CONFIG = path.join(process.env.APPDATA, 'app.shellman.desktop', 'config.json');
+// all.mjs points the app at a throwaway profile; never run against the real one.
+if (!process.env.SHELLMAN_CONFIG_DIR) {
+  console.error('Run the e2e tests with `npm run e2e` (it sets up a separate profile).');
+  process.exit(2);
+}
+const CONFIG = path.join(process.env.SHELLMAN_CONFIG_DIR, 'config.json');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // The repository checkout and its parent are used as real directories to open terminals in.
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -385,9 +390,11 @@ if (phase === 'main') {
         overflow: strip.scrollWidth - strip.clientWidth,
         widest: Math.max(...tabs.map((t) => t.offsetWidth)),
         cut: tabs.filter((t) => { const l = t.querySelector('.tab-label'); return l.scrollWidth > l.clientWidth; }).length,
+        allAtMinimum: tabs.every((t) => t.offsetWidth <= parseFloat(getComputedStyle(t).minWidth) + 1),
       };
     })()`);
-    assert(m.overflow <= 1 && m.widest < 200 && m.cut >= 10, 'tabs did not shrink: ' + JSON.stringify(m));
+    // Tabs shrink first; the strip only scrolls once every tab is at its minimum width.
+    assert(m.widest < 200 && m.cut >= 10 && (m.overflow <= 1 || m.allAtMinimum), 'tabs did not shrink: ' + JSON.stringify(m));
     await ev(`(() => { for (const t of __t.ws.tabs.slice(-10)) __t.ws.removeTab(t); return true; })()`);
     await waitFor(`__t.ws.tabs.length === ${before}`, 3000, 'extra tabs closed');
   });
@@ -398,6 +405,18 @@ if (phase === 'main') {
     const cwd = await ev(`document.querySelectorAll('.dialog input.input')[1].value`);
     await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
     assert(cwd && cwd.toLowerCase() === process.env.USERPROFILE.toLowerCase(), `expected ${process.env.USERPROFILE}, got ${cwd}`);
+  });
+
+  await step('a terminal follows cd into a saved session directory', async () => {
+    await ev(`void __t.ws.open({ name: 'root', cwd: 'C:\\\\', command: '', shellId: 'powershell', env: {}, color: '', sessionId: null }, 'tab')`);
+    await waitFor(`__t.text().includes('PS C:\\\\>')`, 15000, 'prompt in C:\\');
+    const id = await ev(`__t.active().id`);
+    const ownerOfRow = `document.querySelector('.term-row[data-pane="${id}"]')?.closest('.term-tree')?.previousElementSibling`;
+    await waitFor(`${ownerOfRow}?.classList.contains('terms-head')`, 3000, 'listed under Other terminals');
+    await ev(`__t.active().sendInput(${js(`cd "${REPO}"\r`)})`);
+    await waitFor(`__t.active().cwd === ${js(REPO)}`, 10000, 'cd tracked');
+    await waitFor(`${ownerOfRow}?.querySelector('.session-name span')?.textContent === 'Shellman repo'`, 3000, 'moved under the session');
+    assert((await ev(`__t.ws.activeTab.tabEl.querySelector('.tab-label').textContent`)) === 'Shellman repo', 'tab takes the session name');
   });
 
   await step('open terminals are saved for the next start', async () => {

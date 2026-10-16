@@ -27,6 +27,10 @@ class Updater {
   private readonly listeners = new Set<() => void>();
 
   start(): void {
+    // Only builds made by the Release workflow update themselves in the background. A local or test
+    // build carries an older version number and would otherwise replace the installed Shellman.
+    // "Check now" in Settings still works everywhere.
+    if (!import.meta.env.VITE_SHELLMAN_RELEASE) return;
     const tick = () => {
       if (store.settings.updates !== 'off') void this.check(false);
     };

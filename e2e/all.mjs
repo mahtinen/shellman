@@ -1,32 +1,26 @@
-// Runs every e2e phase against the release build. Your real Shellman config is
-// moved aside first and restored afterwards, whatever happens.
+// Runs every e2e phase against the release build, in a throwaway profile (SHELLMAN_CONFIG_DIR), so a
+// Shellman you have open keeps its settings, tabs and window position.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXE } from './cdp.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const configDir = path.join(process.env.APPDATA, 'app.shellman.desktop');
-const backup = `${configDir}.e2e-backup`;
 
 if (!fs.existsSync(EXE)) {
   console.error(`Build the app first (npm run app:build or npx tauri build --no-bundle): ${EXE} not found`);
   process.exit(2);
 }
-// A running Shellman shares the config folder; moving it aside would lose its saves.
-const running = spawnSync('tasklist', ['/FI', 'IMAGENAME eq shellman.exe', '/NH'], { encoding: 'utf8' }).stdout;
-if (/shellman\.exe/i.test(running)) {
-  console.error('Shellman is running. Close it before running the e2e tests (they temporarily replace its config).');
-  process.exit(2);
-}
-if (fs.existsSync(backup)) {
-  console.error(`A previous run left ${backup}; restore or remove it first.`);
-  process.exit(2);
-}
 
-const hadConfig = fs.existsSync(configDir);
-if (hadConfig) fs.renameSync(configDir, backup);
+const profile = path.join(os.tmpdir(), 'shellman-e2e-profile');
+fs.rmSync(profile, { recursive: true, force: true });
+fs.mkdirSync(profile, { recursive: true });
+// No update checks: a local build is older than the latest release and must not install it.
+fs.writeFileSync(path.join(profile, 'config.json'), JSON.stringify({ version: 1, settings: { updates: 'off' } }));
+process.env.SHELLMAN_CONFIG_DIR = profile;
+
 let failed = false;
 try {
   for (const phase of ['main', 'restart', 'quit']) {
@@ -35,7 +29,6 @@ try {
     if (r.status !== 0) failed = true;
   }
 } finally {
-  fs.rmSync(configDir, { recursive: true, force: true });
-  if (hadConfig) fs.renameSync(backup, configDir);
+  fs.rmSync(profile, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

@@ -112,7 +112,10 @@ npm run test:rust      # Rust unit + real ConPTY integration tests
 npm run e2e            # drives the release build through WebView2 DevTools (see e2e/)
 ```
 
-`npm run e2e` moves your real config aside while it runs and restores it afterwards.
+`npm run e2e` runs the app with a throwaway profile (`SHELLMAN_CONFIG_DIR` in Temp), so it can run while you
+use Shellman; your settings, open tabs and window position aren't touched. Its window may take keyboard focus
+when it starts, so don't type into it. Local and test builds never update themselves in the background; only
+builds from the Release workflow do.
 
 ### Releasing
 
