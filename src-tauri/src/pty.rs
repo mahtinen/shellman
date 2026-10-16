@@ -702,8 +702,26 @@ mod tests {
             found = mgr.has_children(running).unwrap();
             std::thread::sleep(Duration::from_millis(100));
         }
+        let tree = process_tree(mgr.get(running).and_then(|s| s.pid).unwrap_or(0));
         mgr.kill(running);
-        assert!(found, "sleep in Git Bash was not detected");
+        assert!(found, "sleep in Git Bash was not detected; process tree:\n{tree}");
+    }
+
+    /// `pid` and everything below it, for failure messages.
+    fn process_tree(pid: u32) -> String {
+        fn walk(procs: &[Proc], pid: u32, depth: usize, out: &mut String) {
+            if depth > 10 {
+                return;
+            }
+            for p in children(procs, pid) {
+                out.push_str(&format!("{}{} {}\n", "  ".repeat(depth), p.pid, p.exe));
+                walk(procs, p.pid, depth + 1, out);
+            }
+        }
+        let procs = processes();
+        let mut out = format!("{pid} {}\n", procs.iter().find(|p| p.pid == pid).map(|p| p.exe.as_str()).unwrap_or("?"));
+        walk(&procs, pid, 1, &mut out);
+        out
     }
 
     #[test]
