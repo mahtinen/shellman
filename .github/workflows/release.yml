@@ -1,0 +1,104 @@
+# Builds, signs and publishes a release. Installed copies of Shellman pick it up from latest.json.
+#
+# Start it from Actions → Release → Run workflow (enter the version), with `npm run release -- 0.2.0`,
+# or by pushing a tag like v0.2.0. The version comes from the tag; nothing is committed to main.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, e.g. 0.2.0
+        required: true
+      notes:
+        description: Release notes (leave empty to list the changes since the last release)
+        required: false
+        default: ''
+  push:
+    tags: ['v*.*.*']
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  checks: read
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # Holds the updater signing key (secret TAURI_SIGNING_PRIVATE_KEY).
+    environment: release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RAW_VERSION: ${{ inputs.version || github.ref_name }}
+      NOTES: ${{ inputs.notes }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check what is being released
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RAW_VERSION#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$VERSION' is not a version like 1.2.3"; exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Run the release from the main branch"; exit 1
+          fi
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Release v$VERSION already exists"; exit 1
+          fi
+          LATEST=$(gh release view --json tagName -q .tagName 2>/dev/null || echo v0.0.0)
+          if [ "$(printf '%s\n%s\n' "${LATEST#v}" "$VERSION" | sort -V | tail -1)" != "$VERSION" ] || [ "${LATEST#v}" = "$VERSION" ]; then
+            echo "::error::$VERSION is not newer than the latest release $LATEST"; exit 1
+          fi
+          # Only release commits that passed CI.
+          CI=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs" \
+            -q '[.check_runs[] | select(.name == "Build and test")][0].conclusion // "missing"')
+          if [ "$CI" != success ]; then
+            echo "::error::CI for ${GITHUB_SHA::7} is '$CI'. Wait for it to pass (or fix it) and run the release again."; exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Releasing $VERSION from ${GITHUB_SHA::7} (latest release: $LATEST)"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Set version
+        run: node scripts/set-version.mjs ${{ env.VERSION }}
+
+      - name: Build and sign
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::The 'release' environment has no TAURI_SIGNING_PRIVATE_KEY secret"; exit 1
+          fi
+          node scripts/build.mjs --notes "$NOTES"
+
+      - name: Publish the GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR=src-tauri/target/release/bundle/nsis
+          FILES=("$DIR/Shellman_${VERSION}_x64-setup.exe" "$DIR/Shellman_${VERSION}_x64-setup.exe.sig" "$DIR/latest.json" "$DIR/Shellman-setup.exe")
+          if [ -n "$NOTES" ]; then NOTE_ARGS=(--notes "$NOTES"); else NOTE_ARGS=(--generate-notes); fi
+          gh release create "v$VERSION" "${FILES[@]}" --target "$GITHUB_SHA" --title "Shellman $VERSION" "${NOTE_ARGS[@]}"
+          echo "### Published [Shellman $VERSION](https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION)" >> "$GITHUB_STEP_SUMMARY"

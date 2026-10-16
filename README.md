@@ -103,7 +103,7 @@ Requirements: Rust (stable, MSVC toolchain), the VS C++ Build Tools with a Windo
 npm install
 npm run app:dev        # run with hot reload
 npm run app:build      # signed release exe + NSIS installer + latest.json
-npm run release -- 0.2.0 --notes "What changed"   # bump version, build, publish a GitHub release
+npm run release -- 0.2.0 --notes "What changed"   # start the Release workflow on GitHub
 npm test               # frontend unit tests (vitest)
 npm run test:rust      # Rust unit + real ConPTY integration tests
 npm run e2e            # drives the release build through WebView2 DevTools (see e2e/)
@@ -113,15 +113,29 @@ npm run e2e            # drives the release build through WebView2 DevTools (see
 
 ### Releasing
 
-Updates are signed with a private key kept **outside** the repository, at `%USERPROFILE%\.tauri\shellman.key`
-(or in the `TAURI_SIGNING_PRIVATE_KEY` environment variable, e.g. in CI). Its public half is in
-`src-tauri/tauri.conf.json`. Back the key up: if it's lost, installed copies can't verify new versions and
-everyone has to reinstall by hand. `npm run app:build` and `npm run release` read it automatically.
+Releases are built and published by GitHub Actions, never from a developer's machine:
 
-`npm run release -- <version>` bumps the version in `package.json`, `tauri.conf.json` and `Cargo.toml`, makes a
-signed build, and uses the GitHub CLI to publish release `v<version>` with the installer, its `.sig` and
-`latest.json`. Installed copies poll `releases/latest/download/latest.json`, so publishing the release is all it
-takes. The repository has to be public.
+1. Push to `main` (or merge a pull request). The **CI** workflow type-checks, builds the frontend and runs the
+   unit and Rust tests. Run `npm run e2e` locally too; it needs a real desktop and the `claude` CLI, so it
+   can't run in CI.
+2. Start a release from **Actions → Release → Run workflow** and enter the version (e.g. `0.2.0`). From a
+   terminal, `npm run release -- 0.2.0 [--notes "What changed"]` does the same, and pushing a tag `v0.2.0`
+   works too.
+3. The **Release** workflow checks that the version is newer than the latest release and that CI passed for
+   that commit. It stamps the version into the build, signs the installer for the updater, and publishes
+   release `v0.2.0` with the installer, its `.sig`, `latest.json` and `Shellman-setup.exe`. Without notes,
+   GitHub lists the changes since the last release.
+
+Installed copies poll `releases/latest/download/latest.json`, so publishing the release is all it takes.
+The version in the repository files isn't bumped; the release tag decides the version.
+
+**Signing key.** The updater key lives in the `TAURI_SIGNING_PRIVATE_KEY` secret of the `release`
+environment (Settings → Environments). Its public half is in `src-tauri/tauri.conf.json`. Keep an offline
+backup: if it's lost, installed copies can't verify new versions and everyone has to reinstall by hand.
+`npm run app:build` can still make a signed build locally from `%USERPROFILE%\.tauri\shellman.key`.
+
+**Branch protection.** `main` can't be force-pushed or deleted, and pull requests need a passing CI run
+(admins can push directly). Release tags `v*` can't be moved or deleted.
 
 ### Layout
 
@@ -135,7 +149,8 @@ takes. The repository has to be public.
 | `src/layout.ts` | Pure split-tree operations (unit tested) |
 | `src/sidebar.ts`, `sessionEditor.ts`, `settingsDialog.ts`, `palette.ts` | UI |
 | `src/updater.ts` | Background update checks, download and install-on-restart |
-| `scripts/build.mjs`, `release.mjs` | Signed builds and GitHub releases |
+| `.github/workflows/` | CI checks and the Release workflow |
+| `scripts/build.mjs`, `set-version.mjs`, `release.mjs` | Signed build + `latest.json`, version stamping, starting a release |
 | `docs/` | The [shellman.app](https://shellman.app) website (GitHub Pages) |
 
 Startup commands are never spliced into a command line. PowerShell gets them as `-EncodedCommand`, and
