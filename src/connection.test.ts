@@ -100,6 +100,12 @@ describe('parseQuickConnect', () => {
       extraArgs: '-A -o ServerAliveInterval=30',
     });
     expect(parseQuickConnect('ssh -- web1')).toMatchObject({ host: 'web1' });
+    // Options may also follow the host.
+    expect(parseQuickConnect('ssh web1 -p 2222')).toMatchObject({ host: 'web1', port: 2222 });
+    expect(parseQuickConnect('ssh bob@web1 -A')).toMatchObject({ host: 'web1', user: 'bob', extraArgs: '-A' });
+    // -o User= names the user, so "login as:" isn't asked.
+    expect(parseQuickConnect('ssh -o User=bob web1')).toMatchObject({ host: 'web1', user: 'bob', extraArgs: '' });
+    expect(parseQuickConnect('ssh -l alice -o User=bob web1')).toMatchObject({ user: 'alice' });
   });
 
   it('reads telnet commands', () => {
@@ -108,7 +114,7 @@ describe('parseQuickConnect', () => {
   });
 
   it('ignores searches and unsupported commands', () => {
-    for (const q of ['', 'web1', 'my api', 'ssh', 'ssh web1 uptime', 'ssh -p', 'ssh -p x web1', 'ssh -oProxyCommand=calc', 'ssh -- -oProxyCommand=calc', 'telnet', 'telnet a b c', 'telnet bob@r', 'bob@', '@web1', 'bob@web1:0']) {
+    for (const q of ['', 'web1', 'my api', 'ssh', 'ssh web1 uptime', 'ssh web1 -p 22 uptime', 'ssh -- web1 -p 22', 'ssh -p', 'ssh -p x web1', 'ssh -oProxyCommand=calc', 'ssh -- -oProxyCommand=calc', 'telnet', 'telnet a b c', 'telnet bob@r', 'bob@', '@web1', 'bob@web1:0']) {
       expect(parseQuickConnect(q), q).toBeNull();
     }
   });

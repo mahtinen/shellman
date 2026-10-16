@@ -39,6 +39,7 @@ class App {
   /** Last workspace.json written; nothing is saved until the previous one has been reopened. */
   private savedWorkspace = '';
   private workspaceTimer: number | undefined;
+  private workspaceSaving: Promise<void> = Promise.resolve();
   private canSaveWorkspace = false;
 
   constructor() {
@@ -303,9 +304,21 @@ class App {
 
   /** Reopens the tabs and splits that were open when Shellman last closed. */
   async restoreWorkspace(): Promise<void> {
+    const mode = store.settings.restoreTerminals;
+    let raw: unknown = null;
+    if (mode !== 'off') {
+      try {
+        const loaded = await api.loadWorkspace();
+        raw = loaded.value;
+        if (loaded.notice) toast(loaded.notice, 'error', 12000);
+      } catch (e) {
+        // The file is there but can't be read: leave it alone instead of overwriting it (saving stays off).
+        toast(`Could not reopen the previous tabs: ${e}`, 'error', 10000);
+        return;
+      }
+    }
     try {
-      const mode = store.settings.restoreTerminals;
-      const snap = mode === 'off' ? null : normalizeSnapshot(await api.loadWorkspace());
+      const snap = normalizeSnapshot(raw);
       if (!snap) return;
       // A folder that no longer exists falls back to its session's folder, then to the default one.
       const specs = snap.tabs.flatMap((t) => snapshotPanes(t.root));
@@ -327,22 +340,35 @@ class App {
     }
   }
 
+  /**
+   * Saves at most once a second. A throttle, not a debounce: Claude's animated title changes a
+   * tab several times a second, which would keep postponing a debounced save for a whole task.
+   */
   private scheduleWorkspaceSave(): void {
-    if (!this.canSaveWorkspace) return;
-    clearTimeout(this.workspaceTimer);
-    this.workspaceTimer = window.setTimeout(() => void this.saveWorkspace(), 1000);
+    if (!this.canSaveWorkspace || this.workspaceTimer !== undefined) return;
+    this.workspaceTimer = window.setTimeout(() => {
+      this.workspaceTimer = undefined;
+      void this.saveWorkspace();
+    }, 1000);
   }
 
-  /** Writes the open tabs now (when they changed). `final` stops later saves while the app shuts down. */
-  async saveWorkspace(final = false): Promise<void> {
+  /**
+   * Writes the open tabs now (when they changed). Saves run one after another, so an older one can
+   * never finish last. `final` stops later saves while the app shuts down.
+   */
+  saveWorkspace(final = false): Promise<void> {
     clearTimeout(this.workspaceTimer);
-    if (!this.canSaveWorkspace) return;
+    this.workspaceTimer = undefined;
+    if (!this.canSaveWorkspace) return this.workspaceSaving;
     if (final) this.canSaveWorkspace = false;
     const snap = this.workspace.snapshot();
     const json = JSON.stringify(snap);
-    if (json === this.savedWorkspace) return;
+    if (json === this.savedWorkspace) return this.workspaceSaving;
     this.savedWorkspace = json;
-    await api.saveWorkspace(snap).catch((e) => console.warn('Could not save the open terminals:', e));
+    this.workspaceSaving = this.workspaceSaving.then(() =>
+      api.saveWorkspace(snap).catch((e) => console.warn('Could not save the open terminals:', e)),
+    );
+    return this.workspaceSaving;
   }
 
   // ---- updates ---------------------------------------------------------
@@ -384,7 +410,14 @@ class App {
     }
     await this.saveWorkspace(true);
     await store.flush();
-    await updater.install(true);
+    const live = [...this.workspace.panes.values()].filter((p) => p.isRunning);
+    // The terminals are ended before the installer runs; keep their panes open meanwhile.
+    this.workspace.keepPanesOnExit = true;
+    if (await updater.install(true)) return;
+    // The installer didn't start: Shellman keeps running, so bring the terminals back.
+    this.workspace.keepPanesOnExit = false;
+    this.canSaveWorkspace = true;
+    for (const p of live) p.restart();
   }
 
   // ---- opening terminals ---------------------------------------------

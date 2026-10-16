@@ -8,7 +8,7 @@
 //!   pseudoconsole is closed, so this is what lets the reader finish.
 
 use crate::connect::{self, Connection};
-use crate::shell::{build_launch, ShellProfile};
+use crate::shell::{build_launch, ShellKind, ShellProfile};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -27,6 +27,21 @@ struct Session {
     input: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     pid: Option<u32>,
+    busy_check: BusyCheck,
+    /// Git Bash's `ps.exe`, which still knows a program's parent when Windows doesn't.
+    msys_ps: Option<PathBuf>,
+}
+
+/// How to tell whether a terminal's shell is running a program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BusyCheck {
+    /// Any child process of the shell.
+    Children,
+    /// Git Bash's `bin\bash.exe` is a launcher for `usr\bin\bash.exe` (and `exec` leaves a stub
+    /// bash behind), so look through bash children with the same name first.
+    ThroughLauncher,
+    /// WSL: programs run inside Linux and aren't Windows processes.
+    Unknown,
 }
 
 impl Session {
@@ -40,7 +55,8 @@ impl Session {
 
 #[derive(Default)]
 pub struct PtyManager {
-    sessions: Mutex<HashMap<u32, Arc<Session>>>,
+    /// Shared with the reader threads, which remove their session once it has ended.
+    sessions: Arc<Mutex<HashMap<u32, Arc<Session>>>>,
     next_id: AtomicU32,
 }
 
@@ -139,6 +155,11 @@ impl PtyManager {
             (None, Some(shell)) => build_launch(shell, &req.cwd, req.command.as_deref(), req.shell_integration),
             (None, None) => return Err("Nothing to start: no shell or connection given".into()),
         };
+        let busy_check = match (&req.connection, &req.shell) {
+            (None, Some(shell)) if shell.kind == ShellKind::Bash => BusyCheck::ThroughLauncher,
+            (None, Some(shell)) if shell.kind == ShellKind::Wsl => BusyCheck::Unknown,
+            _ => BusyCheck::Children,
+        };
 
         let pair = native_pty_system()
             .openpty(size(req.cols, req.rows))
@@ -175,10 +196,13 @@ impl PtyManager {
             input: Mutex::new(Some(input_tx)),
             killer: Mutex::new(child.clone_killer()),
             pid: child.process_id(),
+            busy_check,
+            msys_ps: if busy_check == BusyCheck::ThroughLauncher { msys_ps(Path::new(&launch.program)) } else { None },
         });
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         self.sessions.lock().unwrap().insert(id, session.clone());
+        let sessions = self.sessions.clone();
 
         std::thread::Builder::new()
             .name(format!("pty-{id}-write"))
@@ -227,6 +251,9 @@ impl PtyManager {
                 let code = exit_rx.recv_timeout(Duration::from_secs(10)).ok();
                 let msg = serde_json::json!({ "exit": code }).to_string();
                 let _ = output.send(InvokeResponseBody::Json(msg));
+                // The terminal has ended: drop it here, or it stays (with its process handle)
+                // until the pane is closed.
+                sessions.lock().unwrap().remove(&id);
             })
             .map_err(|e| e.to_string())?;
 
@@ -237,8 +264,10 @@ impl PtyManager {
         self.sessions.lock().unwrap().get(&id).cloned()
     }
 
+    /// Writing to a terminal that has just ended is not an error: the frontend learns about the
+    /// exit a moment later.
     pub fn write(&self, id: u32, data: &[u8]) -> Result<(), String> {
-        let session = self.get(id).ok_or("No such terminal")?;
+        let Some(session) = self.get(id) else { return Ok(()) };
         if let Some(tx) = session.input.lock().unwrap().as_ref() {
             let _ = tx.send(data.to_vec());
         }
@@ -246,7 +275,7 @@ impl PtyManager {
     }
 
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
-        let session = self.get(id).ok_or("No such terminal")?;
+        let Some(session) = self.get(id) else { return Ok(()) };
         let guard = session.master.lock().unwrap();
         match guard.as_ref() {
             Some(m) => m.resize(size(cols, rows)).map_err(|e| e.to_string()),
@@ -256,11 +285,22 @@ impl PtyManager {
 
     /// True when the terminal's shell has started programs that are still
     /// running (e.g. `claude` or a dev server), i.e. closing it would lose work.
-    pub fn has_children(&self, id: u32) -> bool {
-        self.get(id)
-            .and_then(|s| s.pid)
-            .map(|pid| !child_processes(pid).is_empty())
-            .unwrap_or(false)
+    /// An error means it can't be told (WSL); the caller decides.
+    pub fn has_children(&self, id: u32) -> Result<bool, String> {
+        let Some(session) = self.get(id) else { return Ok(false) };
+        let Some(pid) = session.pid else { return Ok(false) };
+        match session.busy_check {
+            BusyCheck::Unknown => Err("Programs running inside WSL can't be seen from Windows".into()),
+            BusyCheck::Children => Ok(busy(&processes(), pid, false)),
+            BusyCheck::ThroughLauncher => {
+                let procs = processes();
+                let (shell, kids) = shell_and_children(&procs, pid, true);
+                if !kids.is_empty() {
+                    return Ok(true);
+                }
+                Ok(session.msys_ps.as_deref().and_then(run_ps).is_some_and(|out| msys_busy(&out, &shell)))
+            }
+        }
     }
 
     /// Closes the terminal and terminates its process. Returns immediately.
@@ -285,9 +325,101 @@ impl PtyManager {
     }
 }
 
-/// Process ids whose parent is `pid`.
+/// One running process.
+#[derive(Clone, Debug)]
+pub struct Proc {
+    pub pid: u32,
+    pub ppid: u32,
+    pub exe: String,
+    /// Creation time (FILETIME ticks); 0 when it couldn't be read.
+    pub start: u64,
+}
+
+/// The processes whose parent is `pid`. Windows reuses process ids, and a process keeps the id
+/// of its parent after that parent has exited, so a long-running process can name an id that
+/// now belongs to someone else (e.g. csrss.exe "under" a new shell). A real child can't have
+/// started before its parent.
+fn children(procs: &[Proc], pid: u32) -> Vec<&Proc> {
+    let parent_start = procs.iter().find(|p| p.pid == pid).map_or(0, |p| p.start);
+    procs
+        .iter()
+        .filter(|p| p.ppid == pid && p.pid != pid)
+        .filter(|p| parent_start == 0 || (p.start != 0 && p.start >= parent_start))
+        .collect()
+}
+
+/// The shell's own processes and the processes it runs. With `through_launcher`, a chain of
+/// single children with the shell's own executable name (a launcher, or the stub `exec` leaves)
+/// is the shell itself, so only what runs below it counts.
+fn shell_and_children(procs: &[Proc], pid: u32, through_launcher: bool) -> (Vec<u32>, Vec<&Proc>) {
+    let mut chain = vec![pid];
+    let mut kids = children(procs, pid);
+    if through_launcher {
+        let name = procs.iter().find(|p| p.pid == pid).map(|p| p.exe.as_str()).unwrap_or("");
+        // Bounded, in case process ids were reused into a loop.
+        for _ in 0..8 {
+            match kids.as_slice() {
+                [only] if !name.is_empty() && only.exe.eq_ignore_ascii_case(name) => {
+                    chain.push(only.pid);
+                    kids = children(procs, only.pid);
+                }
+                _ => break,
+            }
+        }
+    }
+    (chain, kids)
+}
+
+/// Whether the shell `pid` runs a program, judged by Windows' parent links.
+pub fn busy(procs: &[Proc], pid: u32, through_launcher: bool) -> bool {
+    !shell_and_children(procs, pid, through_launcher).1.is_empty()
+}
+
+/// Git Bash's `ps.exe` next to (or below) the given bash.
+fn msys_ps(program: &Path) -> Option<PathBuf> {
+    let dir = program.parent()?;
+    [dir.join("ps.exe"), dir.parent()?.join("usr").join("bin").join("ps.exe")]
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+/// Whether, in MSYS `ps` output, a process runs below the shell whose Windows pids are `shell`.
+///
+/// Newer Git for Windows starts programs through a short-lived process, so Windows' parent links
+/// lose them (the program's Windows parent no longer exists), while MSYS keeps its own parent ids.
+/// Columns: an optional status letter, then PID PPID PGID WINPID TTY UID STIME COMMAND.
+pub fn msys_busy(ps_output: &str, shell: &[u32]) -> bool {
+    let rows: Vec<(u32, u32, u32)> = ps_output
+        .lines()
+        .filter_map(|line| {
+            let mut cols = line.trim_start_matches(|c: char| c.is_ascii_alphabetic()).split_whitespace();
+            let pid = cols.next()?.parse().ok()?;
+            let ppid = cols.next()?.parse().ok()?;
+            let _pgid: u32 = cols.next()?.parse().ok()?;
+            let winpid = cols.next()?.parse().ok()?;
+            Some((pid, ppid, winpid))
+        })
+        .collect();
+    let shell_pids: Vec<u32> = rows.iter().filter(|(_, _, w)| shell.contains(w)).map(|(p, _, _)| *p).collect();
+    rows.iter().any(|(pid, ppid, _)| shell_pids.contains(ppid) && !shell_pids.contains(pid))
+}
+
+/// Runs `ps` (MSYS) without a console window.
+fn run_ps(ps: &Path) -> Option<String> {
+    let mut cmd = std::process::Command::new(ps);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok().filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// All running processes.
 #[cfg(windows)]
-pub fn child_processes(pid: u32) -> Vec<u32> {
+pub fn processes() -> Vec<Proc> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -303,9 +435,13 @@ pub fn child_processes(pid: u32) -> Vec<u32> {
         entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
         if Process32FirstW(snap, &mut entry) != 0 {
             loop {
-                if entry.th32ParentProcessID == pid && entry.th32ProcessID != pid {
-                    out.push(entry.th32ProcessID);
-                }
+                let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                out.push(Proc {
+                    pid: entry.th32ProcessID,
+                    ppid: entry.th32ParentProcessID,
+                    exe: String::from_utf16_lossy(&entry.szExeFile[..len]),
+                    start: start_time(entry.th32ProcessID),
+                });
                 if Process32NextW(snap, &mut entry) == 0 {
                     break;
                 }
@@ -316,8 +452,31 @@ pub fn child_processes(pid: u32) -> Vec<u32> {
     out
 }
 
+/// When process `pid` was created, or 0 if that can't be read.
+#[cfg(windows)]
+fn start_time(pid: u32) -> u64 {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: plain Win32 calls on a handle that is closed before returning.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return 0;
+        }
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0;
+        CloseHandle(handle);
+        if ok {
+            (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
+        } else {
+            0
+        }
+    }
+}
+
 #[cfg(not(windows))]
-pub fn child_processes(_pid: u32) -> Vec<u32> {
+pub fn processes() -> Vec<Proc> {
     Vec::new()
 }
 
@@ -467,7 +626,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut found = false;
         while Instant::now() < deadline {
-            if mgr.has_children(id) {
+            if mgr.has_children(id).unwrap() {
                 found = true;
                 break;
             }
@@ -475,7 +634,7 @@ mod tests {
         }
         mgr.kill(id);
         assert!(found, "ping was not detected as a child of cmd.exe");
-        assert!(!mgr.has_children(id), "killed session must report no children");
+        assert!(!mgr.has_children(id).unwrap(), "killed session must report no children");
     }
 
     /// Runs the real Windows ssh.exe through ConPTY against a closed local port: its error
@@ -546,6 +705,174 @@ mod tests {
         // e.g. "connect to host 127.0.0.1 port 1: Connection refused" (wording varies by version)
         assert!(text.contains("Connection"), "ssh error not shown:\n{text:?}");
         assert!(text.contains("<<{\"exit\":255}>>"), "expected ssh's exit code 255:\n{text}");
+    }
+
+    /// A process started at "time" `pid`, so higher ids started later.
+    fn proc(pid: u32, ppid: u32, exe: &str) -> Proc {
+        Proc { pid, ppid, exe: exe.into(), start: u64::from(pid) }
+    }
+
+    #[test]
+    fn reused_parent_ids_are_not_children() {
+        // csrss.exe still names its long-gone parent's id, which Windows has given to a new shell.
+        let procs = [proc(5, 50, "csrss.exe"), proc(50, 1, "bash.exe"), proc(51, 50, "bash.exe")];
+        assert!(!busy(&procs, 50, true), "an older process with a reused parent id counted");
+        assert!(busy(&[proc(5, 50, "csrss.exe"), proc(50, 1, "pwsh.exe"), proc(60, 50, "node.exe")], 50, false));
+        // A child whose start time can't be read is left out; an unknown parent time keeps the old behaviour.
+        assert!(!busy(&[proc(50, 1, "pwsh.exe"), Proc { start: 0, ..proc(60, 50, "x.exe") }], 50, false));
+        assert!(busy(&[Proc { start: 0, ..proc(50, 1, "pwsh.exe") }, proc(5, 50, "x.exe")], 50, false));
+    }
+
+    #[test]
+    fn busy_looks_through_the_git_bash_launcher() {
+        // bin\bash.exe (10) -> usr\bin\bash.exe (11) [-> stub after exec -> bash (12)]
+        let idle = [proc(10, 1, "bash.exe"), proc(11, 10, "bash.exe")];
+        assert!(!busy(&idle, 10, true));
+        assert!(busy(&idle, 10, false), "without looking through, the launcher's child counts");
+        let after_exec = [proc(10, 1, "bash.exe"), proc(11, 10, "bash.exe"), proc(12, 11, "bash.exe")];
+        assert!(!busy(&after_exec, 10, true));
+        let running = [proc(10, 1, "bash.exe"), proc(11, 10, "bash.exe"), proc(13, 11, "node.exe")];
+        assert!(busy(&running, 10, true));
+        // A shell that isn't a launcher: its only child is a real program.
+        let cmd = [proc(20, 1, "cmd.exe"), proc(21, 20, "ping.exe")];
+        assert!(busy(&cmd, 20, true));
+        assert!(!busy(&[proc(30, 1, "pwsh.exe")], 30, false));
+    }
+
+    #[test]
+    fn msys_ps_knows_parents_windows_lost() {
+        // Shell: Windows pids 7492 (launcher) and 2480 (bash, MSYS pid 6013). `sleep` (MSYS 6023,
+        // parent 6013) was started through a process that has exited, so Windows can't link it.
+        let ps = "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
+     6013       1    6013       2480  cons0      4096 17:21:30 /usr/bin/bash
+     6023    6013    6023       1652  cons0      4096 17:21:32 /usr/bin/sleep
+     6024       1    6024      28432  ?          4096 17:21:34 /usr/bin/ps
+I    7000       1    7000       9999  ?          4096 17:00:00 /usr/bin/bash
+";
+        assert!(msys_busy(ps, &[7492, 2480]));
+        // Idle: nothing has the shell as its parent (another bash elsewhere doesn't count).
+        let idle = "      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
+     6013       1    6013       2480  cons0      4096 17:21:30 /usr/bin/bash
+I    7000       1    7000       9999  ?          4096 17:00:00 /usr/bin/bash
+     7001    7000    7001       9998  ?          4096 17:00:01 /usr/bin/sleep
+";
+        assert!(!msys_busy(idle, &[7492, 2480]));
+        assert!(!msys_busy("", &[1]));
+    }
+
+    /// Spawns `shell` with `command`, answers ConPTY's start-up cursor query and waits until
+    /// `ready` appears in the output.
+    fn spawn_ready(mgr: &Arc<PtyManager>, shell: ShellProfile, command: Option<&str>, ready: &str) -> u32 {
+        let out = Arc::new(Mutex::new(String::new()));
+        let sink = out.clone();
+        let channel = Channel::new(move |body| {
+            if let InvokeResponseBody::Json(s) = body {
+                if let Ok(serde_json::Value::String(text)) = serde_json::from_str(&s) {
+                    sink.lock().unwrap().push_str(&text);
+                }
+            }
+            Ok(())
+        });
+        let id = mgr
+            .spawn(
+                SpawnRequest {
+                    shell: Some(shell),
+                    connection: None,
+                    ssh_path: String::new(),
+                    key_dir: None,
+                    cwd: std::env::temp_dir().to_string_lossy().into(),
+                    command: command.map(Into::into),
+                    env: HashMap::new(),
+                    shell_integration: false,
+                    cols: 120,
+                    rows: 30,
+                },
+                channel,
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut answered = false;
+        while Instant::now() < deadline {
+            let text = out.lock().unwrap().clone();
+            if !answered && text.contains("\x1b[6n") {
+                mgr.write(id, b"\x1b[1;1R").unwrap();
+                answered = true;
+            }
+            if text.contains(ready) {
+                return id;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("{ready:?} never appeared:\n{}", out.lock().unwrap());
+    }
+
+    /// An idle Git Bash is not busy (its launcher and the `exec` stub are bash itself), one
+    /// running a program is.
+    #[test]
+    fn git_bash_busy_only_when_running_a_program() {
+        let Some(bash) = detect_shells().into_iter().find(|s| s.kind == crate::shell::ShellKind::Bash) else {
+            eprintln!("Git Bash not installed; skipped");
+            return;
+        };
+        let mgr = Arc::new(PtyManager::default());
+        // What Git Bash's own `ps` says, checked separately: newer Git for Windows needs it
+        // because Windows loses the program's parent (see `msys_busy`).
+        let ps_says = |id: u32| -> Option<bool> {
+            let session = mgr.get(id)?;
+            let (shell, _) = shell_and_children(&processes(), session.pid?, true);
+            Some(msys_busy(&run_ps(session.msys_ps.as_deref()?)?, &shell))
+        };
+        // A startup command makes bash `exec` a new shell afterwards, which leaves a stub process.
+        let idle = spawn_ready(&mgr, bash.clone(), Some("echo idle-$((40+2))"), "idle-42");
+        std::thread::sleep(Duration::from_millis(1500));
+        let tree = process_tree(mgr.get(idle).and_then(|s| s.pid).unwrap_or(0));
+        assert!(!mgr.has_children(idle).unwrap(), "idle Git Bash reported as busy; process tree:\n{tree}");
+        assert_eq!(ps_says(idle), Some(false), "ps: idle Git Bash reported as busy; process tree:\n{tree}");
+        mgr.kill(idle);
+
+        let running = spawn_ready(&mgr, bash, Some("echo running-$((40+2)); sleep 30"), "running-42");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut found = false;
+        while Instant::now() < deadline && !found {
+            found = mgr.has_children(running).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let by_ps = ps_says(running);
+        let tree = process_tree(mgr.get(running).and_then(|s| s.pid).unwrap_or(0));
+        mgr.kill(running);
+        assert!(found, "sleep in Git Bash was not detected; process tree:\n{tree}");
+        assert_eq!(by_ps, Some(true), "ps: sleep in Git Bash was not detected; process tree:\n{tree}");
+    }
+
+    /// `pid` and everything below it, for failure messages.
+    fn process_tree(pid: u32) -> String {
+        fn walk(procs: &[Proc], pid: u32, depth: usize, out: &mut String) {
+            if depth > 10 {
+                return;
+            }
+            for p in children(procs, pid) {
+                out.push_str(&format!("{}{} {}\n", "  ".repeat(depth), p.pid, p.exe));
+                walk(procs, p.pid, depth + 1, out);
+            }
+        }
+        let procs = processes();
+        let mut out = format!("{pid} {}\n", procs.iter().find(|p| p.pid == pid).map(|p| p.exe.as_str()).unwrap_or("?"));
+        walk(&procs, pid, 1, &mut out);
+        out
+    }
+
+    #[test]
+    fn ended_terminals_are_removed() {
+        let cmd = detect_shells().into_iter().find(|s| s.kind == crate::shell::ShellKind::Cmd).expect("cmd.exe");
+        let mgr = Arc::new(PtyManager::default());
+        let id = spawn_ready(&mgr, cmd, Some("echo bye-%NUMBER_OF_PROCESSORS%& exit"), "bye-");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline && mgr.get(id).is_some() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(mgr.get(id).is_none(), "the ended terminal is still registered");
+        // Input or a resize that races with the exit is ignored, not an error.
+        assert!(mgr.write(id, b"x").is_ok() && mgr.resize(id, 80, 24).is_ok());
     }
 
     #[test]

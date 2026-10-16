@@ -97,18 +97,21 @@ class Updater {
 
   /**
    * Installs the downloaded update. On Windows this starts the installer and exits Shellman;
-   * `restart` starts the new version once it is installed.
+   * `restart` starts the new version once it is installed. False when it couldn't be installed
+   * (the terminals have been ended by then).
    */
-  async install(restart: boolean): Promise<void> {
-    if (!this.update || this.state.kind !== 'ready') return;
+  async install(restart: boolean): Promise<boolean> {
+    if (!this.update || this.state.kind !== 'ready') return false;
     try {
       // The installer replaces Shellman's files, so end the terminals first instead of orphaning them.
       await api.killAll();
       await this.update.install({ restartAfterInstall: restart });
       if (restart) await relaunch();
+      return true;
     } catch (e) {
       this.set({ kind: 'error', message: `Could not install the update: ${e}` });
       toast(`Could not install the update: ${e}`, 'error', 10000);
+      return false;
     }
   }
 

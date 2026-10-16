@@ -3,7 +3,18 @@ import { claudeCommand, isTrackableClaude, isUuid } from './claude';
 
 describe('claude conversations', () => {
   it('tracks interactive claude started with options only', () => {
-    for (const c of ['claude', '  claude  ', 'claude --dangerously-skip-permissions', 'claude --model opus', 'claude --model=opus --add-dir ../lib', 'claude.exe', 'CLAUDE.cmd --verbose']) {
+    for (const c of [
+      'claude',
+      '  claude  ',
+      'claude --dangerously-skip-permissions',
+      'claude --model opus',
+      'claude --model=opus --add-dir ../lib',
+      'claude.exe',
+      'CLAUDE.cmd --verbose',
+      'claude --add-dir ../a ../b --model opus',
+      'claude --permission-mode plan --verbose',
+      'claude -n reviewer --effort high',
+    ]) {
       expect(isTrackableClaude(c), c).toBe(true);
     }
   });
@@ -25,6 +36,11 @@ describe('claude conversations', () => {
       'claude "fix the login bug"',
       "claude 'explain'",
       'claude --version',
+      // A flag without a value followed by a word: the word is a startup prompt.
+      'claude --verbose fix',
+      'claude --dangerously-skip-permissions refactor',
+      'claude --model opus fix',
+      'claude --model=opus fix',
     ]) {
       expect(isTrackableClaude(c), c).toBe(false);
     }

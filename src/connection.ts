@@ -181,15 +181,19 @@ function parseSsh(args: string[]): Connection | null {
   const c = emptyConnection('ssh');
   const extra: string[] = [];
   let dest: string | null = null;
+  let optionsDone = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (dest !== null) return null; // a remote command; not supported here
-    if (a === '--') {
-      if (i + 1 >= args.length) return null;
+    if (a === '--' && !optionsDone) {
+      if (dest !== null || i + 1 >= args.length) return null;
       dest = args[++i];
+      optionsDone = true;
       continue;
     }
-    if (!a.startsWith('-') || a === '-') {
+    if (optionsDone || !a.startsWith('-') || a === '-') {
+      // ssh takes options after the host too (`ssh host -p 2222`); another word is a remote
+      // command, which isn't supported here.
+      if (dest !== null) return null;
       dest = a;
       continue;
     }
@@ -206,6 +210,8 @@ function parseSsh(args: string[]): Connection | null {
     } else if (flag === 'l' && value !== undefined) c.user = value;
     else if (flag === 'i' && value !== undefined) c.identityFile = value;
     else if (flag === 'J' && value !== undefined) c.jumpHost = value;
+    // `-o User=bob` names the user too, so "login as:" isn't asked.
+    else if (flag === 'o' && value !== undefined && /^user\s*[= ]\s*\S/i.test(value) && !c.user) c.user = value.replace(/^user\s*[= ]\s*/i, '');
     else extra.push(...(value !== undefined && a.length === 2 ? [a, value] : [a]));
   }
   const d = dest === null ? null : parseDestination(dest);
