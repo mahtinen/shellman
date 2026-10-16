@@ -5,6 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { api, type PtyMessage } from './api';
+import { claudeCommand, isTrackableClaude } from './claude';
 import { uid } from './config';
 import { h } from './dom';
 import { icons } from './icons';
@@ -86,7 +87,8 @@ export class Pane {
   private resizeObserver: ResizeObserver;
 
   constructor(spec: LaunchSpec, host: PaneHost) {
-    this.spec = spec;
+    // A terminal that starts Claude gets its own conversation (kept when it is restored or restarted).
+    this.spec = !spec.claudeId && isTrackableClaude(spec.command) ? { ...spec, claudeId: crypto.randomUUID(), claudeStarted: false } : spec;
     this.cwd = spec.cwd;
     this.host = host;
 
@@ -203,12 +205,16 @@ export class Pane {
     this.shell = shell;
     this.fitNow();
 
+    const raw = this.spec.command.trim();
+    const { claudeId } = this.spec;
+    const command = raw && claudeId && isTrackableClaude(raw) ? claudeCommand(raw, claudeId, !!this.spec.claudeStarted, shell.kind) : raw;
+
     try {
       const id = await api.spawn(
         {
           shell,
           cwd: this.spec.cwd,
-          command: this.spec.command.trim() || null,
+          command: command || null,
           env: this.spec.env,
           shellIntegration: this.host.settings().shellIntegration,
           cols: this.term.cols,
@@ -221,6 +227,7 @@ export class Pane {
         return;
       }
       this.ptyId = id;
+      if (claudeId && !this.spec.claudeStarted) this.spec = { ...this.spec, claudeStarted: true };
       if (this.state === 'starting') this.state = 'running';
       const queued = this.pendingInput.join('');
       this.pendingInput = [];

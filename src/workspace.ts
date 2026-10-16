@@ -174,7 +174,8 @@ export class Workspace implements PaneHost {
 
   /** Spec for a new terminal next to `pane`: same shell and directory. */
   specFrom(pane: Pane, rerunCommand: boolean): LaunchSpec {
-    if (rerunCommand) return { ...pane.spec, cwd: pane.cwd };
+    // A duplicate gets its own Claude conversation rather than sharing this one.
+    if (rerunCommand) return { ...pane.spec, cwd: pane.cwd, claudeId: undefined, claudeStarted: undefined };
     return {
       name: baseName(pane.cwd),
       cwd: pane.cwd,

@@ -2,6 +2,7 @@
  * Saved form of the open tabs and splits (workspace.json), so they can be reopened
  * after a restart. Pure functions; the workspace does the opening.
  */
+import { isUuid } from './claude';
 import type { Direction, LayoutNode } from './layout';
 import type { LaunchSpec } from './types';
 
@@ -73,7 +74,7 @@ function normalizeSpec(v: unknown): LaunchSpec | null {
   if (!isObj(v) || !str(v.cwd)) return null;
   const env: Record<string, string> = {};
   if (isObj(v.env)) for (const [k, val] of Object.entries(v.env)) if (k && typeof val === 'string') env[k] = val;
-  return {
+  const spec: LaunchSpec = {
     name: str(v.name) || 'Terminal',
     cwd: str(v.cwd),
     command: str(v.command),
@@ -82,6 +83,11 @@ function normalizeSpec(v: unknown): LaunchSpec | null {
     color: str(v.color),
     sessionId: str(v.sessionId) || null,
   };
+  if (isUuid(v.claudeId)) {
+    spec.claudeId = v.claudeId;
+    spec.claudeStarted = v.claudeStarted === true;
+  }
+  return spec;
 }
 
 function normalizeNode(v: unknown, depth: number): SnapshotNode | null {

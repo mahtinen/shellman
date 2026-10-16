@@ -54,7 +54,7 @@ class App {
     });
 
     this.sidebar = new Sidebar({
-      open: (s, placement, shellId) => this.openSession(s, placement, shellId),
+      open: (s, placement, shellId, plain) => this.openSession(s, placement, shellId, plain),
       openGroup: (g) => this.openGroup(g),
       edit: (s) => void this.editExisting(s),
       create: (groupId) => void this.createSession({ groupId }),
@@ -364,10 +364,12 @@ class App {
     this.workspace.open(spec, pane ? placement : 'tab', pane?.id);
   }
 
-  openSession(s: SavedSession, placement: SplitPlacement, shellId?: string): void {
+  /** `plain`: the session's folder, shell and environment, without its startup command. */
+  openSession(s: SavedSession, placement: SplitPlacement, shellId?: string, plain = false): void {
     const pane = this.workspace.activePane();
     const spec = this.sessionSpec(s);
     if (shellId !== undefined) spec.shellId = shellId;
+    if (plain) spec.command = '';
     this.workspace.open(spec, pane ? placement : 'tab', pane?.id);
   }
 

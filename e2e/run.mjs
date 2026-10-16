@@ -349,11 +349,11 @@ if (phase === 'main') {
     await waitFor(`!!document.querySelector('.session-row + .term-tree')`, 3000, 'expanded');
   });
 
-  await step('session "Open with shell" starts another shell in its directory', async () => {
+  await step('session "Run … with" starts its command in another shell', async () => {
     const before = await ev(`__t.panes().length`);
     await ev(`document.querySelector('.session-row').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
     await waitFor(`!!document.querySelector('.menu')`, 2000, 'menu');
-    await ev(`[...document.querySelectorAll('.menu-item')].find(m => m.textContent.includes('Open with shell')).click()`);
+    await ev(`[...document.querySelectorAll('.menu-item')].find(m => m.textContent.startsWith('Run ')).click()`);
     await waitFor(`document.querySelectorAll('.menu').length === 2`, 2000, 'submenu');
     await ev(`[...document.querySelectorAll('.menu')[1].querySelectorAll('.menu-item')].find(m => m.textContent.includes('Command Prompt')).click()`);
     await waitFor(`__t.panes().length === ${before + 1} && __t.active().spec.shellId === 'cmd' && !!__t.active().spec.sessionId`, 3000, 'cmd pane from session');
@@ -419,6 +419,17 @@ if (phase === 'main') {
     assert((await ev(`__t.ws.activeTab.tabEl.querySelector('.tab-label').textContent`)) === 'Shellman repo', 'tab takes the session name');
   });
 
+  await step('Shift+click opens a plain terminal in the session', async () => {
+    const before = await ev(`__t.panes().length`);
+    await ev(`document.querySelector('.session-row').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })), true`);
+    await waitFor(`__t.panes().length === ${before + 1}`, 3000, 'new pane');
+    const spec = await ev(`(({ command, sessionId, cwd }) => ({ command, sessionId, cwd }))(__t.active().spec)`);
+    assert(spec.command === '' && spec.sessionId && spec.cwd === REPO, 'plain spec: ' + JSON.stringify(spec));
+    await waitFor(`__t.text().includes(${prompt(REPO)})`, 15000, 'plain prompt');
+    assert(!(await ev(`__t.text().includes('startup-ok')`)), 'startup command ran');
+    await waitFor(`!!document.querySelector('.session-row + .term-tree .term-row[data-pane="' + __t.active().id + '"]')`, 3000, 'listed under the session');
+  });
+
   await step('open terminals are saved for the next start', async () => {
     // A known layout: the session with a cmd split beside it (cmd focused), and a renamed PowerShell tab.
     await ev(`(() => { for (const t of [...__t.ws.tabs]) __t.ws.removeTab(t); return true; })()`);
@@ -427,6 +438,10 @@ if (phase === 'main') {
     await ev(`void __t.ws.open({ name: 'root', cwd: 'C:\\\\', command: '', shellId: 'cmd', env: {}, color: '', sessionId: null }, 'right', __t.active().id)`);
     await ev(`void __t.ws.open({ name: 'parent', cwd: ${js(PARENT)}, command: '', shellId: 'powershell', env: {}, color: '', sessionId: null }, 'tab')`);
     await waitFor(`__t.ws.tabs.length === 2`, 3000, 'two tabs');
+    // Claude gets its own conversation id; nothing is asked, so after the restart it falls back to a fresh one.
+    await ev(`void __t.ws.open({ name: 'claude', cwd: ${js(REPO)}, command: 'claude', shellId: '', env: {}, color: '', sessionId: null }, 'tab')`);
+    await waitFor(`__t.ws.tabs.length === 3 && __t.active().spec.claudeStarted === true`, 15000, 'claude tab started');
+    await waitFor(`/Claude Code|Welcome|trust/i.test(__t.text())`, 40000, 'claude UI');
     await ev(`(() => {
       const [first, second] = __t.ws.tabs;
       __t.ws.renameTab(second, 'Parent');
@@ -437,7 +452,9 @@ if (phase === 'main') {
     })()`);
     await ev(`__t.app.saveWorkspace()`);
     const saved = JSON.parse(fs.readFileSync(path.join(path.dirname(CONFIG), 'workspace.json'), 'utf8'));
-    assert(saved.tabs.length === 2 && saved.activeTab === 0, 'tabs: ' + JSON.stringify(saved).slice(0, 300));
+    assert(saved.tabs.length === 3 && saved.activeTab === 0, 'tabs: ' + JSON.stringify(saved).slice(0, 300));
+    const claude = saved.tabs[2].root.pane;
+    assert(claude.command === 'claude' && /^[0-9a-f-]{36}$/.test(claude.claudeId) && claude.claudeStarted === true, 'claude conversation: ' + JSON.stringify(claude));
     assert(saved.tabs[0].root.split === 'row' && Math.abs(saved.tabs[0].root.sizes[0] - 0.7) < 0.01, 'split: ' + JSON.stringify(saved.tabs[0].root).slice(0, 300));
     assert(saved.tabs[0].activePane === 1 && saved.tabs[1].title === 'Parent', 'active pane / title');
   });
@@ -457,7 +474,7 @@ if (phase === 'restart') {
     assert((await ev(`document.querySelectorAll('.welcome-card').length`)) === 1, 'welcome card');
   });
   await step('open terminals are reopened where they were', async () => {
-    await waitFor(`__t.ws.tabs.length === 2`, 10000, 'two tabs restored');
+    await waitFor(`__t.ws.tabs.length === 3`, 10000, 'three tabs restored');
     const r = await ev(`(() => {
       const [first, second] = __t.ws.tabs;
       const [a, b] = __t.ws.panesOf(first);
@@ -475,11 +492,20 @@ if (phase === 'restart') {
     // The session's startup command runs again.
     await waitFor(`__t.text(__t.ws.panesOf(__t.ws.tabs[0])[0]).includes('startup-ok')`, 15000, 'startup command re-ran');
   });
+  await step('a restored Claude terminal resumes its own conversation', async () => {
+    const id = await ev(`__t.ws.panesOf(__t.ws.tabs[2])[0].spec.claudeId`);
+    assert(/^[0-9a-f-]{36}$/.test(id ?? ''), 'no conversation id: ' + id);
+    const claudePane = `__t.ws.panesOf(__t.ws.tabs[2])[0]`;
+    // It tries to resume exactly that conversation; it was never used, so Claude starts it fresh with the same id.
+    await waitFor(`__t.text(${claudePane}).includes('No conversation found with session ID: ${id}')`, 40000, 'resumed by id');
+    // Claude clears the screen when it starts, so the message above disappears again.
+    await waitFor(`/Claude Code v\\d/.test(__t.text(${claudePane}))`, 40000, 'fresh conversation started');
+  });
   await step('one click on a saved session opens it', async () => {
     await ev(`(() => { window.__log = []; for (const t of ['mousedown','mouseup','click']) document.addEventListener(t, e => window.__log.push(t + ':' + e.target.className), true); return true; })()`);
     await sleep(1000); // synthetic input is dropped until WebView2 presents its first frame
     await click('.session-row');
-    await waitFor(`__t.ws.tabs.length === 3`, 3000).catch(async (e) => {
+    await waitFor(`__t.ws.tabs.length === 4`, 3000).catch(async (e) => {
       throw new Error(e.message + ' ' + (await ev(`JSON.stringify({ log: window.__log, tabs: __t.ws.tabs.length, rows: document.querySelectorAll('.session-row').length, rect: JSON.stringify(document.querySelector('.session-row').getBoundingClientRect()) })`)));
     });
     await waitFor(`__t.text().includes('startup-ok')`, 15000);

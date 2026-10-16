@@ -19,8 +19,8 @@ export interface OpenTerminal {
 }
 
 export interface SidebarActions {
-  /** `shellId` overrides the session's shell. */
-  open(session: SavedSession, placement: SplitPlacement, shellId?: string): void;
+  /** `shellId` overrides the session's shell; `plain` leaves out its startup command. */
+  open(session: SavedSession, placement: SplitPlacement, shellId?: string, plain?: boolean): void;
   openGroup(group: Group): void;
   edit(session: SavedSession): void;
   create(groupId: string | null): void;
@@ -330,7 +330,7 @@ export class Sidebar {
         class: `session-row${s.groupId ? ' in-group' : ''}`,
         draggable: true,
         style: s.color ? `--session-color:${s.color}` : undefined,
-        title: [s.name, s.cwd, s.command ? `> ${s.command}` : '', shell ? `Shell: ${shell}` : '', '', 'Click: new tab · Middle-click: split right'].filter((x, i) => x || i === 4).join('\n'),
+        title: [s.name, s.cwd, s.command ? `> ${s.command}` : '', shell ? `Shell: ${shell}` : '', '', s.command ? 'Click: new tab · Shift+click: plain terminal · Middle-click: split right' : 'Click: new tab · Middle-click: split right'].filter((x, i) => x || i === 4).join('\n'),
       },
       // Like a group's chevron, but only when there are open terminals to fold.
       running
@@ -363,13 +363,14 @@ export class Sidebar {
         { class: 'session-actions' },
         this.actionBtn('splitRight', 'Open in split right', () => this.actions.open(s, 'right')),
         this.actionBtn('splitDown', 'Open in split down', () => this.actions.open(s, 'down')),
-        this.actionBtn('chevronDown', 'Open with another shell', (e) =>
-          showMenuBelow(e.currentTarget as HTMLElement, shellEntries((id) => this.actions.open(s, 'tab', id))),
+        this.actionBtn('chevronDown', s.command ? 'Open a plain terminal or another shell' : 'Open with another shell', (e) =>
+          showMenuBelow(e.currentTarget as HTMLElement, this.openEntries(s)),
         ),
         this.actionBtn('edit', 'Edit', () => this.actions.edit(s)),
       ),
     );
-    row.addEventListener('click', () => this.actions.open(s, 'tab'));
+    // Shift+click: the session's folder and shell without its startup command.
+    row.addEventListener('click', (e) => this.actions.open(s, 'tab', undefined, e.shiftKey));
     row.addEventListener('mousedown', (e) => {
       if (e.button === 1) e.preventDefault();
     });
@@ -382,7 +383,8 @@ export class Sidebar {
         { label: 'Open in new tab', icon: 'terminal', action: () => this.actions.open(s, 'tab') },
         { label: 'Open in split right', icon: 'splitRight', action: () => this.actions.open(s, 'right') },
         { label: 'Open in split down', icon: 'splitDown', action: () => this.actions.open(s, 'down') },
-        { label: 'Open with shell', icon: 'terminal', submenu: shellEntries((id) => this.actions.open(s, 'tab', id)) },
+        'separator',
+        ...this.openEntries(s),
         'separator',
         { label: 'Edit…', icon: 'edit', action: () => this.actions.edit(s) },
         { label: 'Duplicate', icon: 'duplicate', action: () => this.actions.duplicate(s) },
@@ -432,6 +434,18 @@ export class Sidebar {
       this.moveSession(id, s.groupId, s.id, this.isUpperHalf(e, row));
     });
     return row;
+  }
+
+  /** Plain terminals (folder and shell, no startup command) and other shells for a session. */
+  private openEntries(s: SavedSession): MenuEntry[] {
+    const withShell = shellEntries((id) => this.actions.open(s, 'tab', id));
+    if (!s.command) return [{ label: 'Open with shell', icon: 'terminal', submenu: withShell }];
+    const cmd = s.command.length > 24 ? `${s.command.slice(0, 23)}…` : s.command;
+    return [
+      { label: 'Open plain terminal', icon: 'terminal', shortcut: 'Shift+Click', action: () => this.actions.open(s, 'tab', undefined, true) },
+      { label: 'Plain terminal with', icon: 'terminal', submenu: shellEntries((id) => this.actions.open(s, 'tab', id, true)) },
+      { label: `Run ${cmd} with`, icon: 'play', submenu: withShell },
+    ];
   }
 
   private actionBtn(icon: keyof typeof icons, title: string, fn: (e: MouseEvent) => void): HTMLElement {

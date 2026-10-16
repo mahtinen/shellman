@@ -16,6 +16,8 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
 
 - **Session sidebar.** Saved directories with optional startup command, shell, colour, environment
   variables and groups. Click opens a new tab; the hover buttons or middle-click open it as a split.
+  Shift+click (or "Open plain terminal") opens the session's folder and shell *without* its startup command,
+  e.g. for some git work next to Claude.
   Drag to reorder or move between groups. "Open all in tabs" on a group starts your whole workspace.
   New sessions start out in your home directory (or the default directory from Settings).
 - **Open terminals tree.** Each session lists its open terminals underneath it: the ones opened from it, plus
@@ -32,7 +34,9 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   names as more of them open (hover for the full name).
 - **Picks up where you left off.** Tabs, splits and each terminal's folder are reopened on the next start,
   with startup commands run again (Settings → Terminal → On start can reopen plain shells or nothing).
-  The screen contents aren't restored.
+  Every terminal started with `claude` has its own conversation, and it comes back in that terminal:
+  three Claude tabs in one folder reopen three different conversations. The screen contents of other
+  terminals aren't restored.
 - **"Same directory" everywhere.** New tab, splits and duplicate all start in the *current* directory
   of the active terminal. Shell integration makes PowerShell, cmd, Git Bash and WSL report `cd`
   (OSC 9;9 / OSC 7).
@@ -95,8 +99,12 @@ No shortcut uses Ctrl+Alt, because that's AltGr on Nordic and other European lay
 
 - To get notified when Claude finishes or needs input, set Claude Code's notification channel to the
   terminal bell (`/config`). Shellman then marks the tab and flashes the taskbar when Shellman isn't focused.
-- Session commands like `claude --continue` or `claude --resume` are handy for picking up where you
-  left off.
+- Use plain `claude` (options like `--model` are fine) as a session's startup command. Shellman starts each
+  terminal with its own conversation (`--session-id`) and resumes exactly that one after a restart, Restart
+  or Switch shell (`--resume`). A conversation that was never used starts fresh. `claude --continue` would
+  instead make every terminal in the folder open the same, most recent conversation.
+- Not tracked: `claude` typed by hand, startup prompts (`claude "fix the bug"`), `-p`, subcommands, and
+  switching conversations inside a tab with `/resume`.
 
 ## Development
 

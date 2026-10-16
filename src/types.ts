@@ -86,6 +86,10 @@ export interface LaunchSpec {
   color: string;
   /** Saved session this terminal was opened from, if any. */
   sessionId: string | null;
+  /** This terminal's own Claude Code conversation, when its command starts `claude` (see claude.ts). */
+  claudeId?: string;
+  /** The conversation has been started once, so later starts resume it. */
+  claudeStarted?: boolean;
 }
 
 export type SplitPlacement = 'tab' | 'right' | 'down';
