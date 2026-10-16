@@ -1,3 +1,4 @@
+import { normalizeConnection } from './connection';
 import type { Config, Group, SavedSession, Settings, ShellProfile } from './types';
 
 export const DEFAULT_FONT = "'Cascadia Mono', 'Cascadia Code', Consolas, 'Courier New', monospace";
@@ -26,6 +27,8 @@ export function defaultSettings(): Settings {
     customShells: [],
     updates: 'auto',
     restoreTerminals: 'all',
+    reconnectOnStart: false,
+    sshPath: '',
   };
 }
 
@@ -102,6 +105,8 @@ export function normalizeConfig(raw: unknown): Config {
       : [],
     updates: oneOf(s.updates, ['auto', 'notify', 'off'] as const, d.updates),
     restoreTerminals: oneOf(s.restoreTerminals, ['all', 'shells', 'off'] as const, d.restoreTerminals),
+    reconnectOnStart: bool(s.reconnectOnStart, d.reconnectOnStart),
+    sshPath: str(s.sshPath, d.sshPath).trim(),
   };
 
   const groups: Group[] = [];
@@ -125,11 +130,13 @@ export function normalizeConfig(raw: unknown): Config {
       if (sessionIds.has(id)) id = uid('s-');
       sessionIds.add(id);
       const groupId = str(x.groupId);
+      const connection = normalizeConnection(x.connection);
       sessions.push({
         id,
-        name: str(x.name) || str(x.cwd) || 'Session',
+        name: str(x.name) || connection?.host || str(x.cwd) || 'Session',
         groupId: groupId && groupIds.has(groupId) ? groupId : null,
-        cwd: str(x.cwd),
+        connection,
+        cwd: connection ? '' : str(x.cwd),
         command: str(x.command),
         shellId: str(x.shellId),
         color: str(x.color),
@@ -154,15 +161,16 @@ export function pathKey(path: string): string {
 }
 
 /**
- * The saved session a terminal belongs to: the one whose directory contains the terminal's
+ * The saved session a local terminal belongs to: the one whose directory contains the terminal's
  * current directory (the deepest one; the session it was opened from wins a tie). Outside every
- * session directory it stays with the session it was opened from.
+ * session directory it stays with the session it was opened from. Remote sessions never own one.
  */
 export function ownerSession(sessions: SavedSession[], cwd: string, openedFrom: string | null): SavedSession | undefined {
   const dir = pathKey(cwd);
   let best: SavedSession | undefined;
   let bestLen = -1;
-  for (const s of sessions) {
+  const local = sessions.filter((s) => !s.connection);
+  for (const s of local) {
     const k = pathKey(s.cwd);
     if (!k || !(dir === k || dir.startsWith(`${k}\\`))) continue;
     if (k.length > bestLen || (k.length === bestLen && s.id === openedFrom)) {
@@ -170,7 +178,7 @@ export function ownerSession(sessions: SavedSession[], cwd: string, openedFrom: 
       bestLen = k.length;
     }
   }
-  return best ?? (openedFrom ? sessions.find((s) => s.id === openedFrom) : undefined);
+  return best ?? (openedFrom ? local.find((s) => s.id === openedFrom) : undefined);
 }
 
 /** Parses "KEY=value" lines; blank lines and lines starting with # are ignored. */

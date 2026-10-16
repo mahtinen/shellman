@@ -1,3 +1,4 @@
+import { connectionKindName, connectionLabel, connectionTarget, keyLabel } from './connection';
 import { h } from './dom';
 import { icons } from './icons';
 import { showMenu, showMenuBelow, type MenuEntry } from './menu';
@@ -23,13 +24,16 @@ export interface SidebarActions {
   open(session: SavedSession, placement: SplitPlacement, shellId?: string, plain?: boolean): void;
   openGroup(group: Group): void;
   edit(session: SavedSession): void;
-  create(groupId: string | null): void;
+  /** `remember` ticks "Remember this session" to start with. */
+  create(groupId: string | null, remember?: boolean): void;
   duplicate(session: SavedSession): void;
   remove(session: SavedSession): void;
   createGroup(): void;
   renameGroup(group: Group): void;
   removeGroup(group: Group): void;
   openFolder(session: SavedSession): void;
+  /** Copies the ssh/telnet command for a connection. */
+  copyCommand(session: SavedSession): void;
   /** Open terminals by saved session id; `null` holds the ones that belong to no session. */
   terminals(): Map<string | null, OpenTerminal[]>;
   focusTerminal(paneId: string): void;
@@ -117,7 +121,7 @@ export class Sidebar {
   private matches(s: SavedSession): boolean {
     const q = this.search.value.trim().toLowerCase();
     if (!q) return true;
-    return [s.name, s.cwd, s.command].some((f) => f.toLowerCase().includes(q));
+    return [s.name, s.cwd, s.command, s.connection ? connectionLabel(s.connection) : ''].some((f) => f.toLowerCase().includes(q));
   }
 
   private visibleSessions(): SavedSession[] {
@@ -187,7 +191,7 @@ export class Sidebar {
           'div',
           { class: 'sidebar-empty' },
           h('p', null, 'Save the directories you work in, with an optional startup command like ', h('code', null, 'claude'), '.'),
-          h('button', { class: 'btn primary', onclick: () => this.actions.create(null) }, 'Add a session'),
+          h('button', { class: 'btn primary', onclick: () => this.actions.create(null, true) }, 'Add a session'),
         ),
       );
     } else if (filtering && !rows.length) {
@@ -324,13 +328,18 @@ export class Sidebar {
 
   private sessionRow(s: SavedSession, running: number): HTMLElement {
     const shell = s.shellId ? store.shells.find((x) => x.id === s.shellId)?.name : '';
+    const conn = s.connection;
+    const tooltip = conn
+      ? [s.name, connectionLabel(conn), conn.passwordAuth ? 'Log in with a password' : conn.identityKey ? `Key: ${keyLabel(conn.identityKey)}` : '',
+          conn.legacyAlgorithms ? 'Old algorithms allowed' : '', '', 'Click: connect in a new tab · Middle-click: split right']
+      : [s.name, s.cwd, s.command ? `> ${s.command}` : '', shell ? `Shell: ${shell}` : '', '', s.command ? 'Click: new tab · Shift+click: plain terminal · Middle-click: split right' : 'Click: new tab · Middle-click: split right'];
     const row = h(
       'div',
       {
         class: `session-row${s.groupId ? ' in-group' : ''}`,
         draggable: true,
         style: s.color ? `--session-color:${s.color}` : undefined,
-        title: [s.name, s.cwd, s.command ? `> ${s.command}` : '', shell ? `Shell: ${shell}` : '', '', s.command ? 'Click: new tab · Shift+click: plain terminal · Middle-click: split right' : 'Click: new tab · Middle-click: split right'].filter((x, i) => x || i === 4).join('\n'),
+        title: tooltip.filter((x, i) => x || i === tooltip.length - 2).join('\n'),
       },
       // Like a group's chevron, but only when there are open terminals to fold.
       running
@@ -344,7 +353,7 @@ export class Sidebar {
             },
           })
         : h('span', { class: 'chevron session-chevron' }),
-      h('span', { class: 'session-icon', html: icons.terminal }),
+      h('span', { class: 'session-icon', html: conn ? icons.globe : icons.terminal }),
       h(
         'div',
         { class: 'session-text' },
@@ -356,16 +365,20 @@ export class Sidebar {
             ? h('span', { class: `badge${s.collapsed ? ' folded' : ''}`, title: `${running} open terminal${running > 1 ? 's' : ''}` }, String(running))
             : null,
         ),
-        h('div', { class: 'session-sub' }, s.command ? h('span', { class: 'session-cmd' }, s.command) : null, h('span', null, s.cwd)),
+        conn
+          ? h('div', { class: 'session-sub' }, h('span', { class: 'session-cmd' }, conn.kind), h('span', { class: 'session-target' }, connectionTarget(conn)))
+          : h('div', { class: 'session-sub' }, s.command ? h('span', { class: 'session-cmd' }, s.command) : null, h('span', null, s.cwd)),
       ),
       h(
         'div',
         { class: 'session-actions' },
         this.actionBtn('splitRight', 'Open in split right', () => this.actions.open(s, 'right')),
         this.actionBtn('splitDown', 'Open in split down', () => this.actions.open(s, 'down')),
-        this.actionBtn('chevronDown', s.command ? 'Open a plain terminal or another shell' : 'Open with another shell', (e) =>
-          showMenuBelow(e.currentTarget as HTMLElement, this.openEntries(s)),
-        ),
+        conn
+          ? null
+          : this.actionBtn('chevronDown', s.command ? 'Open a plain terminal or another shell' : 'Open with another shell', (e) =>
+              showMenuBelow(e.currentTarget as HTMLElement, this.openEntries(s)),
+            ),
         this.actionBtn('edit', 'Edit', () => this.actions.edit(s)),
       ),
     );
@@ -380,11 +393,11 @@ export class Sidebar {
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       showMenu(e.clientX, e.clientY, [
-        { label: 'Open in new tab', icon: 'terminal', action: () => this.actions.open(s, 'tab') },
+        { label: conn ? 'Connect in new tab' : 'Open in new tab', icon: conn ? 'globe' : 'terminal', action: () => this.actions.open(s, 'tab') },
         { label: 'Open in split right', icon: 'splitRight', action: () => this.actions.open(s, 'right') },
         { label: 'Open in split down', icon: 'splitDown', action: () => this.actions.open(s, 'down') },
         'separator',
-        ...this.openEntries(s),
+        ...(conn ? [{ label: `Copy ${connectionKindName(conn.kind)} command`, icon: 'copy' as const, action: () => this.actions.copyCommand(s) }] : this.openEntries(s)),
         'separator',
         { label: 'Edit…', icon: 'edit', action: () => this.actions.edit(s) },
         { label: 'Duplicate', icon: 'duplicate', action: () => this.actions.duplicate(s) },
@@ -400,7 +413,7 @@ export class Sidebar {
             })),
           ],
         },
-        { label: 'Open folder in Explorer', icon: 'openExternal', action: () => this.actions.openFolder(s) },
+        ...(conn ? [] : [{ label: 'Open folder in Explorer', icon: 'openExternal' as const, action: () => this.actions.openFolder(s) }]),
         'separator',
         { label: 'Delete', icon: 'trash', danger: true, action: () => this.actions.remove(s) },
       ]);

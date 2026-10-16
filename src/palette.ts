@@ -18,7 +18,7 @@ let open: (() => void) | null = null;
  * Quick launcher. Enter opens in a new tab, Ctrl+Enter splits right,
  * Shift+Enter splits down.
  */
-export function showPalette(items: PaletteItem[], placeholder = 'Open a saved session…'): void {
+export function showPalette(items: PaletteItem[], placeholder = 'Open a saved session…', fromQuery?: (query: string) => PaletteItem[]): void {
   if (open) return open();
   const restoreFocus = document.activeElement as HTMLElement | null;
   const input = h('input', { class: 'palette-input', placeholder, spellcheck: false });
@@ -61,6 +61,8 @@ export function showPalette(items: PaletteItem[], placeholder = 'Open a saved se
       .filter((x) => x.score !== null)
       .sort((a, b) => (q ? b.score! - a.score! : 0) || a.i - b.i)
       .map((x) => x.item);
+    // Something typed that is an item by itself (e.g. "user@host" to connect to) comes first.
+    filtered.unshift(...(fromQuery?.(q) ?? []));
     selected = Math.min(selected, Math.max(0, filtered.length - 1));
     list.replaceChildren(
       ...filtered.map((item, i) =>
