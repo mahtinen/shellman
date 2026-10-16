@@ -10,9 +10,19 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "config.json";
+/// Open tabs and splits, so they can be reopened on the next start.
+pub const WORKSPACE_FILE: &str = "workspace.json";
 
 pub fn load(dir: &Path) -> Result<Option<Value>, String> {
-    let path = dir.join(FILE_NAME);
+    load_file(dir, FILE_NAME)
+}
+
+pub fn save(dir: &Path, value: &Value) -> Result<(), String> {
+    save_file(dir, FILE_NAME, value)
+}
+
+pub fn load_file(dir: &Path, name: &str) -> Result<Option<Value>, String> {
+    let path = dir.join(name);
     let text = match fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -26,17 +36,17 @@ pub fn load(dir: &Path) -> Result<Option<Value>, String> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let aside = dir.join(format!("{FILE_NAME}.corrupt-{stamp}"));
+            let aside = dir.join(format!("{name}.corrupt-{stamp}"));
             let _ = fs::rename(&path, &aside);
             Ok(None)
         }
     }
 }
 
-pub fn save(dir: &Path, value: &Value) -> Result<(), String> {
+pub fn save_file(dir: &Path, name: &str, value: &Value) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    let path = dir.join(FILE_NAME);
-    let tmp: PathBuf = dir.join(format!("{FILE_NAME}.tmp"));
+    let path = dir.join(name);
+    let tmp: PathBuf = dir.join(format!("{name}.tmp"));
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     {
         let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
@@ -44,7 +54,7 @@ pub fn save(dir: &Path, value: &Value) -> Result<(), String> {
         f.sync_all().map_err(|e| e.to_string())?;
     }
     if path.exists() {
-        let _ = fs::copy(&path, dir.join(format!("{FILE_NAME}.bak")));
+        let _ = fs::copy(&path, dir.join(format!("{name}.bak")));
     }
     fs::rename(&tmp, &path).map_err(|e| format!("Could not save {}: {e}", path.display()))
 }

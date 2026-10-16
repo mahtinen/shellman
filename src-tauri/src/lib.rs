@@ -71,6 +71,16 @@ async fn config_save(app: tauri::AppHandle, config: Value) -> Result<(), String>
 }
 
 #[tauri::command]
+async fn workspace_load(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    config::load_file(&config_dir(&app)?, config::WORKSPACE_FILE)
+}
+
+#[tauri::command]
+async fn workspace_save(app: tauri::AppHandle, workspace: Value) -> Result<(), String> {
+    config::save_file(&config_dir(&app)?, config::WORKSPACE_FILE, &workspace)
+}
+
+#[tauri::command]
 async fn clipboard_read() -> Result<String, String> {
     arboard::Clipboard::new()
         .and_then(|mut c| c.get_text())
@@ -197,6 +207,8 @@ pub fn run() {
             list_shells,
             config_load,
             config_save,
+            workspace_load,
+            workspace_save,
             clipboard_read,
             clipboard_write,
             dir_exists,

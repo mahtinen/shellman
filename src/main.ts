@@ -10,6 +10,7 @@ import { matchKey, shortcutFor, type Match } from './keys';
 import { showMenu, showMenuBelow, type MenuEntry } from './menu';
 import type { Pane } from './pane';
 import { showPalette, type PaletteItem } from './palette';
+import { normalizeSnapshot, snapshotPanes } from './snapshot';
 import { editSession, pickDirectory, shellEntries } from './sessionEditor';
 import { openSettings, openShortcuts } from './settingsDialog';
 import { Sidebar, type OpenTerminal } from './sidebar';
@@ -34,6 +35,10 @@ class App {
   private readonly statusRight = h('div', { class: 'status-right' });
   private readonly updateBtn = h('button', { class: 'update-btn', hidden: true });
   private appliedSettings = '';
+  /** Last workspace.json written; nothing is saved until the previous one has been reopened. */
+  private savedWorkspace = '';
+  private workspaceTimer: number | undefined;
+  private canSaveWorkspace = false;
 
   constructor() {
     this.workspace = new Workspace(this.tabsEl, this.areaEl, {
@@ -42,7 +47,10 @@ class App {
       onShortcut: (m) => this.runAction(m),
       onPaneContextMenu: (p, e) => this.paneMenu(p, e),
       onTabContextMenu: (t, e) => this.tabMenu(t, e),
-      onTerminalsInfo: () => this.sidebar?.refreshTerminals(),
+      onTerminalsInfo: () => {
+        this.sidebar?.refreshTerminals();
+        this.scheduleWorkspaceSave();
+      },
     });
 
     this.sidebar = new Sidebar({
@@ -159,6 +167,7 @@ class App {
   }
 
   private onWorkspaceChange(): void {
+    this.scheduleWorkspaceSave();
     const empty = this.workspace.tabs.length === 0;
     this.welcomeEl.hidden = !empty;
     this.sidebar.render();
@@ -249,6 +258,52 @@ class App {
     );
   }
 
+  // ---- reopening terminals after a restart ----------------------------
+
+  /** Reopens the tabs and splits that were open when Shellman last closed. */
+  async restoreWorkspace(): Promise<void> {
+    try {
+      const mode = store.settings.restoreTerminals;
+      const snap = mode === 'off' ? null : normalizeSnapshot(await api.loadWorkspace());
+      if (!snap) return;
+      // A folder that no longer exists falls back to its session's folder, then to the default one.
+      const specs = snap.tabs.flatMap((t) => snapshotPanes(t.root));
+      await Promise.all(
+        specs.map(async (spec) => {
+          if (mode === 'shells') spec.command = '';
+          if (await api.dirExists(spec.cwd)) return;
+          const session = store.session(spec.sessionId);
+          spec.cwd = session && (await api.dirExists(session.cwd)) ? session.cwd : store.defaultCwd();
+        }),
+      );
+      const tabs = snap.tabs.map((t) => this.workspace.restoreTab(t));
+      this.workspace.activateTab(tabs[snap.activeTab].id, true);
+    } catch (e) {
+      console.warn('Could not reopen the previous terminals:', e);
+    } finally {
+      this.canSaveWorkspace = true;
+      this.scheduleWorkspaceSave();
+    }
+  }
+
+  private scheduleWorkspaceSave(): void {
+    if (!this.canSaveWorkspace) return;
+    clearTimeout(this.workspaceTimer);
+    this.workspaceTimer = window.setTimeout(() => void this.saveWorkspace(), 1000);
+  }
+
+  /** Writes the open tabs now (when they changed). `final` stops later saves while the app shuts down. */
+  async saveWorkspace(final = false): Promise<void> {
+    clearTimeout(this.workspaceTimer);
+    if (!this.canSaveWorkspace) return;
+    if (final) this.canSaveWorkspace = false;
+    const snap = this.workspace.snapshot();
+    const json = JSON.stringify(snap);
+    if (json === this.savedWorkspace) return;
+    this.savedWorkspace = json;
+    await api.saveWorkspace(snap).catch((e) => console.warn('Could not save the open terminals:', e));
+  }
+
   // ---- updates ---------------------------------------------------------
 
   private renderUpdateButton(): void {
@@ -286,6 +341,7 @@ class App {
       );
       if (!ok) return;
     }
+    await this.saveWorkspace(true);
     await store.flush();
     await updater.install(true);
   }
@@ -709,6 +765,7 @@ class App {
           }
         }
       }
+      await this.saveWorkspace(true);
       await store.flush();
       // A downloaded update is installed on the way out; the next start runs the new version.
       if (updater.ready) await updater.install(false);
@@ -723,7 +780,9 @@ async function main(): Promise<void> {
     toast(`Start-up failed: ${e}`, 'error', 15000);
   }
   applyUiTheme(getTheme(store.settings.theme));
-  (window as any).__shellman = new App();
+  const app = new App();
+  (window as any).__shellman = app;
+  await app.restoreWorkspace();
   updater.start();
 }
 

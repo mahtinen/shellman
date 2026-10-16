@@ -17,6 +17,7 @@ import {
   type SplitNode,
 } from './layout';
 import { Pane, type PaneHost } from './pane';
+import { layoutFromSnapshot, snapshotNode, type TabSnapshot, type WorkspaceSnapshot } from './snapshot';
 import { store } from './store';
 import type { LaunchSpec, SavedSession, SplitPlacement } from './types';
 
@@ -190,22 +191,7 @@ export class Workspace implements PaneHost {
 
     let tab: Tab;
     if (placement === 'tab' || !targetTab) {
-      tab = {
-        id: uid('t-'),
-        root: leaf(pane.id),
-        activePaneId: pane.id,
-        customTitle: null,
-        zoomedPaneId: null,
-        el: h('div', { class: 'tab-content', hidden: true }),
-        tabEl: null,
-        unread: false,
-        busy: false,
-        bell: false,
-        hiddenAt: 0,
-      };
-      this.areaEl.append(tab.el);
-      const activeIdx = this.tabs.findIndex((t) => t.id === this.activeTabId);
-      this.tabs.splice(activeIdx >= 0 ? activeIdx + 1 : this.tabs.length, 0, tab);
+      tab = this.createTab(leaf(pane.id), pane.id);
     } else {
       tab = targetTab;
       const target = targetPaneId ?? tab.activePaneId;
@@ -225,6 +211,70 @@ export class Workspace implements PaneHost {
     return pane;
   }
 
+  /** Adds an empty tab after the active one. */
+  private createTab(root: LayoutNode, activePaneId: string): Tab {
+    const tab: Tab = {
+      id: uid('t-'),
+      root,
+      activePaneId,
+      customTitle: null,
+      zoomedPaneId: null,
+      el: h('div', { class: 'tab-content', hidden: true }),
+      tabEl: null,
+      unread: false,
+      busy: false,
+      bell: false,
+      hiddenAt: 0,
+    };
+    this.areaEl.append(tab.el);
+    const activeIdx = this.tabs.findIndex((t) => t.id === this.activeTabId);
+    this.tabs.splice(activeIdx >= 0 ? activeIdx + 1 : this.tabs.length, 0, tab);
+    return tab;
+  }
+
+  // ---- saving and reopening ---------------------------------------------
+
+  /** The open tabs and splits, with each terminal's current directory. */
+  snapshot(): WorkspaceSnapshot {
+    const tabs: TabSnapshot[] = [];
+    let activeTab = 0;
+    for (const tab of this.tabs) {
+      const root = snapshotNode(tab.root, (id) => {
+        const p = this.panes.get(id);
+        return p ? { ...p.spec, cwd: p.cwd, env: { ...p.spec.env } } : null;
+      });
+      if (!root) continue;
+      if (tab.id === this.activeTabId) activeTab = tabs.length;
+      tabs.push({ title: tab.customTitle, activePane: Math.max(0, paneIds(tab.root).indexOf(tab.activePaneId)), root });
+    }
+    return { version: 1, activeTab, tabs };
+  }
+
+  /** Reopens a saved tab with all its splits; every pane starts its shell again. */
+  restoreTab(saved: TabSnapshot): Tab {
+    const created: Pane[] = [];
+    const root = layoutFromSnapshot(saved.root, (spec) => {
+      const pane = new Pane(spec, this);
+      this.panes.set(pane.id, pane);
+      created.push(pane);
+      return pane.id;
+    });
+    const active = created[saved.activePane] ?? created[0];
+    const tab = this.createTab(root, active.id);
+    tab.customTitle = saved.title;
+    for (const p of created) this.paneTab.set(p.id, tab);
+
+    this.renderTabBar();
+    this.activateTab(tab.id, false);
+    this.renderLayout(tab);
+    for (const p of created) p.mount();
+    this.setActivePane(active.id, false);
+    this.ensureGpu(tab);
+    for (const p of created) void p.start();
+    this.events.onChange();
+    return tab;
+  }
+
   // ---- layout ---------------------------------------------------------
 
   private renderLayout(tab: Tab): void {
@@ -237,6 +287,7 @@ export class Workspace implements PaneHost {
       p.setActive(p.id === tab.activePaneId);
       p.queueFit();
     }
+    this.events.onTerminalsInfo();
   }
 
   private buildNode(node: LayoutNode, tab: Tab): HTMLElement {
@@ -279,6 +330,8 @@ export class Workspace implements PaneHost {
         d.removeEventListener('pointerup', up);
         d.removeEventListener('pointercancel', up);
         this.panes.get(tab.activePaneId)?.focus();
+        // New sizes are part of what is saved for the next start.
+        this.events.onTerminalsInfo();
       };
       d.addEventListener('pointermove', move);
       d.addEventListener('pointerup', up);

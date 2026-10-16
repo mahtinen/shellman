@@ -1,4 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
+import type { WorkspaceSnapshot } from './snapshot';
 import type { Config, ShellProfile, SystemInfo } from './types';
 
 export type PtyMessage = string | { exit: number | null };
@@ -28,6 +29,8 @@ export const api = {
   listShells: () => invoke<ShellProfile[]>('list_shells'),
   loadConfig: () => invoke<Partial<Config> | null>('config_load'),
   saveConfig: (config: Config) => invoke<void>('config_save', { config }),
+  loadWorkspace: () => invoke<unknown>('workspace_load'),
+  saveWorkspace: (workspace: WorkspaceSnapshot) => invoke<void>('workspace_save', { workspace }),
   clipboardRead: () => invoke<string>('clipboard_read'),
   clipboardWrite: (text: string) => invoke<void>('clipboard_write', { text }),
   dirExists: (path: string) => invoke<boolean>('dir_exists', { path }),

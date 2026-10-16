@@ -1,0 +1,122 @@
+/**
+ * Saved form of the open tabs and splits (workspace.json), so they can be reopened
+ * after a restart. Pure functions; the workspace does the opening.
+ */
+import type { Direction, LayoutNode } from './layout';
+import type { LaunchSpec } from './types';
+
+export type SnapshotNode = { pane: LaunchSpec } | { split: Direction; sizes: number[]; children: SnapshotNode[] };
+
+export interface TabSnapshot {
+  /** Name the user gave the tab, if any. */
+  title: string | null;
+  /** Index (in layout order) of the pane that had focus. */
+  activePane: number;
+  root: SnapshotNode;
+}
+
+export interface WorkspaceSnapshot {
+  version: 1;
+  activeTab: number;
+  tabs: TabSnapshot[];
+}
+
+const MAX_TABS = 50;
+const MAX_DEPTH = 12;
+
+/** Converts a tab's layout; `spec` gives each pane's current launch spec (with its current directory). */
+export function snapshotNode(node: LayoutNode, spec: (paneId: string) => LaunchSpec | null): SnapshotNode | null {
+  if (node.type === 'pane') {
+    const s = spec(node.paneId);
+    return s ? { pane: s } : null;
+  }
+  const kids = node.children.map((c) => snapshotNode(c, spec));
+  const children: SnapshotNode[] = [];
+  const sizes: number[] = [];
+  kids.forEach((k, i) => {
+    if (k) {
+      children.push(k);
+      sizes.push(node.sizes[i] ?? 1);
+    }
+  });
+  if (!children.length) return null;
+  if (children.length === 1) return children[0];
+  return { split: node.direction, sizes: normalizeSizes(sizes, children.length), children };
+}
+
+/** Builds a layout tree, creating a pane for every saved one. */
+export function layoutFromSnapshot(node: SnapshotNode, createPane: (spec: LaunchSpec) => string): LayoutNode {
+  if ('pane' in node) return { type: 'pane', paneId: createPane(node.pane) };
+  return {
+    type: 'split',
+    direction: node.split,
+    sizes: [...node.sizes],
+    children: node.children.map((c) => layoutFromSnapshot(c, createPane)),
+  };
+}
+
+export function snapshotPanes(node: SnapshotNode): LaunchSpec[] {
+  return 'pane' in node ? [node.pane] : node.children.flatMap(snapshotPanes);
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+const int = (v: unknown, max: number): number => (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < max ? v : 0);
+
+function normalizeSizes(sizes: number[], n: number): number[] {
+  const s = Array.from({ length: n }, (_, i) => (typeof sizes[i] === 'number' && Number.isFinite(sizes[i]) && sizes[i] > 0 ? sizes[i] : 1));
+  const total = s.reduce((a, b) => a + b, 0);
+  return s.map((x) => x / total);
+}
+
+function normalizeSpec(v: unknown): LaunchSpec | null {
+  if (!isObj(v) || !str(v.cwd)) return null;
+  const env: Record<string, string> = {};
+  if (isObj(v.env)) for (const [k, val] of Object.entries(v.env)) if (k && typeof val === 'string') env[k] = val;
+  return {
+    name: str(v.name) || 'Terminal',
+    cwd: str(v.cwd),
+    command: str(v.command),
+    shellId: str(v.shellId),
+    env,
+    color: str(v.color),
+    sessionId: str(v.sessionId) || null,
+  };
+}
+
+function normalizeNode(v: unknown, depth: number): SnapshotNode | null {
+  if (!isObj(v) || depth > MAX_DEPTH) return null;
+  if ('pane' in v) {
+    const spec = normalizeSpec(v.pane);
+    return spec ? { pane: spec } : null;
+  }
+  if ((v.split !== 'row' && v.split !== 'column') || !Array.isArray(v.children)) return null;
+  const rawSizes = Array.isArray(v.sizes) ? v.sizes : [];
+  const children: SnapshotNode[] = [];
+  const sizes: number[] = [];
+  v.children.forEach((c, i) => {
+    const n = normalizeNode(c, depth + 1);
+    if (n) {
+      children.push(n);
+      sizes.push(rawSizes[i] as number);
+    }
+  });
+  if (!children.length) return null;
+  if (children.length === 1) return children[0];
+  return { split: v.split, sizes: normalizeSizes(sizes, children.length), children };
+}
+
+/** Turns whatever was on disk into a valid snapshot, or null if nothing can be reopened. */
+export function normalizeSnapshot(raw: unknown): WorkspaceSnapshot | null {
+  if (!isObj(raw) || !Array.isArray(raw.tabs)) return null;
+  const tabs: TabSnapshot[] = [];
+  for (const t of raw.tabs.slice(0, MAX_TABS)) {
+    if (!isObj(t)) continue;
+    const root = normalizeNode(t.root, 0);
+    if (!root) continue;
+    const title = str(t.title).trim();
+    tabs.push({ title: title || null, activePane: int(t.activePane, snapshotPanes(root).length), root });
+  }
+  if (!tabs.length) return null;
+  return { version: 1, activeTab: int(raw.activeTab, tabs.length), tabs };
+}

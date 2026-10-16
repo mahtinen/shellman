@@ -7,7 +7,7 @@ import { ACTION_LABELS, BINDINGS, bindingLabel, type Action } from './keys';
 import { pickDirectory, shellOptions } from './sessionEditor';
 import { store } from './store';
 import { THEMES } from './themes';
-import type { Settings, ShellProfile, UpdateMode } from './types';
+import type { RestoreMode, Settings, ShellProfile, UpdateMode } from './types';
 import { updater } from './updater';
 
 function check(label: string, value: boolean, hint?: string): [HTMLElement, () => boolean] {
@@ -61,6 +61,14 @@ export function openSettings(): void {
   );
   rightClick.value = s.rightClick;
   const [integrationEl, integration] = check('Shell integration', s.shellIntegration, 'Shells report their working directory so "new terminal here" follows cd.');
+  const restore = h(
+    'select',
+    { class: 'input' },
+    h('option', { value: 'all' }, 'Reopen terminals and re-run their startup commands'),
+    h('option', { value: 'shells' }, 'Reopen terminals as plain shells'),
+    h('option', { value: 'off' }, 'Start with no terminals open'),
+  );
+  restore.value = s.restoreTerminals;
   const [confirmEl, confirmClose] = check('Confirm before closing terminals with running programs', s.confirmClose);
 
   // Custom shells editor.
@@ -181,6 +189,7 @@ export function openSettings(): void {
       section(
         'Terminal',
         h('div', { class: 'row two' }, field('Default shell', defaultShell), field('Scrollback lines', scrollback)),
+        field('On start', restore, 'Tabs and splits open where you left them, each in the folder it was last in.'),
         field('Default directory', h('div', { class: 'row' }, defaultCwd, browse), 'Used for new terminals that are not opened from a session or an existing terminal.'),
         h(
           'div',
@@ -234,6 +243,7 @@ export function openSettings(): void {
             shellIntegration: integration(),
             confirmClose: confirmClose(),
             updates: updates.value as UpdateMode,
+            restoreTerminals: restore.value as RestoreMode,
             customShells: custom.filter((x) => x.path.trim()).map((x) => ({ ...x, name: x.name.trim() || x.path })),
           };
           store.update((c) => Object.assign(c.settings, next));

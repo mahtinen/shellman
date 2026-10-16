@@ -25,6 +25,7 @@ export function defaultSettings(): Settings {
     otherTerminalsCollapsed: false,
     customShells: [],
     updates: 'auto',
+    restoreTerminals: 'all',
   };
 }
 
@@ -100,6 +101,7 @@ export function normalizeConfig(raw: unknown): Config {
       ? s.customShells.map(normalizeShell).filter((x): x is ShellProfile => x !== null)
       : [],
     updates: oneOf(s.updates, ['auto', 'notify', 'off'] as const, d.updates),
+    restoreTerminals: oneOf(s.restoreTerminals, ['all', 'shells', 'off'] as const, d.restoreTerminals),
   };
 
   const groups: Group[] = [];

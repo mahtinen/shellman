@@ -30,6 +30,9 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   pane, move focus with Alt+arrows, drag tabs to reorder. A tab has the same name as its terminal in the
   sidebar: Claude's task title if there is one, otherwise the session's name. Tabs shrink and cut their
   names as more of them open (hover for the full name).
+- **Picks up where you left off.** Tabs, splits and each terminal's folder are reopened on the next start,
+  with startup commands run again (Settings → Terminal → On start can reopen plain shells or nothing).
+  The screen contents aren't restored.
 - **"Same directory" everywhere.** New tab, splits and duplicate all start in the *current* directory
   of the active terminal. Shell integration makes PowerShell, cmd, Git Bash and WSL report `cd`
   (OSC 9;9 / OSC 7).
@@ -159,6 +162,6 @@ behave exactly as typed.
 
 ## Not done yet
 
-- Open tabs aren't restored after a restart (sessions are).
+- Terminal contents (scrollback) aren't restored after a restart; tabs, splits and folders are.
 - Shortcuts aren't configurable yet (see `src/keys.ts`).
 - Windows only.

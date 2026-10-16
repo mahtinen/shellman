@@ -32,6 +32,9 @@ export interface Group {
 
 export type CloseOnExit = 'graceful' | 'always' | 'never';
 
+/** What happens to the terminals that were open when Shellman last closed. */
+export type RestoreMode = 'all' | 'shells' | 'off';
+
 /** auto = download in the background and install on restart; notify = only say a new version exists. */
 export type UpdateMode = 'auto' | 'notify' | 'off';
 
@@ -63,6 +66,7 @@ export interface Settings {
   otherTerminalsCollapsed: boolean;
   customShells: ShellProfile[];
   updates: UpdateMode;
+  restoreTerminals: RestoreMode;
 }
 
 export interface Config {

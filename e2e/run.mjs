@@ -400,6 +400,29 @@ if (phase === 'main') {
     assert(cwd && cwd.toLowerCase() === process.env.USERPROFILE.toLowerCase(), `expected ${process.env.USERPROFILE}, got ${cwd}`);
   });
 
+  await step('open terminals are saved for the next start', async () => {
+    // A known layout: the session with a cmd split beside it (cmd focused), and a renamed PowerShell tab.
+    await ev(`(() => { for (const t of [...__t.ws.tabs]) __t.ws.removeTab(t); return true; })()`);
+    await click('.session-row');
+    await waitFor(`__t.ws.tabs.length === 1 && __t.text().includes('startup-ok')`, 15000, 'session tab');
+    await ev(`void __t.ws.open({ name: 'root', cwd: 'C:\\\\', command: '', shellId: 'cmd', env: {}, color: '', sessionId: null }, 'right', __t.active().id)`);
+    await ev(`void __t.ws.open({ name: 'parent', cwd: ${js(PARENT)}, command: '', shellId: 'powershell', env: {}, color: '', sessionId: null }, 'tab')`);
+    await waitFor(`__t.ws.tabs.length === 2`, 3000, 'two tabs');
+    await ev(`(() => {
+      const [first, second] = __t.ws.tabs;
+      __t.ws.renameTab(second, 'Parent');
+      first.root.sizes = [0.7, 0.3];
+      __t.ws.activateTab(first.id);
+      __t.ws.setActivePane(__t.ws.panesOf(first)[1].id, true);
+      return true;
+    })()`);
+    await ev(`__t.app.saveWorkspace()`);
+    const saved = JSON.parse(fs.readFileSync(path.join(path.dirname(CONFIG), 'workspace.json'), 'utf8'));
+    assert(saved.tabs.length === 2 && saved.activeTab === 0, 'tabs: ' + JSON.stringify(saved).slice(0, 300));
+    assert(saved.tabs[0].root.split === 'row' && Math.abs(saved.tabs[0].root.sizes[0] - 0.7) < 0.01, 'split: ' + JSON.stringify(saved.tabs[0].root).slice(0, 300));
+    assert(saved.tabs[0].activePane === 1 && saved.tabs[1].title === 'Parent', 'active pane / title');
+  });
+
   await step('no uncaught errors in the page', async () => {
     const errors = c.logs.filter((l) => l.startsWith('[exception]') || l.startsWith('[console.error]'));
     assert(errors.length === 0, errors.join('\n'));
@@ -414,11 +437,30 @@ if (phase === 'restart') {
     assert((await ev(`document.querySelector('.session-row .session-name span').textContent`)) === 'Shellman repo', 'name');
     assert((await ev(`document.querySelectorAll('.welcome-card').length`)) === 1, 'welcome card');
   });
+  await step('open terminals are reopened where they were', async () => {
+    await waitFor(`__t.ws.tabs.length === 2`, 10000, 'two tabs restored');
+    const r = await ev(`(() => {
+      const [first, second] = __t.ws.tabs;
+      const [a, b] = __t.ws.panesOf(first);
+      return {
+        split: first.root.type === 'split' && first.root.direction, size: first.root.sizes?.[0],
+        aSession: !!a.spec.sessionId, bShell: b.spec.shellId, bCwd: b.cwd,
+        title: second.customTitle, parentCwd: __t.ws.panesOf(second)[0].cwd,
+        activeTab: __t.ws.tabs.indexOf(__t.ws.activeTab), activePane: __t.active()?.id === b.id,
+      };
+    })()`);
+    assert(r.split === 'row' && Math.abs(r.size - 0.7) < 0.01, 'layout: ' + JSON.stringify(r));
+    assert(r.aSession && r.bShell === 'cmd' && r.bCwd === 'C:\\', 'panes: ' + JSON.stringify(r));
+    assert(r.title === 'Parent' && r.parentCwd === PARENT, 'second tab: ' + JSON.stringify(r));
+    assert(r.activeTab === 0 && r.activePane, 'focus: ' + JSON.stringify(r));
+    // The session's startup command runs again.
+    await waitFor(`__t.text(__t.ws.panesOf(__t.ws.tabs[0])[0]).includes('startup-ok')`, 15000, 'startup command re-ran');
+  });
   await step('one click on a saved session opens it', async () => {
     await ev(`(() => { window.__log = []; for (const t of ['mousedown','mouseup','click']) document.addEventListener(t, e => window.__log.push(t + ':' + e.target.className), true); return true; })()`);
     await sleep(1000); // synthetic input is dropped until WebView2 presents its first frame
     await click('.session-row');
-    await waitFor(`__t.ws.tabs.length === 1`, 3000).catch(async (e) => {
+    await waitFor(`__t.ws.tabs.length === 3`, 3000).catch(async (e) => {
       throw new Error(e.message + ' ' + (await ev(`JSON.stringify({ log: window.__log, tabs: __t.ws.tabs.length, rows: document.querySelectorAll('.session-row').length, rect: JSON.stringify(document.querySelector('.session-row').getBoundingClientRect()) })`)));
     });
     await waitFor(`__t.text().includes('startup-ok')`, 15000);
