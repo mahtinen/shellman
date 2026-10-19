@@ -2,7 +2,7 @@ import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { api } from './api';
-import { baseName, deleteGroup, groupPath, newGroup, uid } from './config';
+import { baseName, deleteGroup, groupPath, newGroup, sessionColor, uid } from './config';
 import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, emptyConnection, parseQuickConnect } from './connection';
 import { confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
 import { clamp, h, isEditableTarget, setChildren } from './dom';
@@ -13,7 +13,7 @@ import { showMenu, showMenuBelow, type MenuEntry } from './menu';
 import type { Pane } from './pane';
 import { showPalette, type PaletteItem } from './palette';
 import { normalizeSnapshot, snapshotPanes } from './snapshot';
-import { editSession, pickDirectory, shellEntries } from './sessionEditor';
+import { editGroup, editSession, pickDirectory, shellEntries } from './sessionEditor';
 import { openSettings, openShortcuts } from './settingsDialog';
 import { Sidebar, type OpenTerminal } from './sidebar';
 import { store } from './store';
@@ -70,7 +70,7 @@ class App {
       remove: (s) => void this.removeSession(s),
       createGroup: (parentId) => void this.createGroup(parentId),
       importSessions: (groupId) => importSessions(groupId),
-      renameGroup: (g) => void this.renameGroup(g),
+      editGroup: (g) => void this.editGroup(g),
       removeGroup: (g) => void this.removeGroup(g),
       openFolder: (s) => void api.openDir(s.cwd).catch((e) => toast(String(e), 'error')),
       copyCommand: (s) => s.connection && void this.copyConnectionCommand(s.connection),
@@ -256,12 +256,13 @@ class App {
 
   private renderWelcome(): void {
     const sessions = store.config.sessions;
+    const style = (color: string) => (color ? `--session-color:${color}` : undefined);
     const card = (s: SavedSession) =>
       h(
         'button',
         {
           class: 'welcome-card',
-          style: s.color ? `--session-color:${s.color}` : undefined,
+          style: style(sessionColor(store.config.groups, s)),
           title: s.connection ? connectionLabel(s.connection) : s.cwd,
           onclick: () => this.openSession(s, 'tab'),
         },
@@ -430,7 +431,7 @@ class App {
 
   private sessionSpec(s: SavedSession): LaunchSpec {
     if (s.connection) return this.connectionSpec(s.connection, s);
-    return { name: s.name, cwd: s.cwd, command: s.command, shellId: s.shellId, env: { ...s.env }, color: s.color, sessionId: s.id };
+    return { name: s.name, cwd: s.cwd, command: s.command, shellId: s.shellId, env: { ...s.env }, color: sessionColor(store.config.groups, s), sessionId: s.id };
   }
 
   /** A connection, from a saved session or typed (ad hoc). The client runs in the home directory. */
@@ -441,7 +442,7 @@ class App {
       command: '',
       shellId: '',
       env: { ...s?.env },
-      color: s?.color ?? '',
+      color: s ? sessionColor(store.config.groups, s) : '',
       sessionId: s?.id ?? null,
       connection: { ...c },
     };
@@ -587,7 +588,7 @@ class App {
       label: s.name,
       detail: s.connection ? connectionLabel(s.connection) : s.command ? `${s.command} · ${s.cwd}` : s.cwd,
       icon: s.connection ? 'globe' : undefined,
-      color: s.color,
+      color: sessionColor(store.config.groups, s),
       keywords: [groupPath(store.config.groups, s.groupId)],
       run: (placement) => this.openSession(s, placement),
     }));
@@ -641,7 +642,7 @@ class App {
     if (!res) return;
     store.update((c) => c.sessions.push(res.session));
     if (fromPane && !fromPane.spec.sessionId) {
-      fromPane.spec = { ...fromPane.spec, sessionId: res.session.id, color: res.session.color };
+      fromPane.spec = { ...fromPane.spec, sessionId: res.session.id, color: sessionColor(store.config.groups, res.session) };
       fromPane.rename(res.session.name);
       this.sidebar.render();
     }
@@ -656,7 +657,8 @@ class App {
         cwd: pane.connection ? '' : pane.cwd,
         command: pane.spec.command,
         shellId: pane.spec.shellId,
-        color: pane.spec.color,
+        // The session's own colour, so a copy in the same group still follows the group's.
+        color: store.session(pane.spec.sessionId)?.color ?? pane.spec.color,
         env: pane.spec.env,
       },
       pane,
@@ -678,21 +680,21 @@ class App {
   }
 
   private async createGroup(parentId: string | null = null): Promise<void> {
-    const name = (await promptDialog(parentId ? 'New subgroup' : 'New group', 'Group name'))?.trim();
-    if (!name) return;
+    const res = await editGroup(parentId ? 'New subgroup' : 'New group', { name: '', color: '', parentId });
+    if (!res) return;
     store.update((c) => {
-      c.groups.push(newGroup(name, parentId));
+      c.groups.push(newGroup(res.name, parentId, res.color));
       const parent = c.groups.find((g) => g.id === parentId);
       if (parent) parent.collapsed = false;
     });
   }
 
-  private async renameGroup(g: Group): Promise<void> {
-    const name = (await promptDialog('Rename group', 'Group name', g.name))?.trim();
-    if (name)
+  private async editGroup(g: Group): Promise<void> {
+    const res = await editGroup('Edit group', g);
+    if (res)
       store.update((c) => {
         const x = c.groups.find((y) => y.id === g.id);
-        if (x) x.name = name;
+        if (x) Object.assign(x, res);
       });
   }
 

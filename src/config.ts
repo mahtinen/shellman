@@ -117,7 +117,7 @@ export function normalizeConfig(raw: unknown): Config {
       const id = str(g.id) || uid('g-');
       if (groupIds.has(id)) continue;
       groupIds.add(id);
-      groups.push({ id, name: str(g.name) || 'Group', parentId: str(g.parentId) || null, collapsed: bool(g.collapsed, false) });
+      groups.push({ id, name: str(g.name) || 'Group', parentId: str(g.parentId) || null, color: str(g.color), collapsed: bool(g.collapsed, false) });
     }
   }
   fixParents(groups, groupIds);
@@ -167,8 +167,24 @@ function fixParents(groups: Group[], ids: Set<string>): void {
   }
 }
 
-export function newGroup(name: string, parentId: string | null = null): Group {
-  return { id: uid('g-'), name, parentId, collapsed: false };
+export function newGroup(name: string, parentId: string | null = null, color = ''): Group {
+  return { id: uid('g-'), name, parentId, color, collapsed: false };
+}
+
+/** The colour a group gives its sessions: its own, or the nearest one from the groups it is in. */
+export function groupColor(groups: Group[], id: string | null): string {
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  const seen = new Set<string>();
+  for (let g = id ? byId.get(id) : undefined; g && !seen.has(g.id); g = g.parentId ? byId.get(g.parentId) : undefined) {
+    if (g.color) return g.color;
+    seen.add(g.id);
+  }
+  return '';
+}
+
+/** A session's colour: its own, or else its group's. */
+export function sessionColor(groups: Group[], s: Pick<SavedSession, 'color' | 'groupId'>): string {
+  return s.color || groupColor(groups, s.groupId);
 }
 
 /** The groups directly in `parentId` (null = top level), in their order. */

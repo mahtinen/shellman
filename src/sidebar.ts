@@ -1,4 +1,4 @@
-import { childGroups, groupAndDescendants, groupOptions, moveGroup } from './config';
+import { childGroups, groupAndDescendants, groupColor, groupOptions, moveGroup, sessionColor } from './config';
 import { connectionKindName, connectionLabel, connectionTarget, keyLabel } from './connection';
 import { h } from './dom';
 import { icons } from './icons';
@@ -33,7 +33,8 @@ export interface SidebarActions {
   createGroup(parentId?: string | null): void;
   /** Imports sessions from another program (XShell), into `groupId` to start with. */
   importSessions(groupId: string | null): void;
-  renameGroup(group: Group): void;
+  /** Name and colour. */
+  editGroup(group: Group): void;
   removeGroup(group: Group): void;
   openFolder(session: SavedSession): void;
   /** Copies the ssh/telnet command for a connection. */
@@ -238,9 +239,15 @@ export class Sidebar {
   }
 
   private groupRow(g: Group, count: number, depth: number): HTMLElement {
+    const color = groupColor(store.config.groups, g.id);
     const row = h(
       'div',
-      { class: `group-row${g.collapsed ? ' collapsed' : ''}`, draggable: true, title: `${g.name} (${count})`, style: `--depth:${depth}` },
+      {
+        class: `group-row${g.collapsed ? ' collapsed' : ''}`,
+        draggable: true,
+        title: `${g.name} (${count})`,
+        style: `--depth:${depth}${color ? `;--group-color:${color}` : ''}`,
+      },
       h('span', { class: 'chevron', html: g.collapsed ? icons.chevronRight : icons.chevronDown }),
       h('span', { class: 'group-icon', html: icons.folder }),
       h('span', { class: 'group-name' }, g.name),
@@ -258,7 +265,7 @@ export class Sidebar {
         { label: 'New subgroup…', icon: 'folderPlus', action: () => this.actions.createGroup(g.id) },
         { label: 'Import sessions here…', icon: 'globe', action: () => this.actions.importSessions(g.id) },
         'separator',
-        { label: 'Rename…', icon: 'edit', action: () => this.actions.renameGroup(g) },
+        { label: 'Edit…', icon: 'edit', action: () => this.actions.editGroup(g) },
         { label: 'Delete group', icon: 'trash', danger: true, action: () => this.actions.removeGroup(g) },
       ];
       showMenu(e.clientX, e.clientY, entries);
@@ -371,6 +378,7 @@ export class Sidebar {
   }
 
   private sessionRow(s: SavedSession, running: number): HTMLElement {
+    const color = sessionColor(store.config.groups, s);
     const shell = s.shellId ? store.shells.find((x) => x.id === s.shellId)?.name : '';
     const conn = s.connection;
     const tooltip = conn
@@ -382,7 +390,7 @@ export class Sidebar {
       {
         class: `session-row${s.groupId ? ' in-group' : ''}`,
         draggable: true,
-        style: s.color ? `--session-color:${s.color}` : undefined,
+        style: color ? `--session-color:${color}` : undefined,
         title: tooltip.filter((x, i) => x || i === tooltip.length - 2).join('\n'),
       },
       // Like a group's chevron, but only when there are open terminals to fold.
