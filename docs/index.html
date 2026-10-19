@@ -58,6 +58,7 @@
       { "@type": "Question", "name": "Do I need Claude Code to use Shellman?", "acceptedAnswer": { "@type": "Answer", "text": "No. Shellman works with any shell or command. It has extra support for Claude Code: Shift+Enter newlines, pasting images, and notifications when Claude finishes or needs input." } },
       { "@type": "Question", "name": "Which shells does Shellman support?", "acceptedAnswer": { "@type": "Answer", "text": "PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically, and you can add any other shell in Settings." } },
       { "@type": "Question", "name": "Can I use Shellman for SSH and Telnet?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Save hosts next to your folders, or connect without saving by typing user@host. Shellman runs Windows' own OpenSSH client, so your keys, the Windows ssh-agent or 1Password's SSH agent and ~/.ssh/config work as in any terminal. Telnet uses the Windows Telnet Client." } },
+      { "@type": "Question", "name": "Can I import my XShell sessions?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Right-click the sidebar and choose Import sessions, then tick the XShell sessions you want. Shellman adds their SSH and Telnet hosts, ports and users to a new group or an existing one, with XShell's folders as subgroups. Saved passwords and XShell's own keys are not imported." } },
       { "@type": "Question", "name": "Does Shellman store my passwords or SSH keys?", "acceptedAnswer": { "@type": "Answer", "text": "No. ssh asks for passwords in the terminal, and private keys stay in your key files or SSH agent. For a key you pick from the agent, Shellman keeps only its public half." } },
       { "@type": "Question", "name": "How does Shellman update?", "acceptedAnswer": { "@type": "Answer", "text": "New versions download in the background and install the next time you restart Shellman. Updates are signed, and you can switch to notifications only or turn checks off." } },
       { "@type": "Question", "name": "Why does Windows SmartScreen warn about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The installer is not code-signed with a paid certificate yet, so SmartScreen asks you to confirm. Choose More info, then Run anyway. The source code and build scripts are on GitHub." } }
@@ -118,12 +119,12 @@
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 014.5 6H9l2 2h8.5A1.5 1.5 0 0121 9.5v8a1.5 1.5 0 01-1.5 1.5h-15A1.5 1.5 0 013 17.5z"/><path d="M8 13l2 2-2 2"/></svg></div>
             <h3>Saved sessions</h3>
-            <p>A session is a folder plus an optional command, shell, colour and environment variables, or a remote host. Group them by client or project, and your tabs and splits reopen where you left them.</p>
+            <p>A session is a folder plus an optional command, shell, colour and environment variables, or a remote host. Group them by client or project, with subgroups if you like, and your tabs and splits reopen where you left them.</p>
           </article>
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3z"/></svg></div>
             <h3>SSH and Telnet</h3>
-            <p>Save hosts next to your folders, or just type <code>user@host</code> to connect without saving. Your keys, 1Password or the Windows ssh-agent and <code>~/.ssh/config</code> work as usual. Pick a key per host, log in with a password, or allow old algorithms for old gear.</p>
+            <p>Save hosts next to your folders, or just type <code>user@host</code> to connect without saving. Your keys, 1Password or the Windows ssh-agent and <code>~/.ssh/config</code> work as usual. Pick a key per host, log in with a password, or allow old algorithms for old gear. Coming from XShell? Import its sessions in one go.</p>
           </article>
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4v16M5 8h5M5 14h5M5 20h5"/><rect x="12" y="5.5" width="8" height="5" rx="1.5"/><rect x="12" y="11.5" width="8" height="5" rx="1.5"/></svg></div>
@@ -225,6 +226,10 @@
         <details>
           <summary>Can I use it for SSH and Telnet?</summary>
           <p>Yes. Save hosts next to your folders, or connect without saving by typing <code>user@host</code> in quick open. Shellman runs Windows' own OpenSSH client, so your keys, the Windows ssh-agent or 1Password's SSH agent, <code>~/.ssh/config</code> and <code>known_hosts</code> work as in any terminal. With many keys in an agent, pick each host's key so servers don't give up after six tries. Telnet uses the Windows Telnet Client, an optional Windows feature.</p>
+        </details>
+        <details>
+          <summary>Can I import my XShell sessions?</summary>
+          <p>Yes. Right-click the sidebar (or a group), choose Import sessions and tick the XShell sessions you want. Shellman reads XShell's <code>.xsh</code> session files and adds their SSH and Telnet hosts, ports and users to a new group or an existing one. XShell's folders become subgroups (or go in the session names, like <code>Prod / Web / web1</code>), and hosts you already saved are skipped. Saved passwords and XShell's own keys are not imported: ssh logs in with your SSH agent or <code>~/.ssh</code> keys, or asks for the password.</p>
         </details>
         <details>
           <summary>Does Shellman store my passwords or SSH keys?</summary>

@@ -20,7 +20,9 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   you tick "Remember this session"; Ctrl+Shift+S saves an open one later.
   Shift+click (or "Open plain terminal") opens the session's folder and shell *without* its startup command,
   e.g. for some git work next to Claude.
-  Drag to reorder or move between groups. "Open all in tabs" on a group starts your whole workspace.
+  Drag to reorder or move between groups. Groups can hold subgroups ("New subgroup…" on a group, or drag a
+  group onto the middle of another); deleting a group moves what was in it up one level. "Open all in tabs"
+  on a group starts your whole workspace (its own sessions, not its subgroups').
   New sessions start out in your home directory (or the default directory from Settings).
 - **SSH and Telnet sessions.** Save remote hosts next to your folders (same groups, colours and quick open),
   or connect without saving: type `user@host`, `ssh -p 2222 host` or `telnet 10.0.0.1 2323` in quick open, or
@@ -38,6 +40,12 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   reconnects a closed connection, Duplicate opens another connection to the same host, and new tabs or splits
   next to it are local shells. Reopened connection tabs wait for Enter instead of logging in to every host at
   start-up (Settings → Connections can change that). Telnet needs the optional Windows feature "Telnet Client".
+- **Import sessions.** Right-click the sidebar (or a group) → Import sessions, or use quick open. Choose the
+  program (XShell for now), tick the sessions you want, and import them into a new group or one you already
+  have. For XShell it reads the `.xsh` files in `Documents\NetSarang Computer\<version>\Xshell\Sessions` (or a
+  folder you choose) and imports the SSH and Telnet hosts, ports and users. XShell's folders become subgroups
+  (Prod › Web › web1), or go in front of the names ("Prod / Web / web1") if you choose so. Hosts that are
+  already saved are skipped; saved passwords and XShell's own keys are not imported.
 - **Open terminals tree.** Each session lists its open terminals underneath it: the ones opened from it, plus
   any other terminal sitting in its directory. Click one to jump to its tab, middle-click to close it,
   right-click for more. The chevron next to a session collapses its list, like a group, and the state is

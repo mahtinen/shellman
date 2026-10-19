@@ -60,6 +60,8 @@ export interface SavedSession {
 export interface Group {
   id: string;
   name: string;
+  /** The group it is in; null = top level. */
+  parentId: string | null;
   collapsed: boolean;
 }
 
