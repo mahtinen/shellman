@@ -5,7 +5,9 @@ import { h } from './dom';
 import { icons } from './icons';
 import type { Match } from './keys';
 import {
+  contains,
   equalize,
+  insertNode,
   leaf,
   neighbor,
   paneIds,
@@ -54,6 +56,12 @@ const MAX_GPU_PANES = 8;
 const BUSY_WINDOW_MS = 1500;
 const DRAG_TYPE = 'application/x-shellman-tab';
 
+/** Where a dragged tab lands on a pane: the half of it nearest the pointer. */
+interface PaneDrop {
+  paneId: string;
+  side: FocusDirection;
+}
+
 export class Workspace implements PaneHost {
   tabs: Tab[] = [];
   activeTabId: string | null = null;
@@ -64,6 +72,9 @@ export class Workspace implements PaneHost {
   readonly homeDir = store.sys.homeDir;
   /** Set while an update is being installed: its ended terminals must not close their panes. */
   keepPanesOnExit = false;
+  /** The tab being dragged, which can be dropped onto a pane of the visible tab to join its split. */
+  private draggingTab: Tab | null = null;
+  private readonly dropEl = h('div', { class: 'pane-drop', hidden: true });
 
   constructor(
     private readonly tabsEl: HTMLElement,
@@ -71,6 +82,25 @@ export class Workspace implements PaneHost {
     private readonly events: WorkspaceEvents,
   ) {
     window.setInterval(() => this.tickActivity(), 500);
+    this.areaEl.append(this.dropEl);
+    this.areaEl.addEventListener('dragover', (e) => {
+      const drop = this.paneDrop(e);
+      this.showDrop(drop);
+      if (!drop) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    });
+    this.areaEl.addEventListener('dragleave', (e) => {
+      if (!this.areaEl.contains(e.relatedTarget as Node | null)) this.showDrop(null);
+    });
+    this.areaEl.addEventListener('drop', (e) => {
+      const drop = this.paneDrop(e);
+      const tab = this.draggingTab;
+      this.showDrop(null);
+      if (!drop || !tab) return;
+      e.preventDefault();
+      this.moveTabInto(tab, drop.paneId, drop.side);
+    });
   }
 
   // ---- PaneHost -------------------------------------------------------
@@ -130,8 +160,9 @@ export class Workspace implements PaneHost {
     this.events.onPaneContextMenu(pane, e);
   }
 
-  onHeaderAction(pane: Pane, action: 'zoom' | 'close'): void {
+  onHeaderAction(pane: Pane, action: 'zoom' | 'tab' | 'close'): void {
     if (action === 'zoom') this.toggleZoom(pane.id);
+    else if (action === 'tab') this.moveToNewTab(pane.id);
     else void this.requestClosePane(pane.id);
   }
 
@@ -241,8 +272,8 @@ export class Workspace implements PaneHost {
     return pane;
   }
 
-  /** Adds an empty tab after the active one. */
-  private createTab(root: LayoutNode, activePaneId: string): Tab {
+  /** Adds an empty tab after `after` (default: the active tab). */
+  private createTab(root: LayoutNode, activePaneId: string, after = this.activeTab): Tab {
     const tab: Tab = {
       id: uid('t-'),
       root,
@@ -257,9 +288,91 @@ export class Workspace implements PaneHost {
       hiddenAt: 0,
     };
     this.areaEl.append(tab.el);
-    const activeIdx = this.tabs.findIndex((t) => t.id === this.activeTabId);
-    this.tabs.splice(activeIdx >= 0 ? activeIdx + 1 : this.tabs.length, 0, tab);
+    const afterIdx = after ? this.tabs.indexOf(after) : -1;
+    this.tabs.splice(afterIdx >= 0 ? afterIdx + 1 : this.tabs.length, 0, tab);
     return tab;
+  }
+
+  /** Takes a pane out of its split into a tab of its own, next to the tab it was in. The terminal keeps running. */
+  moveToNewTab(paneId: string): void {
+    const pane = this.panes.get(paneId);
+    const from = this.paneTab.get(paneId);
+    const root = from && removePane(from.root, paneId);
+    if (!pane || !from || !root) return;
+    from.root = root;
+    from.zoomedPaneId = null;
+    if (from.activePaneId === paneId) from.activePaneId = paneIds(root)[0];
+    this.renderLayout(from);
+
+    const tab = this.createTab(leaf(paneId), paneId, from);
+    this.paneTab.set(paneId, tab);
+    this.renderTabBar();
+    this.activateTab(tab.id, false);
+    this.renderLayout(tab);
+    this.setActivePane(paneId, true);
+    this.events.onChange();
+  }
+
+  /** Moves a whole tab, with its splits, next to `targetPaneId` in another tab. The terminals keep running. */
+  moveTabInto(source: Tab, targetPaneId: string, side: FocusDirection): void {
+    this.moveInto(source, source.root, null, targetPaneId, side, source.activePaneId);
+  }
+
+  /** Moves one terminal next to `targetPaneId` in another tab; its old tab closes if it was alone there. */
+  movePaneInto(paneId: string, targetPaneId: string, side: FocusDirection): void {
+    const source = this.paneTab.get(paneId);
+    if (source) this.moveInto(source, leaf(paneId), removePane(source.root, paneId), targetPaneId, side, paneId);
+  }
+
+  /** `moved` leaves `source` (which keeps `rest`, or closes when it is null) and joins the target's tab. */
+  private moveInto(source: Tab, moved: LayoutNode, rest: LayoutNode | null, targetPaneId: string, side: FocusDirection, focusId: string): void {
+    const target = this.paneTab.get(targetPaneId);
+    if (!target || target === source) return;
+    target.zoomedPaneId = null;
+    target.root = insertNode(target.root, targetPaneId, moved, side === 'left' || side === 'right' ? 'row' : 'column', side === 'left' || side === 'up');
+    for (const id of paneIds(moved)) this.paneTab.set(id, target);
+    this.renderLayout(target);
+    this.activateTab(target.id, false);
+    if (rest) {
+      source.root = rest;
+      source.zoomedPaneId = null;
+      if (!contains(rest, source.activePaneId)) source.activePaneId = paneIds(rest)[0];
+      this.renderLayout(source);
+      this.updateTabEl(source);
+    } else {
+      this.detachTab(source);
+    }
+    this.setActivePane(focusId, true);
+    this.events.onChange();
+  }
+
+  /** The pane under a dragged tab, and which half of it the tab would take. */
+  private paneDrop(e: DragEvent): PaneDrop | null {
+    const tab = this.activeTab;
+    if (!this.draggingTab || !tab || this.draggingTab === tab) return null;
+    const el = (e.target as Element | null)?.closest<HTMLElement>('.pane');
+    const paneId = el?.dataset.pane;
+    if (!el || !paneId || this.paneTab.get(paneId) !== tab) return null;
+    const r = el.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width;
+    const y = (e.clientY - r.top) / r.height;
+    const edges: [FocusDirection, number][] = [['left', x], ['right', 1 - x], ['up', y], ['down', 1 - y]];
+    return { paneId, side: edges.reduce((a, b) => (b[1] < a[1] ? b : a))[0] };
+  }
+
+  private showDrop(drop: PaneDrop | null): void {
+    const el = drop && this.panes.get(drop.paneId)?.el;
+    this.dropEl.hidden = !el;
+    if (!drop || !el) return;
+    const r = el.getBoundingClientRect();
+    const area = this.areaEl.getBoundingClientRect();
+    const half = drop.side === 'left' || drop.side === 'right' ? { w: r.width / 2, h: r.height } : { w: r.width, h: r.height / 2 };
+    Object.assign(this.dropEl.style, {
+      left: `${r.left - area.left + (drop.side === 'right' ? half.w : 0)}px`,
+      top: `${r.top - area.top + (drop.side === 'down' ? half.h : 0)}px`,
+      width: `${half.w}px`,
+      height: `${half.h}px`,
+    });
   }
 
   // ---- saving and reopening ---------------------------------------------
@@ -321,6 +434,7 @@ export class Workspace implements PaneHost {
     tab.el.replaceChildren(zoomed ? zoomed.el : this.buildNode(tab.root, tab));
     for (const p of this.panesOf(tab)) {
       p.setActive(p.id === tab.activePaneId);
+      p.setZoomed(p === zoomed);
       p.queueFit();
     }
     this.events.onTerminalsInfo();
@@ -398,9 +512,10 @@ export class Workspace implements PaneHost {
     this.panes.get(tab.activePaneId)?.focus();
   }
 
+  /** Moving to another pane of a maximized tab restores the split (see setActivePane), so no pane is out of reach. */
   moveFocus(dir: FocusDirection): void {
     const tab = this.activeTab;
-    if (!tab || tab.zoomedPaneId) return;
+    if (!tab) return;
     const next = neighbor(tab.root, tab.activePaneId, dir);
     if (next) this.setActivePane(next, true);
   }
@@ -492,17 +607,20 @@ export class Workspace implements PaneHost {
     });
     el.addEventListener('click', () => this.activateTab(tab.id));
     el.addEventListener('dblclick', () => this.events.onShortcut({ action: 'renameTab' }));
+    // The menu leaves the current tab showing, so a background tab can be moved into its split.
     el.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      this.activateTab(tab.id);
       this.events.onTabContextMenu(tab, e);
     });
     el.addEventListener('dragstart', (e) => {
+      this.draggingTab = tab;
       e.dataTransfer?.setData(DRAG_TYPE, tab.id);
       if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
       el.classList.add('dragging');
     });
     el.addEventListener('dragend', () => {
+      this.draggingTab = null;
+      this.showDrop(null);
       el.classList.remove('dragging');
       this.tabsEl.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
     });
@@ -681,6 +799,11 @@ export class Workspace implements PaneHost {
 
   removeTab(tab: Tab): void {
     for (const p of this.panesOf(tab)) this.disposePane(p);
+    this.detachTab(tab);
+  }
+
+  /** Takes a tab away without ending its terminals (they have been closed or moved). */
+  private detachTab(tab: Tab): void {
     const idx = this.tabs.indexOf(tab);
     if (idx < 0) return;
     this.tabs.splice(idx, 1);

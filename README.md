@@ -56,8 +56,11 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   use "Switch shell" in the terminal menu. It restarts in the same directory. "New tab here with" opens
   another shell next to it.
 - **Splits and tabs.** Split right/down to any depth, drag dividers (double-click resets), maximize a
-  pane, move focus with Alt+arrows, drag tabs to reorder. A tab has the same name as its terminal in the
-  sidebar: Claude's task title if there is one, otherwise the session's name. Tabs shrink and cut their
+  pane (Alt+arrows from a maximized pane bring the split back), move focus with Alt+arrows, drag tabs to
+  reorder. Terminals move between tabs and keep running: a pane goes out of its split into a tab of its own
+  (Ctrl+Shift+M or the pane header), and another tab comes into the current one as a split (drag it onto a
+  pane, or "Move into current tab" on the tab's right-click menu). A tab has the same name as its terminal
+  in the sidebar: Claude's task title if there is one, otherwise the session's name. Tabs shrink and cut their
   names as more of them open (hover for the full name).
 - **Picks up where you left off.** Tabs, splits and each terminal's folder are reopened on the next start,
   with startup commands run again (Settings → Terminal → On start can reopen plain shells or nothing).
@@ -110,6 +113,7 @@ Only installers signed with the project's update key are accepted.
 | Duplicate pane (re-runs its command) | Ctrl+Shift+D |
 | Close pane | Ctrl+Shift+W |
 | Maximize / restore pane | Ctrl+Shift+Z |
+| Move pane to a new tab | Ctrl+Shift+M |
 | Equalize panes | Ctrl+Shift+Q |
 | Move focus | Alt+←↑→↓ |
 | Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab |

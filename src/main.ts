@@ -6,9 +6,10 @@ import { baseName, deleteGroup, groupPath, newGroup, sessionColor, uid } from '.
 import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, emptyConnection, parseQuickConnect } from './connection';
 import { confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
 import { clamp, h, isEditableTarget, setChildren } from './dom';
-import { icons } from './icons';
+import { icons, type IconName } from './icons';
 import { importSessions } from './importDialog';
 import { matchKey, shortcutFor, type Match } from './keys';
+import type { FocusDirection } from './layout';
 import { showMenu, showMenuBelow, type MenuEntry } from './menu';
 import type { Pane } from './pane';
 import { showPalette, type PaletteItem } from './palette';
@@ -715,6 +716,8 @@ class App {
     const hasSel = pane.term.hasSelection();
     const conn = pane.connection;
     const localOnly = (entries: MenuEntry[]): MenuEntry[] => (conn ? [] : entries);
+    const tab = this.workspace.tabOf(pane);
+    const split = !!tab && this.workspace.panesOf(tab).length > 1;
     showMenu(e.clientX, e.clientY, [
       { label: 'Copy', icon: 'copy', shortcut: 'Ctrl+C', disabled: !hasSel, action: () => void pane.copySelection(true) },
       { label: 'Paste', icon: 'paste', shortcut: 'Ctrl+V', action: () => void pane.paste() },
@@ -728,6 +731,7 @@ class App {
         disabled: !pane.spec.command && !conn,
         action: () => this.workspace.open(this.workspace.specFrom(pane, true), 'right', pane.id),
       },
+      { label: 'Move to new tab', icon: 'popOut', shortcut: shortcutFor('movePaneToTab'), disabled: !split, action: () => this.workspace.moveToNewTab(pane.id) },
       {
         label: conn ? 'New local tab' : 'New tab here',
         icon: 'terminal',
@@ -751,14 +755,38 @@ class App {
     ]);
   }
 
+  /**
+   * "Move into current tab": `move` puts a tab or terminal next to the focused pane of the tab on
+   * screen. Not offered for that tab itself.
+   */
+  private moveIntoEntry(from: Tab | undefined, move: (targetPaneId: string, side: FocusDirection) => void): MenuEntry {
+    const target = this.workspace.activePane();
+    const side = (label: string, icon: IconName, dir: FocusDirection): MenuEntry => ({ label, icon, action: () => target && move(target.id, dir) });
+    return {
+      label: 'Move into current tab',
+      icon: 'splitRight',
+      disabled: !target || !from || from === this.workspace.activeTab,
+      submenu: [side('Split right', 'splitRight', 'right'), side('Split down', 'splitDown', 'down')],
+    };
+  }
+
   /** Context menu for a terminal in the sidebar tree. */
   private terminalMenu(pane: Pane, e: MouseEvent): void {
     const tab = this.workspace.tabOf(pane);
+    const moveToTab: MenuEntry = {
+      label: 'Move to new tab',
+      icon: 'popOut',
+      disabled: !tab || this.workspace.panesOf(tab).length < 2,
+      action: () => this.workspace.moveToNewTab(pane.id),
+    };
+    const moveInto = this.moveIntoEntry(tab, (target, side) => this.workspace.movePaneInto(pane.id, target, side));
     if (pane.connection) {
       showMenu(e.clientX, e.clientY, [
         { label: 'Focus', icon: 'globe', action: () => this.workspace.setActivePane(pane.id, true) },
         { label: 'Connect again in split right', icon: 'splitRight', action: () => this.workspace.open(this.workspace.specFrom(pane, true), 'right', pane.id) },
         { label: 'Connect again in split down', icon: 'splitDown', action: () => this.workspace.open(this.workspace.specFrom(pane, true), 'down', pane.id) },
+        moveToTab,
+        moveInto,
         'separator',
         { label: 'Rename tab…', icon: 'edit', disabled: !tab, action: () => tab && void this.renameTab(tab) },
         { label: 'Reconnect', action: () => this.reconnect(pane) },
@@ -773,6 +801,8 @@ class App {
       { label: 'Split down here', icon: 'splitDown', action: () => this.openHere(pane, pane.spec.shellId, 'down') },
       { label: 'New tab here with', icon: 'terminal', submenu: this.newHereEntries(pane) },
       { label: 'Switch shell', icon: 'terminal', submenu: this.changeShellEntries(pane) },
+      moveToTab,
+      moveInto,
       'separator',
       { label: 'Rename tab…', icon: 'edit', disabled: !tab, action: () => tab && void this.renameTab(tab) },
       { label: 'Restart', action: () => pane.restart() },
@@ -788,6 +818,7 @@ class App {
       { label: 'New tab here', icon: 'terminal', disabled: !pane, action: () => pane && this.workspace.open(this.workspace.specFrom(pane, false), 'tab') },
       { label: 'Duplicate tab', icon: 'duplicate', disabled: !pane, action: () => pane && this.workspace.open(this.workspace.specFrom(pane, true), 'tab') },
       { label: 'Save as session…', icon: 'save', disabled: !pane, action: () => pane && this.saveAsSession(pane) },
+      this.moveIntoEntry(tab, (target, side) => this.workspace.moveTabInto(tab, target, side)),
       'separator',
       { label: 'Close other tabs', disabled: this.workspace.tabs.length < 2, action: () => void this.closeOtherTabs(tab) },
       { label: 'Close tab', icon: 'x', danger: true, action: () => void this.workspace.requestCloseTab(tab.id) },
@@ -845,6 +876,9 @@ class App {
       case 'zoomPane':
         ws.toggleZoom();
         return true;
+      case 'movePaneToTab':
+        if (pane) ws.moveToNewTab(pane.id);
+        return !!pane;
       case 'equalize':
         ws.equalize();
         return true;
