@@ -1,3 +1,4 @@
+import { childGroups, groupAndDescendants, groupOptions, moveGroup } from './config';
 import { connectionKindName, connectionLabel, connectionTarget, keyLabel } from './connection';
 import { h } from './dom';
 import { icons } from './icons';
@@ -28,7 +29,10 @@ export interface SidebarActions {
   create(groupId: string | null, remember?: boolean): void;
   duplicate(session: SavedSession): void;
   remove(session: SavedSession): void;
-  createGroup(): void;
+  /** A new group in `parentId` (null = top level). */
+  createGroup(parentId?: string | null): void;
+  /** Imports sessions from another program (XShell), into `groupId` to start with. */
+  importSessions(groupId: string | null): void;
   renameGroup(group: Group): void;
   removeGroup(group: Group): void;
   openFolder(session: SavedSession): void;
@@ -53,6 +57,8 @@ export class Sidebar {
   private terms = new Map<string | null, OpenTerminal[]>();
   private termsKey = '';
   private dragging = false;
+  /** The group being dragged (dragover can't read the drag data). */
+  private draggedGroup: string | null = null;
   private refreshQueued = false;
 
   constructor(private readonly actions: SidebarActions) {
@@ -73,12 +79,16 @@ export class Sidebar {
     });
     this.list = h('div', { class: 'sidebar-list' });
     this.list.addEventListener('dragover', (e) => {
-      if (e.target === this.list && e.dataTransfer?.types.includes(SESSION_DRAG)) e.preventDefault();
+      const types = e.dataTransfer?.types ?? [];
+      if (e.target === this.list && (types.includes(SESSION_DRAG) || types.includes(GROUP_DRAG))) e.preventDefault();
     });
+    // Dropped below everything: out of its group, or (a group) to the top level.
     this.list.addEventListener('drop', (e) => {
       if (e.target !== this.list) return;
       const id = e.dataTransfer?.getData(SESSION_DRAG);
+      const gid = e.dataTransfer?.getData(GROUP_DRAG);
       if (id) this.moveSession(id, null, null, false);
+      else if (gid) store.update((c) => (c.groups = moveGroup(c.groups, gid, null)));
     });
     // A drop re-renders the list, so the source row may be gone before its dragend.
     this.list.addEventListener('drop', () => (this.dragging = false), true);
@@ -87,7 +97,9 @@ export class Sidebar {
       e.preventDefault();
       showMenu(e.clientX, e.clientY, [
         { label: 'New session…', icon: 'plus', action: () => actions.create(null) },
-        { label: 'New group…', icon: 'folderPlus', action: () => actions.createGroup() },
+        { label: 'New group…', icon: 'folderPlus', action: () => actions.createGroup(null) },
+        'separator',
+        { label: 'Import sessions…', icon: 'globe', action: () => actions.importSessions(null) },
       ]);
     });
 
@@ -124,14 +136,19 @@ export class Sidebar {
     return [s.name, s.cwd, s.command, s.connection ? connectionLabel(s.connection) : ''].some((f) => f.toLowerCase().includes(q));
   }
 
+  /** Sessions in the order they are shown (subgroups before a group's own sessions). */
   private visibleSessions(): SavedSession[] {
     const { sessions, groups } = store.config;
     const filtering = !!this.search.value.trim();
     const out: SavedSession[] = [];
-    for (const g of groups) {
-      if (g.collapsed && !filtering) continue;
-      out.push(...sessions.filter((s) => s.groupId === g.id && this.matches(s)));
-    }
+    const add = (parentId: string | null) => {
+      for (const g of childGroups(groups, parentId)) {
+        if (g.collapsed && !filtering) continue;
+        add(g.id);
+        out.push(...sessions.filter((s) => s.groupId === g.id && this.matches(s)));
+      }
+    };
+    add(null);
     out.push(...sessions.filter((s) => !s.groupId && this.matches(s)));
     return out;
   }
@@ -155,17 +172,7 @@ export class Sidebar {
     const filtering = !!this.search.value.trim();
     const rows: HTMLElement[] = [];
 
-    for (const g of groups) {
-      const members = sessions.filter((s) => s.groupId === g.id);
-      const shown = members.filter((s) => this.matches(s));
-      if (filtering && !shown.length) continue;
-      rows.push(this.groupRow(g, members.length));
-      if (!g.collapsed || filtering) {
-        const body = h('div', { class: 'group-body' }, ...shown.flatMap((s) => this.sessionRows(s)));
-        if (!shown.length) body.append(h('div', { class: 'group-empty' }, 'Drop sessions here'));
-        rows.push(body);
-      }
-    }
+    for (const g of childGroups(groups, null)) rows.push(...this.groupRows(g, 0, filtering));
     const ungrouped = sessions.filter((s) => !s.groupId && this.matches(s));
     rows.push(...ungrouped.flatMap((s) => this.sessionRows(s)));
 
@@ -192,6 +199,7 @@ export class Sidebar {
           { class: 'sidebar-empty' },
           h('p', null, 'Save the directories you work in, with an optional startup command like ', h('code', null, 'claude'), '.'),
           h('button', { class: 'btn primary', onclick: () => this.actions.create(null, true) }, 'Add a session'),
+          h('button', { class: 'btn', onclick: () => this.actions.importSessions(null) }, 'Import sessions'),
         ),
       );
     } else if (filtering && !rows.length) {
@@ -200,10 +208,39 @@ export class Sidebar {
     this.list.replaceChildren(...rows);
   }
 
-  private groupRow(g: Group, count: number): HTMLElement {
+  /**
+   * A group's header, then (unless it is folded) its subgroups and its own sessions. While
+   * filtering, only groups with a matching session somewhere inside are shown, unfolded.
+   */
+  private groupRows(g: Group, depth: number, filtering: boolean): HTMLElement[] {
+    const { sessions, groups } = store.config;
+    const inside = groupAndDescendants(groups, g.id);
+    const members = sessions.filter((s) => s.groupId && inside.has(s.groupId));
+    if (filtering && !members.some((s) => this.matches(s))) return [];
+    const row = this.groupRow(g, members.length, depth);
+    if (g.collapsed && !filtering) return [row];
+    const body = h(
+      'div',
+      // Rows inside indent by the depth (a CSS variable, inherited by the session rows).
+      { class: 'group-body', style: `--depth:${depth}` },
+      ...childGroups(groups, g.id).flatMap((c) => this.groupRows(c, depth + 1, filtering)),
+      ...sessions.filter((s) => s.groupId === g.id && this.matches(s)).flatMap((s) => this.sessionRows(s)),
+    );
+    if (!body.childElementCount) body.append(h('div', { class: 'group-empty' }, 'Drop sessions here'));
+    return [row, body];
+  }
+
+  /** Where a dragged group lands on a group row: the middle half puts it inside. */
+  private groupDropZone(e: DragEvent, row: HTMLElement): 'before' | 'into' | 'after' {
+    const r = row.getBoundingClientRect();
+    const y = (e.clientY - r.top) / r.height;
+    return y < 0.25 ? 'before' : y > 0.75 ? 'after' : 'into';
+  }
+
+  private groupRow(g: Group, count: number, depth: number): HTMLElement {
     const row = h(
       'div',
-      { class: `group-row${g.collapsed ? ' collapsed' : ''}`, draggable: true, title: `${g.name} (${count})` },
+      { class: `group-row${g.collapsed ? ' collapsed' : ''}`, draggable: true, title: `${g.name} (${count})`, style: `--depth:${depth}` },
       h('span', { class: 'chevron', html: g.collapsed ? icons.chevronRight : icons.chevronDown }),
       h('span', { class: 'group-icon', html: icons.folder }),
       h('span', { class: 'group-name' }, g.name),
@@ -218,6 +255,8 @@ export class Sidebar {
       const entries: MenuEntry[] = [
         { label: 'Open all in tabs', icon: 'play', disabled: !count, action: () => this.actions.openGroup(g) },
         { label: 'New session in group…', icon: 'plus', action: () => this.actions.create(g.id) },
+        { label: 'New subgroup…', icon: 'folderPlus', action: () => this.actions.createGroup(g.id) },
+        { label: 'Import sessions here…', icon: 'globe', action: () => this.actions.importSessions(g.id) },
         'separator',
         { label: 'Rename…', icon: 'edit', action: () => this.actions.renameGroup(g) },
         { label: 'Delete group', icon: 'trash', danger: true, action: () => this.actions.removeGroup(g) },
@@ -228,10 +267,12 @@ export class Sidebar {
       e.dataTransfer?.setData(GROUP_DRAG, g.id);
       row.classList.add('dragging');
       this.dragging = true;
+      this.draggedGroup = g.id;
     });
     row.addEventListener('dragend', () => {
       row.classList.remove('dragging');
       this.dragging = false;
+      this.draggedGroup = null;
       this.refreshTerminals();
     });
     row.addEventListener('dragover', (e) => {
@@ -240,10 +281,13 @@ export class Sidebar {
         e.preventDefault();
         row.classList.add('drop-into');
       } else if (types.includes(GROUP_DRAG)) {
+        // Not onto itself or a group inside it.
+        if (this.draggedGroup && groupAndDescendants(store.config.groups, this.draggedGroup).has(g.id)) return;
         e.preventDefault();
-        const before = this.isUpperHalf(e, row);
-        row.classList.toggle('drop-before', before);
-        row.classList.toggle('drop-after', !before);
+        const zone = this.groupDropZone(e, row);
+        row.classList.toggle('drop-before', zone === 'before');
+        row.classList.toggle('drop-into', zone === 'into');
+        row.classList.toggle('drop-after', zone === 'after');
       }
     });
     row.addEventListener('dragleave', () => row.classList.remove('drop-into', 'drop-before', 'drop-after'));
@@ -256,13 +300,13 @@ export class Sidebar {
         this.moveSession(sid, g.id, null, false);
       } else if (gid && gid !== g.id) {
         e.preventDefault();
-        const before = this.isUpperHalf(e, row);
+        const zone = this.groupDropZone(e, row);
         store.update((c) => {
-          const moving = c.groups.find((x) => x.id === gid);
-          if (!moving) return;
-          c.groups = c.groups.filter((x) => x !== moving);
-          const at = c.groups.findIndex((x) => x.id === g.id) + (before ? 0 : 1);
-          c.groups.splice(at, 0, moving);
+          if (zone === 'into') {
+            c.groups = moveGroup(c.groups, gid, g.id);
+            const target = c.groups.find((x) => x.id === g.id);
+            if (target) target.collapsed = false;
+          } else c.groups = moveGroup(c.groups, gid, g.parentId, g.id, zone === 'before');
         });
       }
     });
@@ -406,8 +450,8 @@ export class Sidebar {
           icon: 'folder',
           submenu: [
             { label: '(No group)', disabled: !s.groupId, action: () => this.moveSession(s.id, null, null, false) },
-            ...store.config.groups.map((g) => ({
-              label: g.name,
+            ...groupOptions(store.config.groups).map((g) => ({
+              label: g.label,
               disabled: g.id === s.groupId,
               action: () => this.moveSession(s.id, g.id, null, false),
             })),

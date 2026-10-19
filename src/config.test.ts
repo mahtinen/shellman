@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { baseName, defaultConfig, formatEnv, guessShellKind, normalizeConfig, ownerSession, parseEnv, pathKey } from './config';
+import {
+  baseName,
+  defaultConfig,
+  deleteGroup,
+  formatEnv,
+  groupAndDescendants,
+  groupOptions,
+  groupPath,
+  groupTree,
+  guessShellKind,
+  moveGroup,
+  normalizeConfig,
+  ownerSession,
+  parseEnv,
+  pathKey,
+} from './config';
+import type { Group } from './types';
 
 describe('normalizeConfig', () => {
   it('returns defaults for garbage', () => {
@@ -42,6 +58,35 @@ describe('normalizeConfig', () => {
     expect(c.sessions.map((s) => s.groupId)).toEqual(['g1', null]);
   });
 
+  it('loads groups saved before subgroups existed as top-level groups', () => {
+    const c = normalizeConfig({ groups: [{ id: 'g1', name: 'Work', collapsed: true }] });
+    expect(c.groups).toEqual([{ id: 'g1', name: 'Work', parentId: null, collapsed: true }]);
+  });
+
+  it('keeps subgroups and moves groups with a missing parent to the top level', () => {
+    const c = normalizeConfig({ groups: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B', parentId: 'a' }, { id: 'c', name: 'C', parentId: 'gone' }] });
+    expect(c.groups.map((g) => g.parentId)).toEqual([null, 'a', null]);
+  });
+
+  it('breaks loops in group parents', () => {
+    const c = normalizeConfig({
+      groups: [
+        { id: 'top', name: 'Top' },
+        { id: 'a', name: 'A', parentId: 'b' },
+        { id: 'b', name: 'B', parentId: 'a' },
+        { id: 'c', name: 'C', parentId: 'a' },
+        { id: 'self', name: 'Self', parentId: 'self' },
+      ],
+    });
+    expect(c.groups.map((g) => [g.id, g.parentId])).toEqual([
+      ['top', null],
+      ['a', null],
+      ['b', 'a'],
+      ['c', 'a'],
+      ['self', null],
+    ]);
+  });
+
   it('dedupes ids', () => {
     const c = normalizeConfig({ sessions: [{ id: 'a', name: '1' }, { id: 'a', name: '2' }], groups: [{ id: 'g' }, { id: 'g' }] });
     expect(new Set(c.sessions.map((s) => s.id)).size).toBe(2);
@@ -77,6 +122,55 @@ describe('normalizeConfig', () => {
   it('is idempotent', () => {
     const once = normalizeConfig({ groups: [{ id: 'g', name: 'G' }], sessions: [{ id: 's', name: 'S', groupId: 'g' }] });
     expect(normalizeConfig(JSON.parse(JSON.stringify(once)))).toEqual(once);
+  });
+});
+
+describe('group tree', () => {
+  const g = (id: string, parentId: string | null = null): Group => ({ id, name: id.toUpperCase(), parentId, collapsed: false });
+  // a > (b > c), d
+  const groups = [g('a'), g('d'), g('b', 'a'), g('c', 'b')];
+
+  it('lists groups in sidebar order with their depth and path', () => {
+    expect(groupTree(groups).map((x) => [x.group.id, x.depth])).toEqual([
+      ['a', 0],
+      ['b', 1],
+      ['c', 2],
+      ['d', 0],
+    ]);
+    expect(groupPath(groups, 'c')).toBe('A / B / C');
+    expect(groupPath(groups, null)).toBe('');
+    expect(groupOptions(groups).map((o) => o.label)).toEqual(['A', 'A / B', 'A / B / C', 'D']);
+  });
+
+  it('finds a group and everything inside it', () => {
+    expect([...groupAndDescendants(groups, 'a')].sort()).toEqual(['a', 'b', 'c']);
+    expect([...groupAndDescendants(groups, 'd')]).toEqual(['d']);
+  });
+
+  it('moves a group into another, or next to one', () => {
+    expect(moveGroup(groups, 'd', 'c').find((x) => x.id === 'd')?.parentId).toBe('c');
+    const before = moveGroup(groups, 'd', 'a', 'b', true);
+    expect(groupTree(before).map((x) => x.group.id)).toEqual(['a', 'd', 'b', 'c']);
+    expect(moveGroup(groups, 'c', null).map((x) => [x.id, x.parentId])).toContainEqual(['c', null]);
+  });
+
+  it('never moves a group into itself or a group inside it', () => {
+    expect(moveGroup(groups, 'a', 'a')).toBe(groups);
+    expect(moveGroup(groups, 'a', 'c')).toBe(groups);
+  });
+
+  it('deleting a group moves its sessions and subgroups up one level', () => {
+    const c = normalizeConfig({ groups, sessions: [{ id: 's1', groupId: 'b' }, { id: 's2', groupId: 'c' }] });
+    deleteGroup(c, 'b');
+    expect(c.groups.map((x) => [x.id, x.parentId])).toEqual([
+      ['a', null],
+      ['d', null],
+      ['c', 'a'],
+    ]);
+    expect(c.sessions.map((s) => s.groupId)).toEqual(['a', 'c']);
+    deleteGroup(c, 'a');
+    expect(c.groups.find((x) => x.id === 'c')?.parentId).toBeNull();
+    expect(c.sessions.map((s) => s.groupId)).toEqual([null, 'c']);
   });
 });
 

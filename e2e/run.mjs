@@ -2,6 +2,7 @@
 // (all.mjs), which protects your real configuration.
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connect, HELPERS, launch, portFree } from './cdp.mjs';
@@ -373,6 +374,70 @@ if (phase === 'main') {
     assert(cfg.groups[0].name === 'Work' && cfg.sessions[0].groupId === cfg.groups[0].id, 'group not saved');
   });
 
+  await step('subgroups: create, move a session in, fold, drag, delete', async () => {
+    const groupRow = (name) => `[...document.querySelectorAll('.group-row')].find(r => r.querySelector('.group-name').textContent === ${js(name)})`;
+    const menuOn = async (target) => {
+      await ev(`${target}.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`!!document.querySelector('.menu')`, 2000, 'menu');
+    };
+    const pick = (label, menu = 0) => ev(`[...document.querySelectorAll('.menu')[${menu}].querySelectorAll('.menu-item')].find(m => m.textContent.includes(${js(label)})).click()`);
+    const config = () => JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+    const savedSoon = async (check, what) => {
+      for (let i = 0; i < 30; i++, await sleep(100)) if (check(config())) return;
+      throw new Error(`not saved: ${what}: ${JSON.stringify(config().groups)}`);
+    };
+
+    await menuOn(groupRow('Work'));
+    await pick('New subgroup');
+    await waitFor(`!!document.querySelector('.dialog input')`, 2000, 'name prompt');
+    await ev(`(() => { document.querySelector('.dialog input').value = 'Clients'; return true; })()`);
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'OK').click()`);
+    await waitFor(`!!${groupRow('Clients')}`, 3000, 'subgroup row');
+    assert((await ev(`${groupRow('Clients')}.style.getPropertyValue('--depth')`)) === '1', 'subgroup is indented');
+    await savedSoon((c) => c.groups.some((g) => g.name === 'Clients' && g.parentId === c.groups.find((x) => x.name === 'Work').id), 'subgroup in Work');
+
+    await menuOn(`document.querySelector('.session-row')`);
+    await pick('Move to group');
+    await waitFor(`document.querySelectorAll('.menu').length === 2`, 2000, 'submenu');
+    await pick('Work / Clients', 1);
+    await savedSoon((c) => c.sessions[0].groupId === c.groups.find((g) => g.name === 'Clients').id, 'session in Clients');
+    assert((await ev(`${groupRow('Work')}.querySelector('.group-count').textContent`)) === '1', 'Work counts the session inside Clients');
+
+    // Folding Work hides Clients and the session.
+    await ev(`${groupRow('Work')}.click()`);
+    await waitFor(`!${groupRow('Clients')} && !document.querySelector('.session-row')`, 2000, 'folded');
+    await ev(`${groupRow('Work')}.click()`);
+    await waitFor(`!!${groupRow('Clients')} && !!document.querySelector('.session-row')`, 2000, 'unfolded');
+
+    // Drag Clients out to the top level, then back into the middle of Work.
+    const drag = (from, to, y) => ev(`(() => {
+      const dt = new DataTransfer();
+      const src = ${from}, dst = ${to};
+      const r = dst.getBoundingClientRect();
+      const at = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 20, clientY: ${y} };
+      src.dispatchEvent(new DragEvent('dragstart', at));
+      dst.dispatchEvent(new DragEvent('dragover', at));
+      dst.dispatchEvent(new DragEvent('drop', at));
+      src.dispatchEvent(new DragEvent('dragend', at));
+      return true;
+    })()`);
+    await drag(groupRow('Clients'), `document.querySelector('.sidebar-list')`, 'r.bottom - 2');
+    await savedSoon((c) => c.groups.find((g) => g.name === 'Clients').parentId === null, 'Clients at top level');
+    await drag(groupRow('Clients'), groupRow('Work'), 'r.top + r.height / 2');
+    await savedSoon((c) => c.groups.find((g) => g.name === 'Clients').parentId === c.groups.find((g) => g.name === 'Work').id, 'Clients back in Work');
+    // Not into a group inside itself.
+    await drag(groupRow('Work'), groupRow('Clients'), 'r.top + r.height / 2');
+    await sleep(400);
+    assert(config().groups.find((g) => g.name === 'Work').parentId === null, 'Work moved into its own subgroup');
+
+    // Deleting Clients keeps its session, in Work.
+    await menuOn(groupRow('Clients'));
+    await pick('Delete group');
+    await waitFor(`/kept, in "Work"/.test(document.querySelector('.dialog')?.textContent ?? '')`, 2000, 'confirm says where it goes');
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Delete').click()`);
+    await savedSoon((c) => c.groups.length === 1 && c.sessions[0].groupId === c.groups[0].id, 'session back in Work');
+  });
+
   await step('sidebar tree: clicking a terminal focuses its tab', async () => {
     const target = await ev(`__t.panes().find((p) => __t.ws.tabOf(p).id !== __t.ws.activeTabId && document.querySelector('.term-row[data-pane="' + p.id + '"]'))?.id`);
     assert(target, 'no background terminal in the tree');
@@ -661,6 +726,100 @@ if (phase === 'main') {
     await waitFor(`!!document.querySelector('.dialog')`, 2000, 'confirm');
     await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Delete').click()`);
     await waitFor(`document.querySelectorAll('.session-row').length === 1`, 3000, 'removed');
+  });
+
+  await step('chosen XShell sessions are imported into a new group with subgroups, the rest later', async () => {
+    // Made-up sessions the way XShell 7 writes them: UTF-16 with a byte-order mark, folders as subfolders.
+    const dir = path.join(os.tmpdir(), 'shellman-e2e-xshell');
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(path.join(dir, 'Prod', 'Web'), { recursive: true });
+    const xsh = (file, host, port, protocol, user = '') =>
+      fs.writeFileSync(path.join(dir, file), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(
+        `[CONNECTION]\r\nHost=${host}\r\nPort=${port}\r\nProtocol=${protocol}\r\n[CONNECTION:AUTHENTICATION]\r\nUserName=${user}\r\nPassword=c2VjcmV0\r\n`, 'utf16le')]));
+    xsh('router.xsh', '10.0.0.1', 23, 'TELNET');
+    xsh(path.join('Prod', 'Web', 'web1.xsh'), 'web1.example.com', 2222, 'SSH', 'deploy');
+    xsh(path.join('Prod', 'files.xsh'), 'web1.example.com', 22, 'SFTP', 'deploy');
+    const button = (label) => `[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === ${js(label)})`;
+    const rows = `[...document.querySelectorAll('.dialog .import-row')]`;
+    const row = (name) => `${rows}.find(r => r.querySelector('.import-name').textContent === ${js(name)})`;
+    const count = `document.querySelector('.dialog .import-count')?.textContent`;
+    const groupSelect = `document.querySelectorAll('.dialog select')[1]`;
+    const typeFolder = `(() => { const i = document.querySelector('.dialog input.mono'); i.value = ${js(dir)}; i.dispatchEvent(new Event('change')); return true; })()`;
+    // The XShell group and its subgroups, once `n` sessions are saved somewhere in them.
+    const readConfig = async (n) => {
+      for (let i = 0; i < 30; i++, await sleep(100)) {
+        const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+        const group = cfg.groups.find((g) => g.name === 'XShell' && !g.parentId);
+        const prod = cfg.groups.find((g) => g.name === 'Prod' && g.parentId === group?.id);
+        const web = cfg.groups.find((g) => g.name === 'Web' && g.parentId === prod?.id);
+        const inside = new Set([group?.id, prod?.id, web?.id].filter(Boolean));
+        if (cfg.sessions.filter((s) => inside.has(s.groupId)).length === n) return { cfg, group, prod, web };
+      }
+      throw new Error(`no XShell group with ${n} sessions saved`);
+    };
+
+    await ev(`document.querySelector('.sidebar-list').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 400 }))`);
+    await waitFor(`!!document.querySelector('.menu')`, 2000, 'menu');
+    await ev(`[...document.querySelectorAll('.menu-item')].find(m => m.textContent.includes('Import sessions')).click()`);
+    await waitFor(`!!document.querySelector('.dialog')`, 2000, 'import dialog');
+    assert((await ev(`document.querySelector('.dialog select').selectedOptions[0].textContent`)) === 'XShell', 'XShell is the source');
+    await waitFor(`!/Looking/.test(document.querySelector('.dialog .import-status').textContent)`, 3000, 'default folder looked up');
+    await ev(typeFolder);
+    await waitFor(`${count} === "2 of 2 chosen, 1 can't be imported"`, 3000, 'sessions listed');
+    assert((await ev(`${rows}.map(r => r.textContent).join('|')`)) === "routertelnet 10.0.0.1|filesSFTP isn't supported|web1ssh deploy@web1.example.com:2222",
+      'rows: ' + (await ev(`${rows}.map(r => r.textContent).join('|')`)));
+    assert((await ev(`${row('files')}.querySelector('input').disabled`)) === true, 'the SFTP session can be ticked');
+    assert((await ev(`${groupSelect}.value`)) === '__new__', 'new group by default');
+    assert((await ev(`document.querySelectorAll('.dialog select')[2].value`)) === 'subgroups', 'folders become subgroups by default');
+    await ev(`${row('router')}.querySelector('input').click()`);
+    await waitFor(`${count} === "1 of 2 chosen, 1 can't be imported"`, 2000, 'router unticked');
+    await shot(path.join(OUT, '07c-import-sessions.png'));
+    await ev(`${button('Import')}.click()`);
+    await waitFor(`!document.querySelector('.dialog')`, 3000, 'dialog closed');
+    const first = await readConfig(1);
+    assert(first.web, 'no XShell › Prod › Web groups: ' + JSON.stringify(first.cfg.groups));
+    const web = first.cfg.sessions.find((s) => s.groupId === first.web.id);
+    assert(web?.name === 'web1', 'web1 in Web: ' + JSON.stringify(first.cfg.sessions.map((s) => [s.name, s.groupId])));
+    assert(await ev(`[...document.querySelectorAll('.group-row')].some(r => r.querySelector('.group-name').textContent === 'Web' && r.style.getPropertyValue('--depth') === '2')`), 'Web shown two levels deep');
+    await shot(path.join(OUT, '07d-imported-subgroups.png'));
+    assert(web.connection.kind === 'ssh' && web.connection.host === 'web1.example.com' && web.connection.port === 2222 && web.connection.user === 'deploy' && !web.connection.passwordAuth, 'ssh: ' + JSON.stringify(web.connection));
+    assert(!JSON.stringify(first.cfg).includes('c2VjcmV0'), 'the saved password was copied');
+
+    // Again, into that group from its menu: web1 is already saved, the router is left.
+    await ev(`[...document.querySelectorAll('.group-row')].find(r => r.textContent.includes('XShell')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+    await waitFor(`!!document.querySelector('.menu')`, 2000, 'group menu');
+    await ev(`[...document.querySelectorAll('.menu-item')].find(m => m.textContent.includes('Import sessions here')).click()`);
+    await waitFor(`!!document.querySelector('.dialog')`, 2000, 'import dialog again');
+    assert((await ev(`${groupSelect}.value`)) === first.group.id, 'the group is chosen');
+    await waitFor(`!/Looking/.test(document.querySelector('.dialog .import-status').textContent)`, 3000, 'default folder looked up again');
+    await ev(typeFolder);
+    await waitFor(`${count} === "1 of 1 chosen, 2 can't be imported"`, 3000, 'web1 already saved');
+    assert((await ev(`${row('web1')}.textContent`)).includes('Already saved'), 'web1 marked');
+    await ev(`${button('Import')}.click()`);
+    await waitFor(`!document.querySelector('.dialog')`, 3000, 'dialog closed again');
+    const second = await readConfig(2);
+    const router = second.cfg.sessions.find((s) => s.groupId === second.group.id && s.name === 'router');
+    assert(second.cfg.groups.filter((g) => g.name === 'Prod').length === 1, 'Prod made twice');
+    assert(router?.connection.kind === 'telnet' && router.connection.port === null, 'telnet: ' + JSON.stringify(router));
+
+    // Leave the sidebar as the restart phase expects it.
+    for (const name of ['router', 'web1']) {
+      await ev(`[...document.querySelectorAll('.session-row')].find(r => r.querySelector('.session-name span').textContent === ${js(name)}).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`!!document.querySelector('.menu')`, 2000, 'session menu');
+      await ev(`[...document.querySelectorAll('.menu-item')].find((i) => i.textContent.includes('Delete')).click()`);
+      await waitFor(`!!document.querySelector('.dialog')`, 2000, 'confirm');
+      await ev(`${button('Delete')}.click()`);
+      await waitFor(`!document.querySelector('.dialog')`, 2000, 'confirmed');
+    }
+    for (const name of ['Web', 'Prod', 'XShell']) {
+      await ev(`[...document.querySelectorAll('.group-row')].find(r => r.querySelector('.group-name').textContent === ${js(name)}).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await ev(`[...document.querySelectorAll('.menu-item')].find(m => m.textContent.includes('Delete group')).click()`);
+      await waitFor(`!!document.querySelector('.dialog')`, 2000, 'confirm group');
+      await ev(`${button('Delete')}.click()`);
+      await waitFor(`!document.querySelector('.dialog')`, 2000, 'group deleted');
+    }
+    await waitFor(`document.querySelectorAll('.session-row').length === 1 && document.querySelectorAll('.group-row').length === 1`, 3000, 'cleaned up');
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   await step('open terminals are saved for the next start', async () => {

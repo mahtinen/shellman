@@ -1,6 +1,6 @@
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { api, type AgentKey } from './api';
-import { baseName, formatEnv, parseEnv, uid } from './config';
+import { baseName, formatEnv, groupOptions, newGroup, parseEnv, uid } from './config';
 import { connectionError, connectionTarget, emptyConnection, keyLabel, parseDestination, parsePort, sameKey } from './connection';
 import { dialog, promptDialog } from './dialogs';
 import { h } from './dom';
@@ -116,7 +116,7 @@ export function editSession(
     const fillGroups = (selected: string | null) => {
       group.replaceChildren(
         h('option', { value: '' }, '(No group)'),
-        ...store.config.groups.map((g) => h('option', { value: g.id }, g.name)),
+        ...groupOptions(store.config.groups).map((g) => h('option', { value: g.id }, g.label)),
         h('option', { value: NEW_GROUP }, 'New group…'),
       );
       group.value = selected ?? '';
@@ -130,8 +130,9 @@ export function editSession(
       }
       const n = await promptDialog('New group', 'Group name');
       if (n?.trim()) {
-        const id = uid('g-');
-        store.update((c) => c.groups.push({ id, name: n.trim(), collapsed: false }));
+        const g = newGroup(n.trim());
+        const id = g.id;
+        store.update((c) => c.groups.push(g));
         fillGroups(id);
         lastGroup = id;
       } else group.value = lastGroup;

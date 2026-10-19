@@ -117,9 +117,10 @@ export function normalizeConfig(raw: unknown): Config {
       const id = str(g.id) || uid('g-');
       if (groupIds.has(id)) continue;
       groupIds.add(id);
-      groups.push({ id, name: str(g.name) || 'Group', collapsed: bool(g.collapsed, false) });
+      groups.push({ id, name: str(g.name) || 'Group', parentId: str(g.parentId) || null, collapsed: bool(g.collapsed, false) });
     }
   }
+  fixParents(groups, groupIds);
 
   const sessions: SavedSession[] = [];
   const sessionIds = new Set<string>();
@@ -147,6 +148,97 @@ export function normalizeConfig(raw: unknown): Config {
   }
 
   return { version: 1, sessions, groups, settings };
+}
+
+/** Parents that don't exist become top level, and so does a group that would end up inside itself. */
+function fixParents(groups: Group[], ids: Set<string>): void {
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  for (const g of groups) {
+    if (g.parentId && !ids.has(g.parentId)) g.parentId = null;
+    const seen = new Set<string>();
+    for (let p = g.parentId; p && !seen.has(p); p = byId.get(p)?.parentId ?? null) {
+      // A loop above this group is broken when its own groups get here.
+      if (p === g.id) {
+        g.parentId = null;
+        break;
+      }
+      seen.add(p);
+    }
+  }
+}
+
+export function newGroup(name: string, parentId: string | null = null): Group {
+  return { id: uid('g-'), name, parentId, collapsed: false };
+}
+
+/** The groups directly in `parentId` (null = top level), in their order. */
+export function childGroups(groups: Group[], parentId: string | null): Group[] {
+  return groups.filter((g) => g.parentId === parentId);
+}
+
+/** The group and every group inside it, at any depth. */
+export function groupAndDescendants(groups: Group[], id: string): Set<string> {
+  const out = new Set([id]);
+  for (let added = true; added; ) {
+    added = false;
+    for (const g of groups) {
+      if (g.parentId && out.has(g.parentId) && !out.has(g.id)) {
+        out.add(g.id);
+        added = true;
+      }
+    }
+  }
+  return out;
+}
+
+/** "Customers / Acme / Prod". */
+export function groupPath(groups: Group[], id: string | null): string {
+  const names: string[] = [];
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  for (let g = id ? byId.get(id) : undefined; g && names.length < groups.length; g = g.parentId ? byId.get(g.parentId) : undefined) names.unshift(g.name);
+  return names.join(' / ');
+}
+
+/** Every group, each followed by the groups inside it (the sidebar's order), with its depth. */
+export function groupTree(groups: Group[]): { group: Group; depth: number }[] {
+  const out: { group: Group; depth: number }[] = [];
+  const add = (parentId: string | null, depth: number) => {
+    for (const g of childGroups(groups, parentId)) {
+      out.push({ group: g, depth });
+      add(g.id, depth + 1);
+    }
+  };
+  add(null, 0);
+  return out;
+}
+
+/** Every group with its full path, in the sidebar's order, for choosing one. */
+export function groupOptions(groups: Group[]): { id: string; label: string }[] {
+  return groupTree(groups).map(({ group }) => ({ id: group.id, label: groupPath(groups, group.id) }));
+}
+
+/**
+ * Moves a group into `parentId`, before or after `targetId` (a group in that parent) or to the end.
+ * A group can't move into itself or a group inside it.
+ */
+export function moveGroup(groups: Group[], id: string, parentId: string | null, targetId: string | null = null, before = false): Group[] {
+  const moving = groups.find((g) => g.id === id);
+  if (!moving || (parentId && groupAndDescendants(groups, id).has(parentId))) return groups;
+  const rest = groups.filter((g) => g !== moving);
+  const moved = { ...moving, parentId };
+  const t = targetId ? rest.findIndex((g) => g.id === targetId) : -1;
+  if (t < 0) return [...rest, moved];
+  rest.splice(t + (before ? 0 : 1), 0, moved);
+  return rest;
+}
+
+/** Deletes a group; its sessions and the groups in it move up to its parent. */
+export function deleteGroup(config: Config, id: string): void {
+  const g = config.groups.find((x) => x.id === id);
+  if (!g) return;
+  for (const x of config.groups) if (x.parentId === id) x.parentId = g.parentId;
+  for (const s of config.sessions) if (s.groupId === id) s.groupId = g.parentId;
+  config.groups = config.groups.filter((x) => x !== g);
 }
 
 /** "C:\Projects\my-api\" -> "my-api" */

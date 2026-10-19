@@ -292,6 +292,10 @@ select.input {
   margin: 0 0 12px;
 }
 
+.sidebar-empty .btn {
+  margin: 0 6px 6px 0;
+}
+
 .group-row,
 .terms-head {
   display: flex;
@@ -303,6 +307,11 @@ select.input {
   cursor: pointer;
   color: var(--muted);
   font-weight: 600;
+}
+
+/* Subgroups indent by their depth (set on the row and on the group's body). */
+.group-row {
+  padding-left: calc(6px + var(--depth, 0) * 14px);
 }
 
 .group-row:hover,
@@ -341,7 +350,7 @@ select.input {
 }
 
 .group-empty {
-  padding: 4px 8px 6px 34px;
+  padding: 4px 8px 6px calc(34px + var(--depth, 0) * 14px);
   color: var(--muted);
   font-size: 12px;
   font-style: italic;
@@ -358,7 +367,7 @@ select.input {
 }
 
 .session-row.in-group {
-  padding-left: 18px;
+  padding-left: calc(18px + var(--depth, 0) * 14px);
 }
 
 /* Fixed slot so session icons line up whether or not there is a chevron. */
@@ -473,7 +482,7 @@ select.input {
 }
 
 .term-tree.in-group {
-  margin-left: 41px;
+  margin-left: calc(41px + var(--depth, 0) * 14px);
 }
 
 .terms-head {
@@ -1397,6 +1406,86 @@ select.input {
 .check input {
   margin: 2px 0 0;
   accent-color: var(--accent);
+}
+
+.import-list {
+  max-height: 280px;
+  margin: -4px 0 12px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.import-all,
+.import-folder,
+.import-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.import-list input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.import-all {
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.import-folder {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.import-row.in-folder {
+  padding-left: 30px;
+}
+
+.import-row:hover,
+.import-folder:hover {
+  background: var(--surface2);
+}
+
+.import-row.skipped {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.import-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-count,
+.import-detail {
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-detail {
+  min-width: 0;
+  padding-left: 12px;
+  font-family: var(--font-mono);
+}
+
+.import-status:empty {
+  display: none;
 }
 
 .advanced {

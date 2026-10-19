@@ -2,11 +2,12 @@ import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { api } from './api';
-import { baseName, uid } from './config';
+import { baseName, deleteGroup, groupPath, newGroup, uid } from './config';
 import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, emptyConnection, parseQuickConnect } from './connection';
 import { confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
 import { clamp, h, isEditableTarget, setChildren } from './dom';
 import { icons } from './icons';
+import { importSessions } from './importDialog';
 import { matchKey, shortcutFor, type Match } from './keys';
 import { showMenu, showMenuBelow, type MenuEntry } from './menu';
 import type { Pane } from './pane';
@@ -67,7 +68,8 @@ class App {
           c.sessions.splice(i + 1, 0, { ...s, id: uid('s-'), name: `${s.name} (copy)`, env: { ...s.env } });
         }),
       remove: (s) => void this.removeSession(s),
-      createGroup: () => void this.createGroup(),
+      createGroup: (parentId) => void this.createGroup(parentId),
+      importSessions: (groupId) => importSessions(groupId),
       renameGroup: (g) => void this.renameGroup(g),
       removeGroup: (g) => void this.removeGroup(g),
       openFolder: (s) => void api.openDir(s.cwd).catch((e) => toast(String(e), 'error')),
@@ -573,6 +575,7 @@ class App {
       { label: 'New terminal in default directory', icon: 'terminal', action: () => this.workspace.open(this.defaultSpec(), 'tab') },
       { label: 'Quick open saved session…', icon: 'search', shortcut: shortcutFor('palette'), action: () => this.palette() },
       { label: 'New connection…', icon: 'globe', shortcut: shortcutFor('newConnection'), action: () => this.newConnection() },
+      { label: 'Import sessions…', icon: 'globe', action: () => importSessions() },
       'separator',
       { label: 'Settings', icon: 'gear', shortcut: shortcutFor('settings'), action: () => openSettings() },
       { label: 'Keyboard shortcuts', icon: 'keyboard', action: () => openShortcuts() },
@@ -585,7 +588,7 @@ class App {
       detail: s.connection ? connectionLabel(s.connection) : s.command ? `${s.command} · ${s.cwd}` : s.cwd,
       icon: s.connection ? 'globe' : undefined,
       color: s.color,
-      keywords: [store.config.groups.find((g) => g.id === s.groupId)?.name ?? ''],
+      keywords: [groupPath(store.config.groups, s.groupId)],
       run: (placement) => this.openSession(s, placement),
     }));
     const pane = this.workspace.activePane();
@@ -599,6 +602,7 @@ class App {
     }
     items.push({ label: 'Open directory…', icon: 'folder', run: (placement) => void this.openDirectory(placement) });
     items.push({ label: 'New connection…', icon: 'globe', detail: 'SSH or Telnet', run: () => this.newConnection() });
+    items.push({ label: 'Import sessions…', icon: 'globe', detail: 'SSH and Telnet sessions from XShell', run: () => importSessions() });
     showPalette(items, 'Open a saved session, or type user@host to connect…', (q) => {
       const c = parseQuickConnect(q);
       if (!c) return [];
@@ -673,9 +677,14 @@ class App {
     store.update((c) => (c.sessions = c.sessions.filter((x) => x.id !== s.id)));
   }
 
-  private async createGroup(): Promise<void> {
-    const name = (await promptDialog('New group', 'Group name'))?.trim();
-    if (name) store.update((c) => c.groups.push({ id: uid('g-'), name, collapsed: false }));
+  private async createGroup(parentId: string | null = null): Promise<void> {
+    const name = (await promptDialog(parentId ? 'New subgroup' : 'New group', 'Group name'))?.trim();
+    if (!name) return;
+    store.update((c) => {
+      c.groups.push(newGroup(name, parentId));
+      const parent = c.groups.find((g) => g.id === parentId);
+      if (parent) parent.collapsed = false;
+    });
   }
 
   private async renameGroup(g: Group): Promise<void> {
@@ -688,13 +697,14 @@ class App {
   }
 
   private async removeGroup(g: Group): Promise<void> {
-    const count = store.config.sessions.filter((s) => s.groupId === g.id).length;
-    const msg = count ? `The ${count} session${count > 1 ? 's' : ''} in it will be kept, outside any group.` : 'The group is empty.';
+    const { sessions, groups } = store.config;
+    const count = sessions.filter((s) => s.groupId === g.id).length;
+    const subgroups = groups.filter((x) => x.parentId === g.id).length;
+    const what = [count ? `${count} session${count > 1 ? 's' : ''}` : '', subgroups ? `${subgroups} subgroup${subgroups > 1 ? 's' : ''}` : ''].filter(Boolean).join(' and ');
+    const parent = groups.find((x) => x.id === g.parentId);
+    const msg = what ? `The ${what} in it will be kept, ${parent ? `in "${parent.name}"` : 'outside any group'}.` : 'The group is empty.';
     if (!(await confirmDialog(`Delete group "${g.name}"?`, msg, 'Delete', true))) return;
-    store.update((c) => {
-      c.groups = c.groups.filter((x) => x.id !== g.id);
-      for (const s of c.sessions) if (s.groupId === g.id) s.groupId = null;
-    });
+    store.update((c) => deleteGroup(c, g.id));
   }
 
   // ---- menus ----------------------------------------------------------

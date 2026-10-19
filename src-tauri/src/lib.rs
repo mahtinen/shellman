@@ -2,6 +2,7 @@
 mod connect;
 mod pty;
 mod shell;
+mod xshell;
 
 use pty::{PtyManager, SpawnRequest};
 use serde::Serialize;
@@ -137,6 +138,19 @@ async fn dir_exists(path: String) -> bool {
     std::path::Path::new(&path).is_dir()
 }
 
+/// XShell's sessions folder, if XShell has saved any here.
+#[tauri::command]
+async fn xshell_dir(app: tauri::AppHandle) -> Option<String> {
+    let docs = app.path().document_dir().ok()?;
+    xshell::default_dir(&docs).map(|p| p.to_string_lossy().into_owned())
+}
+
+/// The `.xsh` session files under `dir`, for importing them.
+#[tauri::command]
+async fn xshell_sessions(dir: String) -> Result<Vec<xshell::XshFile>, String> {
+    xshell::read_sessions(std::path::Path::new(&dir))
+}
+
 /// Opens an http(s) link in the default browser.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -263,6 +277,8 @@ pub fn run() {
             clipboard_read,
             clipboard_write,
             dir_exists,
+            xshell_dir,
+            xshell_sessions,
             open_url,
             open_dir,
             system_info,

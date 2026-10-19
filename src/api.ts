@@ -2,6 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import type { ConnectionRequest } from './connection';
 import type { WorkspaceSnapshot } from './snapshot';
 import type { Config, ShellProfile, SystemInfo } from './types';
+import type { XshFile } from './xshell';
 
 export type PtyMessage = string | { exit: number | null };
 
@@ -63,4 +64,7 @@ export const api = {
   systemInfo: () => invoke<SystemInfo>('system_info'),
   openUrl: (url: string) => invoke<void>('open_url', { url }),
   openDir: (path: string) => invoke<void>('open_dir', { path }),
+  /** XShell's sessions folder, or null when there is none. */
+  xshellDir: () => invoke<string | null>('xshell_dir'),
+  xshellSessions: (dir: string) => invoke<XshFile[]>('xshell_sessions', { dir }),
 };
