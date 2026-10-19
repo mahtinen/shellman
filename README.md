@@ -15,7 +15,8 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
 ## Features
 
 - **Session sidebar.** Saved directories with optional startup command, shell, colour, environment
-  variables and groups. Click opens a new tab; the hover buttons or middle-click open it as a split.
+  variables and groups. A group can have a colour too: its sessions and subgroups get it unless they have
+  their own. Click opens a new tab; the hover buttons or middle-click open it as a split.
   The + button (and Ctrl+Shift+N for SSH/Telnet) opens a terminal or connection without saving it, unless
   you tick "Remember this session"; Ctrl+Shift+S saves an open one later.
   Shift+click (or "Open plain terminal") opens the session's folder and shell *without* its startup command,

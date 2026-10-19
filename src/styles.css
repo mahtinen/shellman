@@ -327,6 +327,10 @@ select.input {
   display: inline-flex;
 }
 
+.group-row .group-icon {
+  color: var(--group-color, inherit);
+}
+
 .group-row .chevron svg,
 .terms-head .chevron svg {
   width: 12px;
@@ -1515,7 +1519,7 @@ select.input {
 }
 
 .swatch.none {
-  background: repeating-linear-gradient(45deg, var(--surface2), var(--surface2) 3px, var(--bg) 3px, var(--bg) 6px);
+  background: repeating-linear-gradient(45deg, var(--inherited, var(--surface2)), var(--inherited, var(--surface2)) 3px, var(--bg) 3px, var(--bg) 6px);
 }
 
 .swatch.selected {

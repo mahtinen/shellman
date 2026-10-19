@@ -1,6 +1,6 @@
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { api, type AgentKey } from './api';
-import { baseName, formatEnv, groupOptions, newGroup, parseEnv, uid } from './config';
+import { baseName, formatEnv, groupColor, groupOptions, newGroup, parseEnv, uid } from './config';
 import { connectionError, connectionTarget, emptyConnection, keyLabel, parseDestination, parsePort, sameKey } from './connection';
 import { dialog, promptDialog } from './dialogs';
 import { h } from './dom';
@@ -45,6 +45,70 @@ export function shellEntries(run: (shellId: string) => void, current?: string, p
     disabled: s.id === current,
     action: () => run(s.id),
   }));
+}
+
+/**
+ * Colour swatches. The first one means "no colour of its own": it shows the colour inherited from
+ * the group (`inherited`, re-read on refresh), striped, and says so with `inheritTitle`.
+ */
+function colorPicker(initial: string, inherited: () => string, inheritTitle: string): { el: HTMLElement; value: () => string; refresh: () => void } {
+  let color = initial;
+  const el = h('div', { class: 'swatches' });
+  const refresh = () => {
+    const from = inherited();
+    el.replaceChildren(
+      ...SESSION_COLORS.map((c) =>
+        h('button', {
+          class: `swatch${c === color ? ' selected' : ''}${c ? '' : ' none'}`,
+          style: c ? `background:${c}` : from ? `--inherited:${from}` : undefined,
+          title: c || (from ? inheritTitle : 'No color'),
+          type: 'button',
+          onclick: () => {
+            color = c;
+            refresh();
+          },
+        }),
+      ),
+    );
+  };
+  refresh();
+  return { el, value: () => color, refresh };
+}
+
+/** The group dialog: name and colour. Resolves with them, or null when cancelled. */
+export function editGroup(title: string, initial: { name: string; color: string; parentId: string | null }): Promise<{ name: string; color: string } | null> {
+  return new Promise((resolve) => {
+    let result: { name: string; color: string } | null = null;
+    const name = h('input', { class: 'input', value: initial.name, placeholder: 'Group name', spellcheck: false });
+    const colors = colorPicker(initial.color, () => groupColor(store.config.groups, initial.parentId), 'Same as the group it is in');
+    const error = h('div', { class: 'field-error' });
+    dialog({
+      title,
+      width: 420,
+      body: [
+        h('label', { class: 'field' }, h('span', null, 'Name'), name),
+        h('div', { class: 'field' }, h('span', null, 'Color'), colors.el, h('small', { class: 'hint' }, 'Sessions in the group and its subgroups get this color unless they have their own.')),
+        error,
+      ],
+      buttons: [
+        { label: 'Cancel' },
+        {
+          label: 'Save',
+          kind: 'primary',
+          onClick: () => {
+            if (!name.value.trim()) {
+              error.textContent = 'Give the group a name.';
+              name.focus();
+              return false;
+            }
+            result = { name: name.value.trim(), color: colors.value() };
+          },
+        },
+      ],
+      focus: name,
+      onClose: () => resolve(result),
+    });
+  });
 }
 
 export interface EditResult {
@@ -138,24 +202,9 @@ export function editSession(
       } else group.value = lastGroup;
     });
 
-    let color = initial.color ?? '';
-    const swatches = h('div', { class: 'swatches' });
-    const renderSwatches = () =>
-      swatches.replaceChildren(
-        ...SESSION_COLORS.map((c) =>
-          h('button', {
-            class: `swatch${c === color ? ' selected' : ''}${c ? '' : ' none'}`,
-            style: c ? `background:${c}` : undefined,
-            title: c || 'No color',
-            type: 'button',
-            onclick: () => {
-              color = c;
-              renderSwatches();
-            },
-          }),
-        ),
-      );
-    renderSwatches();
+    const selectedGroup = () => (group.value && group.value !== NEW_GROUP ? group.value : null);
+    const colors = colorPicker(initial.color ?? '', () => groupColor(store.config.groups, selectedGroup()), 'Same as its group');
+    group.addEventListener('change', () => colors.refresh());
 
     const browse = h('button', { class: 'btn', type: 'button' }, 'Browse…');
     browse.addEventListener('click', async () => {
@@ -260,8 +309,8 @@ export function editSession(
       error.textContent = '';
       const base = {
         id: initial.id ?? uid('s-'),
-        groupId: group.value && group.value !== NEW_GROUP ? group.value : null,
-        color,
+        groupId: selectedGroup(),
+        color: colors.value(),
         env: parseEnv(env.value),
         collapsed: initial.collapsed ?? false,
       };
@@ -367,7 +416,7 @@ export function editSession(
     // A new terminal or connection is temporary unless "Remember" is ticked; group and colour only matter then.
     const isNew = mode === 'new';
     const groupField = h('label', { class: 'field' }, h('span', null, 'Group'), group);
-    const colorField = h('div', { class: 'field' }, h('span', null, 'Color'), swatches);
+    const colorField = h('div', { class: 'field' }, h('span', null, 'Color'), colors.el);
     const remember = h('input', { type: 'checkbox', checked: !!opts.remember });
     const rememberEl = h(
       'label',

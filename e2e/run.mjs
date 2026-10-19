@@ -360,7 +360,7 @@ if (phase === 'main') {
     await click('.sidebar-header .icon-btn[title="New group"]');
     await waitFor(`!!document.querySelector('.dialog input')`, 3000);
     await ev(`(() => { const i = document.querySelector('.dialog input'); i.value = 'Work'; return true; })()`);
-    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'OK').click()`);
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Save').click()`);
     await waitFor(`document.querySelectorAll('.group-row').length === 1`, 3000, 'group row');
     await ev(`document.querySelector('.session-row').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
     await waitFor(`!!document.querySelector('.menu')`, 2000, 'menu');
@@ -391,7 +391,7 @@ if (phase === 'main') {
     await pick('New subgroup');
     await waitFor(`!!document.querySelector('.dialog input')`, 2000, 'name prompt');
     await ev(`(() => { document.querySelector('.dialog input').value = 'Clients'; return true; })()`);
-    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'OK').click()`);
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Save').click()`);
     await waitFor(`!!${groupRow('Clients')}`, 3000, 'subgroup row');
     assert((await ev(`${groupRow('Clients')}.style.getPropertyValue('--depth')`)) === '1', 'subgroup is indented');
     await savedSoon((c) => c.groups.some((g) => g.name === 'Clients' && g.parentId === c.groups.find((x) => x.name === 'Work').id), 'subgroup in Work');
@@ -402,6 +402,38 @@ if (phase === 'main') {
     await pick('Work / Clients', 1);
     await savedSoon((c) => c.sessions[0].groupId === c.groups.find((g) => g.name === 'Clients').id, 'session in Clients');
     assert((await ev(`${groupRow('Work')}.querySelector('.group-count').textContent`)) === '1', 'Work counts the session inside Clients');
+
+    // Colours: the session takes the nearest group's colour unless it has its own.
+    const sessionColor = () => ev(`document.querySelector('.session-row').style.getPropertyValue('--session-color')`);
+    const pickColor = async (title) => {
+      await ev(`document.querySelector('.dialog .swatch[title=${js(title)}]').click()`);
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Save').click()`);
+      await waitFor(`!document.querySelector('.dialog')`, 2000, 'dialog closed');
+    };
+    await menuOn(groupRow('Work'));
+    await pick('Edit…');
+    await waitFor(`!!document.querySelector('.dialog .swatch')`, 2000, 'group dialog');
+    await pickColor('#7aa2f7');
+    await savedSoon((c) => c.groups.find((g) => g.name === 'Work').color === '#7aa2f7', 'Work colour');
+    await waitFor(`${groupRow('Clients')}.style.getPropertyValue('--group-color') === '#7aa2f7'`, 2000, 'Clients inherits Work colour');
+    assert((await sessionColor()) === '#7aa2f7', 'session inherits the colour through Clients');
+    await menuOn(groupRow('Clients'));
+    await pick('Edit…');
+    await waitFor(`!!document.querySelector('.dialog .swatch[title="Same as the group it is in"]')`, 2000, 'Clients shows the inherited colour');
+    await pickColor('#9ece6a');
+    await waitFor(`document.querySelector('.session-row').style.getPropertyValue('--session-color') === '#9ece6a'`, 2000, 'subgroup colour wins');
+    await menuOn(`document.querySelector('.session-row')`);
+    await pick('Edit…');
+    await waitFor(`!!document.querySelector('.dialog .swatch[title="Same as its group"]')`, 2000, 'session dialog shows the group colour');
+    await pickColor('#f7768e');
+    await waitFor(`document.querySelector('.session-row').style.getPropertyValue('--session-color') === '#f7768e'`, 2000, 'own colour wins');
+    await savedSoon((c) => c.sessions[0].color === '#f7768e', 'session colour');
+    await menuOn(`document.querySelector('.session-row')`);
+    await pick('Edit…');
+    await waitFor(`!!document.querySelector('.dialog .swatch')`, 2000, 'session dialog');
+    await pickColor('Same as its group');
+    await savedSoon((c) => c.sessions[0].color === '', 'session colour cleared');
+    assert((await sessionColor()) === '#9ece6a', 'back to the group colour');
 
     // Folding Work hides Clients and the session.
     await ev(`${groupRow('Work')}.click()`);

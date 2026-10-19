@@ -5,6 +5,7 @@ import {
   deleteGroup,
   formatEnv,
   groupAndDescendants,
+  groupColor,
   groupOptions,
   groupPath,
   groupTree,
@@ -14,6 +15,7 @@ import {
   ownerSession,
   parseEnv,
   pathKey,
+  sessionColor,
 } from './config';
 import type { Group } from './types';
 
@@ -60,7 +62,12 @@ describe('normalizeConfig', () => {
 
   it('loads groups saved before subgroups existed as top-level groups', () => {
     const c = normalizeConfig({ groups: [{ id: 'g1', name: 'Work', collapsed: true }] });
-    expect(c.groups).toEqual([{ id: 'g1', name: 'Work', parentId: null, collapsed: true }]);
+    expect(c.groups).toEqual([{ id: 'g1', name: 'Work', parentId: null, color: '', collapsed: true }]);
+  });
+
+  it('keeps group colours', () => {
+    const c = normalizeConfig({ groups: [{ id: 'a', name: 'A', color: '#9ece6a' }, { id: 'b', name: 'B', color: 7 }] });
+    expect(c.groups.map((g) => g.color)).toEqual(['#9ece6a', '']);
   });
 
   it('keeps subgroups and moves groups with a missing parent to the top level', () => {
@@ -126,7 +133,7 @@ describe('normalizeConfig', () => {
 });
 
 describe('group tree', () => {
-  const g = (id: string, parentId: string | null = null): Group => ({ id, name: id.toUpperCase(), parentId, collapsed: false });
+  const g = (id: string, parentId: string | null = null, color = ''): Group => ({ id, name: id.toUpperCase(), parentId, color, collapsed: false });
   // a > (b > c), d
   const groups = [g('a'), g('d'), g('b', 'a'), g('c', 'b')];
 
@@ -157,6 +164,24 @@ describe('group tree', () => {
   it('never moves a group into itself or a group inside it', () => {
     expect(moveGroup(groups, 'a', 'a')).toBe(groups);
     expect(moveGroup(groups, 'a', 'c')).toBe(groups);
+  });
+
+  it('sessions take the colour of the nearest group that has one, unless they have their own', () => {
+    // a (blue) > b > c (green), d
+    const coloured = [g('a', null, '#7aa2f7'), g('d'), g('b', 'a'), g('c', 'b', '#9ece6a')];
+    expect(groupColor(coloured, 'a')).toBe('#7aa2f7');
+    expect(groupColor(coloured, 'b')).toBe('#7aa2f7');
+    expect(groupColor(coloured, 'c')).toBe('#9ece6a');
+    expect(groupColor(coloured, 'd')).toBe('');
+    expect(groupColor(coloured, null)).toBe('');
+    expect(groupColor(coloured, 'gone')).toBe('');
+    expect(sessionColor(coloured, { color: '', groupId: 'b' })).toBe('#7aa2f7');
+    expect(sessionColor(coloured, { color: '#f7768e', groupId: 'c' })).toBe('#f7768e');
+    expect(sessionColor(coloured, { color: '', groupId: null })).toBe('');
+  });
+
+  it('a loop in group parents does not hang the colour lookup', () => {
+    expect(groupColor([g('x', 'y'), g('y', 'x')], 'x')).toBe('');
   });
 
   it('deleting a group moves its sessions and subgroups up one level', () => {

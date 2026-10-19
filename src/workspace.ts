@@ -1,5 +1,5 @@
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
-import { baseName, ownerSession, uid } from './config';
+import { baseName, ownerSession, sessionColor, uid } from './config';
 import { confirmDialog, toast } from './dialogs';
 import { h } from './dom';
 import { icons } from './icons';
@@ -168,8 +168,8 @@ export class Workspace implements PaneHost {
   }
 
   /** Colour of the session a pane is in now (tab stripe and pane header). */
-  private paneColor(pane: Pane): string {
-    return this.ownerOf(pane)?.color ?? pane.spec.color;
+  private paneColor(pane: Pane, owner = this.ownerOf(pane)): string {
+    return owner ? sessionColor(store.config.groups, owner) : pane.spec.color;
   }
 
   /** A terminal's name, shared by its tab and its entry in the sidebar tree. */
@@ -552,7 +552,7 @@ export class Workspace implements PaneHost {
     el.style.setProperty('--session-color', (active ? this.paneColor(active) : '') || 'transparent');
     for (const p of panes) {
       const owner = this.ownerOf(p);
-      p.setIdentity(owner?.name ?? p.spec.name, owner?.color ?? p.spec.color);
+      p.setIdentity(owner?.name ?? p.spec.name, this.paneColor(p, owner));
     }
     const status = el.querySelector('.tab-status') as HTMLElement;
     const state = progress ? 'progress' : tab.bell ? 'bell' : tab.busy ? 'busy' : tab.unread ? 'unread' : '';

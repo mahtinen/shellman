@@ -51,6 +51,7 @@ export interface SavedSession {
   command: string;
   /** Shell profile id ('' = the default shell). */
   shellId: string;
+  /** '' = its group's colour (see sessionColor). */
   color: string;
   env: Record<string, string>;
   /** Its open terminals are folded away in the sidebar. */
@@ -62,6 +63,8 @@ export interface Group {
   name: string;
   /** The group it is in; null = top level. */
   parentId: string | null;
+  /** Colour of the sessions inside, unless they have their own; '' = the parent group's. */
+  color: string;
   collapsed: boolean;
 }
 
