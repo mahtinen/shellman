@@ -20,6 +20,7 @@ export const icons = {
   paste: svg('<rect x="3" y="2.75" width="10" height="11.5" rx="1.25"/><path d="M6 2.75h4v2H6z"/>'),
   sidebar: svg('<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><path d="M6 2.75v10.5"/>'),
   maximize: svg('<path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/>'),
+  popOut: svg('<rect x="1.75" y="5.75" width="8.5" height="8.5" rx="1.25"/><path d="M8.5 1.75h5.75V7.5M14.25 1.75L7.5 8.5"/>'),
   restore: svg('<path d="M6 2.5V6H2.5M13.5 6H10V2.5M10 13.5V10h3.5M2.5 10H6v3.5"/>'),
   bell: svg('<path d="M4 11V7a4 4 0 018 0v4l1.25 1.5H2.75zM6.5 14h3"/>'),
   play: svg('<path d="M5 3.5v9l7-4.5z"/>'),

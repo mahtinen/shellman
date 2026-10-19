@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   equalize,
+  insertNode,
   leaf,
   neighbor,
   paneIds,
@@ -49,6 +50,31 @@ describe('splitPane', () => {
   it('leaves the tree unchanged for an unknown target', () => {
     const t = splitPane(leaf('a'), 'zzz', 'b', 'row');
     expect(paneIds(t)).toEqual(['a']);
+  });
+});
+
+describe('insertNode', () => {
+  it('puts another layout in half of the target pane', () => {
+    const other = splitPane(leaf('x'), 'x', 'y', 'column');
+    const t = insertNode(splitPane(leaf('a'), 'a', 'b', 'row'), 'b', other, 'row') as SplitNode;
+    expect(paneIds(t)).toEqual(['a', 'b', 'x', 'y']);
+    expect(t.sizes).toEqual([0.5, 0.25, 0.25]);
+    expect(t.children[2]).toBe(other);
+  });
+
+  it('merges a layout split the same way instead of nesting it', () => {
+    const other = { ...(splitPane(leaf('x'), 'x', 'y', 'row') as SplitNode), sizes: [0.75, 0.25] };
+    const t = insertNode(leaf('a'), 'a', other, 'row', true) as SplitNode;
+    expect(paneIds(t)).toEqual(['x', 'y', 'a']);
+    expect(t.children.every((c) => c.type === 'pane')).toBe(true);
+    expect(t.sizes).toEqual([0.375, 0.125, 0.5]);
+    expect(sum(t.sizes)).toBeCloseTo(1);
+  });
+
+  it('nests below a target inside a split of the other direction', () => {
+    const t = insertNode(splitPane(leaf('a'), 'a', 'b', 'row'), 'a', leaf('x'), 'column') as SplitNode;
+    expect(paneIds(t)).toEqual(['a', 'x', 'b']);
+    expect((t.children[0] as SplitNode).direction).toBe('column');
   });
 });
 

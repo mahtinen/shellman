@@ -133,6 +133,15 @@ if (phase === 'main') {
     await waitFor(`__t.ws.activeTab.el.querySelectorAll('.pane').length === 3`, 2000, 'three panes visible');
   });
 
+  await step('Alt+arrows from a maximized pane restore the split', async () => {
+    const first = await ev(`__t.ws.panesOf(__t.ws.activeTab)[0].id`);
+    await key('KeyZ', 'Z', 90, ['ctrl', 'shift']);
+    await waitFor(`__t.ws.activeTab.el.querySelectorAll('.pane').length === 1`, 2000, 'one pane visible');
+    assert((await ev(`__t.active().el.querySelector('.pane-header button:nth-last-child(2)').title`)).startsWith('Restore'), 'restore button');
+    await key('ArrowLeft', 'ArrowLeft', 37, ['alt']);
+    await waitFor(`__t.ws.activeTab.el.querySelectorAll('.pane').length === 3 && __t.active().id === ${JSON.stringify(first)}`, 2000, 'split restored, left pane active');
+  });
+
   await step('resizing a divider changes pane sizes and terminal columns', async () => {
     const before = await ev(`__t.ws.panesOf(__t.ws.activeTab)[0].term.cols`);
     const box = await ev(`(() => { const r = __t.ws.activeTab.el.querySelector('.divider.row').getBoundingClientRect(); return { x: r.left, y: r.top + r.height / 2 }; })()`);
@@ -152,6 +161,85 @@ if (phase === 'main') {
     await key('KeyW', 'W', 87, ['ctrl', 'shift']);
     await waitFor(`__t.ws.panesOf(__t.ws.activeTab).length === 1`, 5000, 'one pane');
     assert(!(await ev(`__t.ws.activeTab.el.classList.contains('multi')`)), 'not multi');
+  });
+
+  await step('Ctrl+Shift+M moves a pane to its own tab, still running', async () => {
+    const tabs = await ev(`__t.ws.tabs.length`);
+    const from = await ev(`__t.ws.activeTab.id`);
+    await key('KeyE', 'E', 69, ['ctrl', 'shift']);
+    await waitFor(`__t.ws.panesOf(__t.ws.activeTab).length === 2 && __t.active().state === 'running'`, 10000, 'split running');
+    await ev(`__t.active().sendInput('echo "moved-$((2*21))"\\r')`);
+    await waitFor(`__t.text().includes('moved-42')`, 8000, 'output before the move');
+    const moved = await ev(`__t.active().id`);
+    await key('KeyM', 'M', 77, ['ctrl', 'shift']);
+    await waitFor(`__t.ws.tabs.length === ${tabs + 1}`, 2000, 'new tab');
+    assert((await ev(`__t.ws.activeTab.id`)) !== from, 'new tab active');
+    assert((await ev(`__t.ws.tabs.indexOf(__t.ws.activeTab) === __t.ws.tabs.findIndex(t => t.id === ${JSON.stringify(from)}) + 1`)), 'next to its old tab');
+    assert((await ev(`__t.active().id`)) === moved, 'same terminal');
+    assert(!(await ev(`__t.ws.activeTab.el.classList.contains('multi')`)), 'new tab not multi');
+    assert((await ev(`__t.ws.panesOf(__t.ws.tabs.find(t => t.id === ${JSON.stringify(from)})).length`)) === 1, 'old tab has one pane');
+    await ev(`__t.active().sendInput('echo "still-$((3*3))"\\r')`);
+    await waitFor(`__t.text().includes('still-9') && __t.text().includes('moved-42')`, 8000, 'terminal kept running');
+    await key('KeyW', 'W', 87, ['ctrl', 'shift']);
+    await waitFor(`__t.ws.tabs.length === ${tabs} && __t.ws.activeTab.id === ${JSON.stringify(from)}`, 5000, 'back to the old tab');
+  });
+
+  // Opens a tab with some output in it, then goes back to `from`. Returns the new tab's pane id.
+  const backgroundTab = async (from, marker) => {
+    await key('KeyT', 'T', 84, ['ctrl', 'shift']);
+    await waitFor(`__t.ws.activeTab.id !== ${js(from)} && __t.active().state === 'running'`, 10000, 'new tab running');
+    await ev(`__t.active().sendInput('echo "${marker}-$((5*5))"\\r')`);
+    await waitFor(`__t.text().includes('${marker}-25')`, 8000, 'output in the new tab');
+    const id = await ev(`__t.active().id`);
+    await ev(`__t.ws.activateTab(${js(from)})`);
+    return id;
+  };
+
+  await step('a background tab moves into the current tab as a split (tab menu)', async () => {
+    const tabs = await ev(`__t.ws.tabs.length`);
+    const from = await ev(`__t.ws.activeTab.id`);
+    const moved = await backgroundTab(from, 'menu');
+    await ev(`__t.ws.tabOf(__t.ws.panes.get(${js(moved)})).tabEl.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 20 }))`);
+    await waitFor(`!!document.querySelector('.menu')`, 2000, 'tab menu');
+    assert((await ev(`__t.ws.activeTab.id`)) === from, 'right-click must not switch tabs');
+    await ev(`[...document.querySelectorAll('.menu-item')].find(m => m.textContent.includes('Move into current tab')).click()`);
+    await waitFor(`document.querySelectorAll('.menu').length === 2`, 2000, 'submenu');
+    await ev(`[...document.querySelectorAll('.menu')[1].querySelectorAll('.menu-item')].find(m => m.textContent.includes('Split right')).click()`);
+    await waitFor(`__t.ws.tabs.length === ${tabs} && __t.ws.activeTab.id === ${js(from)} && __t.ws.panesOf(__t.ws.activeTab).length === 2`, 3000, 'joined the split');
+    assert((await ev(`__t.active().id`)) === moved && (await ev(`__t.ws.panesOf(__t.ws.activeTab)[1].id`)) === moved, 'moved pane on the right, focused');
+    await ev(`__t.active().sendInput('echo "still-$((4*4))"\\r')`);
+    await waitFor(`__t.text().includes('menu-25') && __t.text().includes('still-16')`, 8000, 'terminal kept running');
+  });
+
+  await step('a tab dragged onto a pane joins the split on that side', async () => {
+    const tabs = await ev(`__t.ws.tabs.length`);
+    const from = await ev(`__t.ws.activeTab.id`);
+    const target = await ev(`__t.active().id`);
+    const moved = await backgroundTab(from, 'drag');
+    const shown = await ev(`(() => {
+      const dt = new DataTransfer();
+      const tabEl = __t.ws.tabOf(__t.ws.panes.get(${js(moved)})).tabEl;
+      tabEl.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+      const r = __t.ws.panes.get(${js(target)}).el.querySelector('.pane-term').getBoundingClientRect();
+      const at = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + r.width / 2, clientY: r.bottom - 5 };
+      const over = document.elementFromPoint(at.clientX, at.clientY);
+      over.dispatchEvent(new DragEvent('dragover', at));
+      const zone = !document.querySelector('.pane-drop').hidden;
+      over.dispatchEvent(new DragEvent('drop', at));
+      tabEl.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+      return zone && document.querySelector('.pane-drop').hidden;
+    })()`);
+    assert(shown, 'drop zone shown while dragging and hidden after');
+    await waitFor(`__t.ws.tabs.length === ${tabs} && __t.ws.panesOf(__t.ws.activeTab).length === 3 && __t.active().id === ${js(moved)}`, 3000, 'joined the split');
+    const p = await ev(`(() => { const a = __t.ws.panes.get(${js(target)}).el.getBoundingClientRect(), b = __t.active().el.getBoundingClientRect(); return { below: b.top >= a.bottom - 2, aligned: Math.abs(a.left - b.left) < 2 }; })()`);
+    assert(p.below && p.aligned, 'dropped below its target: ' + js(p));
+    assert((await ev(`__t.text().includes('drag-25')`)), 'kept its output');
+    // Back to one pane for the steps below.
+    await key('KeyW', 'W', 87, ['ctrl', 'shift']);
+    await waitFor(`__t.ws.panesOf(__t.ws.activeTab).length === 2`, 5000, 'closed one');
+    await ev(`__t.ws.setActivePane(__t.ws.panesOf(__t.ws.activeTab)[1].id, true)`);
+    await key('KeyW', 'W', 87, ['ctrl', 'shift']);
+    await waitFor(`__t.ws.panesOf(__t.ws.activeTab).length === 1`, 5000, 'one pane again');
   });
 
   await step('Shift+Enter sends ESC CR (newline for Claude Code)', async () => {

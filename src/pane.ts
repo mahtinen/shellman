@@ -39,7 +39,7 @@ export interface PaneHost {
   /** An app shortcut was pressed inside the terminal; return true if handled. */
   onShortcut(pane: Pane, match: Match): boolean;
   onContextMenu(pane: Pane, e: MouseEvent): void;
-  onHeaderAction(pane: Pane, action: 'zoom' | 'close'): void;
+  onHeaderAction(pane: Pane, action: 'zoom' | 'tab' | 'close'): void;
 }
 
 function terminalOptions(s: Settings, windowsBuild: number): ITerminalOptions {
@@ -82,6 +82,7 @@ export class Pane {
   private readonly nameEl: HTMLSpanElement;
   private readonly titleEl: HTMLSpanElement;
   private readonly dotEl: HTMLSpanElement;
+  private readonly zoomBtn: HTMLButtonElement;
   private readonly fit = new FitAddon();
   private readonly search = new SearchAddon();
   private searchBox: HTMLElement | null = null;
@@ -112,6 +113,8 @@ export class Pane {
     this.dotEl = h('span', { class: 'pane-dot' });
     this.nameEl = h('span', { class: 'pane-name' });
     this.titleEl = h('span', { class: 'pane-title' });
+    this.zoomBtn = h('button', { class: 'icon-btn small', onclick: () => host.onHeaderAction(this, 'zoom') });
+    this.setZoomed(false);
     const header = h(
       'div',
       { class: 'pane-header', ondblclick: () => host.onHeaderAction(this, 'zoom') },
@@ -119,7 +122,8 @@ export class Pane {
       this.nameEl,
       this.titleEl,
       h('span', { class: 'spacer' }),
-      h('button', { class: 'icon-btn small', title: 'Maximize / restore (Ctrl+Shift+Z)', html: icons.maximize, onclick: () => host.onHeaderAction(this, 'zoom') }),
+      h('button', { class: 'icon-btn small', title: 'Move to new tab (Ctrl+Shift+M)', html: icons.popOut, onclick: () => host.onHeaderAction(this, 'tab') }),
+      this.zoomBtn,
       h('button', { class: 'icon-btn small', title: 'Close pane (Ctrl+Shift+W)', html: icons.x, onclick: () => host.onHeaderAction(this, 'close') }),
     );
     this.termEl = h('div', { class: 'pane-term' });
@@ -587,6 +591,12 @@ export class Pane {
 
   setActive(active: boolean): void {
     this.el.classList.toggle('active', active);
+  }
+
+  /** While maximized the other panes are hidden; the button says how to get them back. */
+  setZoomed(zoomed: boolean): void {
+    this.zoomBtn.innerHTML = zoomed ? icons.restore : icons.maximize;
+    this.zoomBtn.title = zoomed ? 'Restore split (Ctrl+Shift+Z or Alt+arrows)' : 'Maximize (Ctrl+Shift+Z)';
   }
 
   /** GPU rendering. Contexts are limited, so the workspace turns this on and off. */

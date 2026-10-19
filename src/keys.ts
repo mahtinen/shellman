@@ -12,6 +12,7 @@ export type Action =
   | 'duplicate'
   | 'closePane'
   | 'zoomPane'
+  | 'movePaneToTab'
   | 'equalize'
   | 'focusLeft'
   | 'focusRight'
@@ -55,6 +56,7 @@ export const BINDINGS: Binding[] = [
   { action: 'duplicate', code: 'KeyD', ctrl: true, shift: true },
   { action: 'closePane', code: 'KeyW', ctrl: true, shift: true },
   { action: 'zoomPane', code: 'KeyZ', ctrl: true, shift: true },
+  { action: 'movePaneToTab', code: 'KeyM', ctrl: true, shift: true },
   { action: 'equalize', code: 'KeyQ', ctrl: true, shift: true },
   { action: 'focusLeft', code: 'ArrowLeft', alt: true },
   { action: 'focusRight', code: 'ArrowRight', alt: true },
@@ -134,6 +136,7 @@ export const ACTION_LABELS: Record<Action, string> = {
   duplicate: 'Duplicate pane (re-runs its command)',
   closePane: 'Close pane',
   zoomPane: 'Maximize / restore pane',
+  movePaneToTab: 'Move pane to a new tab',
   equalize: 'Make all panes equal size',
   focusLeft: 'Focus pane to the left',
   focusRight: 'Focus pane to the right',

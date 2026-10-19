@@ -873,6 +873,16 @@ select.input {
   flex-direction: column;
 }
 
+/* Where a tab dragged onto a pane will go. Above the terminals, but lets the drag events through. */
+.pane-drop {
+  position: absolute;
+  z-index: 5;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  pointer-events: none;
+}
+
 .split-cell {
   display: flex;
   min-width: 0;

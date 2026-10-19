@@ -57,22 +57,44 @@ export function splitPane(
   direction: Direction,
   before = false,
 ): LayoutNode {
+  return insertNode(root, targetId, leaf(newPaneId), direction, before);
+}
+
+/**
+ * Like splitPane, but inserts a whole layout (e.g. another tab's splits) next to `targetId`, in half
+ * of the target's space. A layout split the same way is merged in rather than nested.
+ */
+export function insertNode(
+  root: LayoutNode,
+  targetId: string,
+  added: LayoutNode,
+  direction: Direction,
+  before = false,
+): LayoutNode {
+  const flat = added.type === 'split' && added.direction === direction;
+  const parts = flat ? added.children : [added];
+  const partSizes = flat ? added.sizes : [1];
+  const place = (target: LayoutNode, targetSize: number) => {
+    const half = targetSize / 2;
+    const ins = partSizes.map((s) => s * half);
+    return {
+      children: before ? [...parts, target] : [target, ...parts],
+      sizes: before ? [...ins, half] : [half, ...ins],
+    };
+  };
   const insert = (node: LayoutNode): LayoutNode => {
     if (node.type === 'pane') {
       if (node.paneId !== targetId) return node;
-      const children = before ? [leaf(newPaneId), node] : [node, leaf(newPaneId)];
-      return { type: 'split', direction, children, sizes: [0.5, 0.5] };
+      return { type: 'split', direction, ...place(node, 1) };
     }
     const idx = node.children.findIndex((c) => c.type === 'pane' && c.paneId === targetId);
     if (idx >= 0 && node.direction === direction) {
-      const children = [...node.children];
-      const sizes = [...node.sizes];
-      const half = sizes[idx] / 2;
-      sizes[idx] = half;
-      const at = before ? idx : idx + 1;
-      children.splice(at, 0, leaf(newPaneId));
-      sizes.splice(at, 0, half);
-      return { ...node, children, sizes };
+      const { children, sizes } = place(node.children[idx], node.sizes[idx]);
+      return {
+        ...node,
+        children: [...node.children.slice(0, idx), ...children, ...node.children.slice(idx + 1)],
+        sizes: [...node.sizes.slice(0, idx), ...sizes, ...node.sizes.slice(idx + 1)],
+      };
     }
     return { ...node, children: node.children.map(insert) };
   };
