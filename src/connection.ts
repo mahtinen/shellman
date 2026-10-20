@@ -9,6 +9,18 @@ export function emptyConnection(kind: ConnectionKind = 'ssh'): Connection {
   return { kind, host: '', port: null, user: '', identityFile: '', identityKey: '', passwordAuth: false, legacyAlgorithms: false, jumpHost: '', extraArgs: '' };
 }
 
+/**
+ * Extra ssh arguments a new SSH session starts with. Routers, firewalls and VPNs drop idle
+ * connections ("client_loop: send disconnect: Connection reset"); keepalives stop that. They
+ * are visible in SSH options, so they can be removed.
+ */
+export const DEFAULT_SSH_ARGS = '-o ServerAliveInterval=30';
+
+/** The connection the session dialog starts with. */
+export function newSshConnection(): Connection {
+  return { ...emptyConnection('ssh'), extraArgs: DEFAULT_SSH_ARGS };
+}
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 

@@ -8,6 +8,7 @@ import {
   keyBlob,
   keyLabel,
   needsLegacyAlgorithms,
+  newSshConnection,
   normalizeConnection,
   parseQuickConnect,
   sameKey,
@@ -65,6 +66,13 @@ describe('connectionRequest', () => {
     expect(connectionRequest(ssh({ extraArgs: '-A -o X=1' })).extraArgs).toEqual(['-A', '-o', 'X=1']);
     const t = connectionRequest({ ...emptyConnection('telnet'), host: 'r', user: 'u', extraArgs: '-x' });
     expect(t).toMatchObject({ kind: 'telnet', host: 'r', user: '', extraArgs: [] });
+  });
+
+  it('sends keepalives for a new SSH session unless they are removed', () => {
+    expect(connectionRequest({ ...newSshConnection(), host: 'web1' }).extraArgs).toEqual(['-o', 'ServerAliveInterval=30']);
+    expect(connectionRequest({ ...newSshConnection(), host: 'web1', extraArgs: '' }).extraArgs).toEqual([]);
+    // Saved sessions keep what they had.
+    expect(normalizeConnection({ kind: 'ssh', host: 'web1' })?.extraArgs).toBe('');
   });
 });
 
