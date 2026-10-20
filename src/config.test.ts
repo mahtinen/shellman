@@ -62,7 +62,42 @@ describe('normalizeConfig', () => {
 
   it('loads groups saved before subgroups existed as top-level groups', () => {
     const c = normalizeConfig({ groups: [{ id: 'g1', name: 'Work', collapsed: true }] });
-    expect(c.groups).toEqual([{ id: 'g1', name: 'Work', parentId: null, color: '', collapsed: true }]);
+    expect(c.groups).toEqual([{ id: 'g1', name: 'Work', parentId: null, color: '', collapsed: true, folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' }]);
+  });
+
+  it('keeps a group\'s linked folder and environment', () => {
+    const c = normalizeConfig({ groups: [{ id: 'g1', name: 'API', folder: ' C:\\Projects\\api ', env: 'staging' }, { id: 'g2', name: 'X', folder: 7 }] });
+    expect(c.groups.map((g) => [g.folder, g.env])).toEqual([
+      ['C:\\Projects\\api', 'staging'],
+      ['', ''],
+    ]);
+  });
+
+  it('defaults git sync per group and corrects bad values', () => {
+    const [a, b] = normalizeConfig({ groups: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B', sync: 'auto', syncPush: 'commit', syncCheck: -1, syncBranch: 'main', commitTemplate: 'API: {request}' }] }).groups;
+    expect([a.sync, a.syncPush, a.syncCheck, a.syncDelay, a.syncBranch, a.commitTemplate]).toEqual(['manual', 'push', 180, 60, '', 'Update {request}']);
+    expect([b.sync, b.syncPush, b.syncCheck, b.syncBranch, b.commitTemplate]).toEqual(['auto', 'commit', -1, 'main', 'API: {request}']);
+    const c = normalizeConfig({ groups: [{ id: 'c', name: 'C', sync: 'always', syncPush: 7, syncCheck: 45, syncDelay: 1, commitTemplate: '' }] }).groups[0];
+    expect([c.sync, c.syncPush, c.syncCheck, c.syncDelay, c.commitTemplate]).toEqual(['manual', 'push', 180, 60, 'Update {request}']);
+  });
+
+  it('defaults request settings and corrects bad ones', () => {
+    expect(normalizeConfig({}).settings).toMatchObject({
+      requestPreviewTabs: true,
+      requestOpenIn: 'tab',
+      responseLayout: 'auto',
+      requestTimeout: 30,
+      responseMaxMb: 10,
+      confirmProtectedSend: true,
+      hideSecrets: true,
+      copyCurlShell: 'powershell',
+      proxyMode: 'none',
+      curlPath: '',
+      opPath: '',
+      opAccount: '',
+    });
+    const s = normalizeConfig({ settings: { requestOpenIn: 'window', requestTimeout: 0, responseMaxMb: 9999, copyCurlShell: 'fish', proxyMode: 'custom', proxyUrl: ' http://proxy.example.com:8080 ' } }).settings;
+    expect([s.requestOpenIn, s.requestTimeout, s.responseMaxMb, s.copyCurlShell, s.proxyMode, s.proxyUrl]).toEqual(['tab', 1, 500, 'powershell', 'custom', 'http://proxy.example.com:8080']);
   });
 
   it('keeps group colours', () => {
@@ -133,7 +168,7 @@ describe('normalizeConfig', () => {
 });
 
 describe('group tree', () => {
-  const g = (id: string, parentId: string | null = null, color = ''): Group => ({ id, name: id.toUpperCase(), parentId, color, collapsed: false });
+  const g = (id: string, parentId: string | null = null, color = ''): Group => ({ id, name: id.toUpperCase(), parentId, color, collapsed: false, folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' });
   // a > (b > c), d
   const groups = [g('a'), g('d'), g('b', 'a'), g('c', 'b')];
 

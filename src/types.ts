@@ -66,7 +66,25 @@ export interface Group {
   /** Colour of the sessions inside, unless they have their own; '' = the parent group's. */
   color: string;
   collapsed: boolean;
+  /** A folder of request files (often a git repository the team shares); '' = none. */
+  folder: string;
+  /** The environment its requests use (`environments/<env>.json`); '' = the first one. */
+  env: string;
+  /** Git sync of the folder: off, a Sync button, or automatic (commit on save, pull in the background). */
+  sync: SyncMode;
+  /** Automatic sync: push each save (after a few seconds), or only commit and push with Sync. */
+  syncPush: 'push' | 'commit';
+  /** How often to look for teammates' changes while Shellman is in front: seconds; 0 = never, -1 = only when it gets focus. */
+  syncCheck: number;
+  /** Automatic sync: saves within this many seconds go up together, as one commit. */
+  syncDelay: number;
+  /** The branch sync works on (set when it is turned on); '' = whichever is checked out. */
+  syncBranch: string;
+  /** Commit message; {request}, {folder} and {env} are filled in. */
+  commitTemplate: string;
 }
+
+export type SyncMode = 'off' | 'manual' | 'auto';
 
 export type CloseOnExit = 'graceful' | 'always' | 'never';
 
@@ -78,6 +96,13 @@ export type UpdateMode = 'auto' | 'notify' | 'off';
 
 /** What a right-click inside a terminal does. Shift+right-click always opens the menu. */
 export type RightClick = 'paste' | 'copyPaste' | 'menu';
+
+export type CurlShell = 'powershell' | 'cmd' | 'bash';
+
+/** Where a request pane shows its response: by the pane's shape, or always below / on the right. */
+export type ResponseLayout = 'auto' | 'below' | 'right';
+
+export type ProxyMode = 'none' | 'environment' | 'custom';
 
 export interface Settings {
   theme: string;
@@ -109,6 +134,33 @@ export interface Settings {
   reconnectOnStart: boolean;
   /** ssh.exe to use; '' = Windows OpenSSH. */
   sshPath: string;
+  /** Requests: a click opens a preview tab that the next click reuses (until it is edited). */
+  requestPreviewTabs: boolean;
+  /** Requests open in a new tab, or split to the right of the active pane. */
+  requestOpenIn: 'tab' | 'split';
+  responseLayout: ResponseLayout;
+  responseWrap: boolean;
+  /** Seconds; a request's own timeout wins. */
+  requestTimeout: number;
+  requestFollowRedirects: boolean;
+  /** Responses up to this many MB are shown; larger ones can be saved to a file. */
+  responseMaxMb: number;
+  /** Ask before sending anything but GET to an environment marked "protected". */
+  confirmProtectedSend: boolean;
+  /** Secret values (tokens, passwords) show as dots. */
+  hideSecrets: boolean;
+  /** Saving a request with a typed-in token or password offers to move it to .env.local. */
+  warnSecretsOnSave: boolean;
+  /** Sending also saves the request. */
+  saveOnSend: boolean;
+  copyCurlShell: CurlShell;
+  proxyMode: ProxyMode;
+  proxyUrl: string;
+  /** curl.exe and op.exe (1Password CLI) to use; '' = Windows' curl and op on PATH. */
+  curlPath: string;
+  opPath: string;
+  /** The 1Password account (sign-in address) when there are several; '' = 1Password's default. */
+  opAccount: string;
 }
 
 export interface Config {

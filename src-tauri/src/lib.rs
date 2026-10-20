@@ -1,12 +1,18 @@
-﻿mod config;
+﻿mod collection;
+mod config;
 mod connect;
+mod git;
+mod http;
+mod proc;
 mod pty;
 mod shell;
 mod xshell;
 
+use http::HttpManager;
 use pty::{PtyManager, SpawnRequest};
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::Arc;
 use shell::ShellProfile;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{Manager, RunEvent, State};
@@ -77,6 +83,140 @@ async fn pty_has_children(state: State<'_, PtyManager>, id: u32) -> Result<bool,
 #[tauri::command]
 async fn list_shells() -> Vec<ShellProfile> {
     shell::detect_shells()
+}
+
+/// Sends one request pane's request with curl. Waiting for curl happens on a blocking thread, so
+/// slow requests don't hold up other commands.
+#[tauri::command]
+async fn http_send(state: State<'_, Arc<HttpManager>>, id: u32, request: http::HttpRequest) -> Result<http::HttpResult, String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.send(id, &request))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn http_cancel(state: State<'_, Arc<HttpManager>>, id: u32) {
+    state.cancel(id);
+}
+
+/// Copies a response body to a file the user chose.
+#[tauri::command]
+async fn http_save_body(state: State<'_, Arc<HttpManager>>, id: u32, path: String) -> Result<(), String> {
+    state.save_body(id, std::path::Path::new(&path))
+}
+
+#[tauri::command]
+async fn http_discard(state: State<'_, Arc<HttpManager>>, id: u32) -> Result<(), String> {
+    state.discard(id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn http_cookies(state: State<'_, Arc<HttpManager>>, key: String) -> Result<Vec<http::Cookie>, String> {
+    Ok(state.cookies(&key))
+}
+
+#[tauri::command]
+async fn http_clear_cookies(state: State<'_, Arc<HttpManager>>, key: String) -> Result<(), String> {
+    state.clear_cookies(&key);
+    Ok(())
+}
+
+/// Runs blocking work (git, folder scans) off the async runtime's threads.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+/// Request files, environments and `.env` files of a linked folder.
+#[tauri::command]
+async fn collection_scan(folder: String) -> Result<collection::Scan, String> {
+    blocking(move || collection::scan(std::path::Path::new(&folder))).await
+}
+
+#[tauri::command]
+async fn collection_write(folder: String, path: String, kind: collection::Kind, text: String) -> Result<(), String> {
+    collection::write(std::path::Path::new(&folder), &path, kind, &text)
+}
+
+#[tauri::command]
+async fn collection_create_folder(folder: String, path: String) -> Result<(), String> {
+    collection::create_folder(std::path::Path::new(&folder), &path)
+}
+
+#[tauri::command]
+async fn collection_rename(folder: String, from: String, to: String, kind: collection::Kind) -> Result<(), String> {
+    collection::rename(std::path::Path::new(&folder), &from, &to, kind)
+}
+
+#[tauri::command]
+async fn collection_delete(folder: String, path: String, kind: collection::Kind) -> Result<(), String> {
+    collection::delete(std::path::Path::new(&folder), &path, kind)
+}
+
+/// Reports (debounced) when files in a linked folder change, e.g. after a git pull.
+#[tauri::command]
+fn collection_watch(state: State<'_, collection::Watches>, folder: String, on_change: Channel<()>) -> Result<u32, String> {
+    state.watch(std::path::Path::new(&folder), move || on_change.send(()).is_ok())
+}
+
+#[tauri::command]
+fn collection_unwatch(state: State<'_, collection::Watches>, id: u32) {
+    state.unwatch(id);
+}
+
+/// The linked folder's git state; null when it isn't in a repository.
+#[tauri::command]
+async fn git_status(folder: String) -> Result<Option<git::Status>, String> {
+    blocking(move || git::status(std::path::Path::new(&folder))).await
+}
+
+#[tauri::command]
+async fn git_is_ignored(folder: String, path: String) -> Result<Option<bool>, String> {
+    blocking(move || Ok(git::is_ignored(std::path::Path::new(&folder), &path))).await
+}
+
+#[tauri::command]
+async fn git_fetch(folder: String) -> Result<git::Outcome, String> {
+    blocking(move || Ok(git::fetch(std::path::Path::new(&folder)))).await
+}
+
+#[tauri::command]
+async fn git_commit(folder: String, paths: Vec<String>, message: String) -> Result<bool, String> {
+    blocking(move || git::commit(std::path::Path::new(&folder), &paths, &message)).await
+}
+
+#[tauri::command]
+async fn git_sync(folder: String, prefer: git::Prefer, interactive: bool) -> Result<git::Outcome, String> {
+    blocking(move || Ok(git::sync(std::path::Path::new(&folder), prefer, interactive))).await
+}
+
+/// Where the 1Password CLI is (`custom` from Settings, else found), or null when it isn't installed.
+#[tauri::command]
+async fn op_path(custom: String) -> Option<String> {
+    http::op_client(&custom).ok().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// The 1Password accounts on this computer, to choose the one requests use.
+#[tauri::command]
+async fn op_accounts(custom: String) -> Result<Vec<http::OpAccount>, String> {
+    blocking(move || Ok(http::op_accounts(&custom))).await
+}
+
+/// A JSON file the user picked to import (a Postman collection or environment export).
+#[tauri::command]
+async fn read_json_file(path: String) -> Result<String, String> {
+    const MAX: u64 = 50 << 20;
+    let p = std::path::Path::new(&path);
+    if !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("json")) {
+        return Err("Choose a .json file".into());
+    }
+    let meta = std::fs::metadata(p).map_err(|e| format!("Could not read {path}: {e}"))?;
+    if meta.len() > MAX {
+        return Err(format!("{path} is too large to import"));
+    }
+    let bytes = std::fs::read(p).map_err(|e| format!("Could not read {path}: {e}"))?;
+    Ok(xshell::decode(&bytes))
 }
 
 /// Set to keep a separate profile (config, open tabs), e.g. so the end-to-end tests can run
@@ -238,6 +378,12 @@ pub fn run() {
         std::env::remove_var(var);
     }
 
+    // Response bodies and cookies of runs that crashed or were killed.
+    std::thread::spawn(|| {
+        let alive: Vec<u32> = pty::processes().iter().map(|p| p.pid).collect();
+        http::remove_stale_dirs(|pid| alive.contains(&pid));
+    });
+
     let mut builder = tauri::Builder::default();
     // The window-state plugin always writes to the real profile; a separate profile must not
     // overwrite the window position of the Shellman that is in use.
@@ -259,6 +405,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(PtyManager::default())
+        .manage(Arc::new(HttpManager::default()))
+        .manage(collection::Watches::default())
         .invoke_handler(tauri::generate_handler![
             pty_spawn,
             pty_write,
@@ -282,6 +430,27 @@ pub fn run() {
             open_url,
             open_dir,
             system_info,
+            http_send,
+            http_cancel,
+            http_save_body,
+            http_discard,
+            http_cookies,
+            http_clear_cookies,
+            collection_scan,
+            collection_write,
+            collection_create_folder,
+            collection_rename,
+            collection_delete,
+            collection_watch,
+            collection_unwatch,
+            git_status,
+            git_is_ignored,
+            git_fetch,
+            git_commit,
+            git_sync,
+            read_json_file,
+            op_path,
+            op_accounts,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Shellman");
@@ -289,6 +458,7 @@ pub fn run() {
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             handle.state::<PtyManager>().kill_all();
+            handle.state::<Arc<HttpManager>>().shutdown();
         }
     });
 }

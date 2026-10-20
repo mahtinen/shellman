@@ -59,6 +59,9 @@
       { "@type": "Question", "name": "Which shells does Shellman support?", "acceptedAnswer": { "@type": "Answer", "text": "PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically, and you can add any other shell in Settings." } },
       { "@type": "Question", "name": "Can I use Shellman for SSH and Telnet?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Save hosts next to your folders, or connect without saving by typing user@host. Shellman runs Windows' own OpenSSH client, so your keys, the Windows ssh-agent or 1Password's SSH agent and ~/.ssh/config work as in any terminal. Telnet uses the Windows Telnet Client." } },
       { "@type": "Question", "name": "Can I import my XShell sessions?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Right-click the sidebar and choose Import sessions, then tick the XShell sessions you want. Shellman adds their SSH and Telnet hosts, ports and users to a new group or an existing one, with XShell's folders as subgroups. Saved passwords and XShell's own keys are not imported." } },
+      { "@type": "Question", "name": "Can Shellman send API requests like Postman?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Link a group to a folder of request files, often a git repository your team shares, and its requests open in tabs and splits next to your terminals. Shellman sends them with Windows' own curl and shows the response as folding JSON with headers, timing and cookies. Variables live in .env files and environment files; secrets stay in your own .env.local or in 1Password. You can import Postman collections, environments and globals, and copy or paste curl commands." } },
+      { "@type": "Question", "name": "How do teammates get my changes to requests?", "acceptedAnswer": { "@type": "Answer", "text": "Through git. With Git sync set to Automatically, saves go up together as one commit a minute later, and teammates' changes are pulled every few minutes while Shellman is in front. Git runs with your own sign-in, and only Shellman's files (requests, environments and .env) are committed, never your secrets in .env.local or your other work in the same repository or folder. If two people changed the same request, you choose which version stays." } },
+      { "@type": "Question", "name": "Where do API tokens and passwords go?", "acceptedAnswer": { "@type": "Answer", "text": "Not in the shared request files. Put them in .env.local, which git ignores, or refer to 1Password with op://Vault/Item/field, which is safe to commit: 1Password's CLI fills in the value when sending. Shellman passes secrets to curl through its environment, never on a command line." } },
       { "@type": "Question", "name": "Does Shellman store my passwords or SSH keys?", "acceptedAnswer": { "@type": "Answer", "text": "No. ssh asks for passwords in the terminal, and private keys stay in your key files or SSH agent. For a key you pick from the agent, Shellman keeps only its public half." } },
       { "@type": "Question", "name": "How does Shellman update?", "acceptedAnswer": { "@type": "Answer", "text": "New versions download in the background and install the next time you restart Shellman. Updates are signed, and you can switch to notifications only or turn checks off." } },
       { "@type": "Question", "name": "Why does Windows SmartScreen warn about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The installer is not code-signed with a paid certificate yet, so SmartScreen asks you to confirm. Choose More info, then Run anyway. The source code and build scripts are on GitHub." } }
@@ -125,6 +128,11 @@
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3z"/></svg></div>
             <h3>SSH and Telnet</h3>
             <p>Save hosts next to your folders, or just type <code>user@host</code> to connect without saving. Your keys, 1Password or the Windows ssh-agent and <code>~/.ssh/config</code> work as usual. Pick a key per host, log in with a password, or allow old algorithms for old gear. Coming from XShell? Import its sessions in one go.</p>
+          </article>
+          <article class="card">
+            <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h10M4 12h7M4 17h10"/><path d="M16 9l4 3-4 3"/></svg></div>
+            <h3>API requests, shared through git</h3>
+            <p>Link a group to a folder of requests your team keeps in git, and send them right next to your terminals. Responses show as folding JSON with headers, timing and cookies. <code>{{variables}}</code> come from <code>.env</code> and environment files, secrets from your own <code>.env.local</code> or 1Password (<code>op://…</code>). Saves can sync through git by themselves. Import from Postman, copy or paste curl commands.</p>
           </article>
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4v16M5 8h5M5 14h5M5 20h5"/><rect x="12" y="5.5" width="8" height="5" rx="1.5"/><rect x="12" y="11.5" width="8" height="5" rx="1.5"/></svg></div>
@@ -204,6 +212,7 @@
           <div><dt><kbd>Alt</kbd><kbd>1…9</kbd></dt><dd>Go to tab</dd></div>
           <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>F</kbd></dt><dd>Find in terminal</dd></div>
           <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>S</kbd></dt><dd>Save a tab as a session</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>Enter</kbd> / <kbd>Ctrl</kbd><kbd>S</kbd></dt><dd>Send / save a request</dd></div>
         </dl>
       </div>
     </section>
@@ -230,6 +239,18 @@
         <details>
           <summary>Can I import my XShell sessions?</summary>
           <p>Yes. Right-click the sidebar (or a group), choose Import sessions and tick the XShell sessions you want. Shellman reads XShell's <code>.xsh</code> session files and adds their SSH and Telnet hosts, ports and users to a new group or an existing one. XShell's folders become subgroups (or go in the session names, like <code>Prod / Web / web1</code>), and hosts you already saved are skipped. Saved passwords and XShell's own keys are not imported: ssh logs in with your SSH agent or <code>~/.ssh</code> keys, or asks for the password.</p>
+        </details>
+        <details>
+          <summary>Can it send API requests like Postman?</summary>
+          <p>Yes. Link a group to a folder of request files (Edit group → Requests folder), often a git repository your team clones. Its requests show in the group; click one to open it in a preview tab, double-click to keep it, and split it next to a terminal like any pane. Ctrl+Enter sends with Windows' own <code>curl.exe</code>, Ctrl+S saves the file. Drag a request or folder onto another folder to move it. Login cookies are kept until Shellman closes. You can import Postman collections, environments and globals, paste a curl command (a browser's "Copy as cURL" works) and copy a request as a curl command for PowerShell 7, cmd or bash.</p>
+        </details>
+        <details>
+          <summary>How do teammates get my changes to requests?</summary>
+          <p>Through git. Turn on Git sync for the group (Edit group → Git sync): with "Automatically", saves go up together as one commit a minute later, and teammates' changes are pulled every few minutes while Shellman is in front. With "With the Sync button" you decide when. Git runs as you, with your own sign-in, and only Shellman's files are committed (requests, environments and <code>.env</code>): your secrets in <code>.env.local</code> never are, and your other work in the same repository or folder is left alone. If two people changed the same request, you choose which version stays. It works best with a repository of requests that runs no CI on every push.</p>
+        </details>
+        <details>
+          <summary>Where do API tokens and passwords go?</summary>
+          <p>Not in the request files the team shares. Shared values go in <code>.env</code> and <code>environments/&lt;name&gt;.json</code>; yours go in <code>.env.local</code> (or <code>.env.&lt;name&gt;.local</code>), which git must ignore: Shellman checks that and offers to add it to <code>.gitignore</code>. A value can also be a 1Password reference like <code>op://Vault/Item/field</code>, which is safe to commit; 1Password's CLI fills it in when sending. Shellman gives secrets to curl through its environment, never on a command line, and warns when you save a request with a token typed into it.</p>
         </details>
         <details>
           <summary>Does Shellman store my passwords or SSH keys?</summary>

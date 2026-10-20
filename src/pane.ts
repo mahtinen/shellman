@@ -10,8 +10,10 @@ import { uid } from './config';
 import { connectionError, connectionLabel, connectionRequest, connectionTarget, needsLegacyAlgorithms } from './connection';
 import { h } from './dom';
 import { icons } from './icons';
-import { matchKey, type Match } from './keys';
+import { matchKey } from './keys';
 import { isWindowsPath, parseOsc7, parseOsc777, parseOsc9 } from './osc';
+import { paneHeader, type PaneEvents, type WorkspacePane } from './panes';
+import type { SnapshotLeaf } from './snapshot';
 import { getTheme } from './themes';
 import type { LaunchSpec, Settings, ShellProfile } from './types';
 
@@ -21,25 +23,17 @@ import type { LaunchSpec, Settings, ShellProfile } from './types';
  */
 export type PaneState = 'idle' | 'login' | 'starting' | 'running' | 'exited' | 'error';
 
-export interface PaneHost {
-  settings(): Settings;
+export interface PaneHost extends PaneEvents {
   resolveShell(id: string): ShellProfile | null;
   windowsBuild: number;
   /** Where SSH/Telnet clients run. */
   homeDir: string;
-  onFocus(pane: Pane): void;
-  /** Title, cwd, progress or state changed. */
-  onInfoChange(pane: Pane): void;
   onOutput(pane: Pane): void;
   onBell(pane: Pane): void;
   onNotify(pane: Pane, title: string, body: string): void;
   onExit(pane: Pane, code: number | null): void;
   /** The pane's connection settings changed (e.g. old algorithms were allowed); keep its session in step. */
   onConnectionChange(pane: Pane): void;
-  /** An app shortcut was pressed inside the terminal; return true if handled. */
-  onShortcut(pane: Pane, match: Match): boolean;
-  onContextMenu(pane: Pane, e: MouseEvent): void;
-  onHeaderAction(pane: Pane, action: 'zoom' | 'tab' | 'close'): void;
 }
 
 function terminalOptions(s: Settings, windowsBuild: number): ITerminalOptions {
@@ -63,8 +57,10 @@ function terminalOptions(s: Settings, windowsBuild: number): ITerminalOptions {
   };
 }
 
-export class Pane {
+export class Pane implements WorkspacePane {
   readonly id = uid('p-');
+  readonly kind = 'terminal';
+  readonly dirty = false;
   spec: LaunchSpec;
   cwd: string;
   title = '';
@@ -79,10 +75,7 @@ export class Pane {
   readonly term: Terminal;
   private readonly host: PaneHost;
   private readonly termEl: HTMLDivElement;
-  private readonly nameEl: HTMLSpanElement;
-  private readonly titleEl: HTMLSpanElement;
-  private readonly dotEl: HTMLSpanElement;
-  private readonly zoomBtn: HTMLButtonElement;
+  private readonly header: ReturnType<typeof paneHeader>;
   private readonly fit = new FitAddon();
   private readonly search = new SearchAddon();
   private searchBox: HTMLElement | null = null;
@@ -110,24 +103,9 @@ export class Pane {
     this.cwd = spec.cwd;
     this.host = host;
 
-    this.dotEl = h('span', { class: 'pane-dot' });
-    this.nameEl = h('span', { class: 'pane-name' });
-    this.titleEl = h('span', { class: 'pane-title' });
-    this.zoomBtn = h('button', { class: 'icon-btn small', onclick: () => host.onHeaderAction(this, 'zoom') });
-    this.setZoomed(false);
-    const header = h(
-      'div',
-      { class: 'pane-header', ondblclick: () => host.onHeaderAction(this, 'zoom') },
-      this.dotEl,
-      this.nameEl,
-      this.titleEl,
-      h('span', { class: 'spacer' }),
-      h('button', { class: 'icon-btn small', title: 'Move to new tab (Ctrl+Shift+M)', html: icons.popOut, onclick: () => host.onHeaderAction(this, 'tab') }),
-      this.zoomBtn,
-      h('button', { class: 'icon-btn small', title: 'Close pane (Ctrl+Shift+W)', html: icons.x, onclick: () => host.onHeaderAction(this, 'close') }),
-    );
+    this.header = paneHeader((action) => host.onHeaderAction(this, action));
     this.termEl = h('div', { class: 'pane-term' });
-    this.el = h('div', { class: 'pane', dataset: { pane: this.id } }, header, this.termEl);
+    this.el = h('div', { class: 'pane', dataset: { pane: this.id } }, this.header.el, this.termEl);
     this.el.addEventListener('mousedown', () => host.onFocus(this));
     this.termEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -187,6 +165,19 @@ export class Pane {
 
   get name(): string {
     return this.spec.name;
+  }
+
+  get color(): string {
+    return this.spec.color;
+  }
+
+  get ended(): boolean {
+    return this.state === 'exited' || this.state === 'error' || this.state === 'idle';
+  }
+
+  /** Saved with its current directory, so it reopens where it was. */
+  snapshot(): SnapshotLeaf {
+    return { pane: { ...this.spec, cwd: this.cwd, env: { ...this.spec.env } } };
   }
 
   /** SSH/Telnet connection, if this pane connects to a remote host. */
@@ -546,11 +537,11 @@ export class Pane {
 
   private updateHeader(): void {
     const name = this.identity?.name ?? this.spec.name;
-    this.nameEl.textContent = name;
-    this.titleEl.textContent = this.title && this.title !== name ? this.title : '';
+    this.header.name.textContent = name;
+    this.header.title.textContent = this.title && this.title !== name ? this.title : '';
     this.el.style.setProperty('--session-color', (this.identity?.color ?? this.spec.color) || 'transparent');
-    this.el.classList.toggle('exited', this.state === 'exited' || this.state === 'error' || this.state === 'idle');
-    this.dotEl.className = `pane-dot${this.progress ? ' busy' : ''}`;
+    this.el.classList.toggle('exited', this.ended);
+    this.header.dot.className = `pane-dot${this.progress ? ' busy' : ''}`;
   }
 
   rename(name: string): void {
@@ -593,10 +584,8 @@ export class Pane {
     this.el.classList.toggle('active', active);
   }
 
-  /** While maximized the other panes are hidden; the button says how to get them back. */
   setZoomed(zoomed: boolean): void {
-    this.zoomBtn.innerHTML = zoomed ? icons.restore : icons.maximize;
-    this.zoomBtn.title = zoomed ? 'Restore split (Ctrl+Shift+Z or Alt+arrows)' : 'Maximize (Ctrl+Shift+Z)';
+    this.header.setZoomed(zoomed);
   }
 
   /** GPU rendering. Contexts are limited, so the workspace turns this on and off. */

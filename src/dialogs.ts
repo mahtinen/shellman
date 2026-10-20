@@ -146,3 +146,17 @@ export function toast(message: string, kind: 'info' | 'error' = 'info', ms = 400
   toastHost.append(t);
   setTimeout(remove, ms);
 }
+
+/** Asks with several answers (e.g. Save / Don't save / Cancel); null when closed without one. */
+export function choiceDialog<T>(title: string, message: string, choices: { label: string; value: T; kind?: DialogButton['kind'] }[]): Promise<T | null> {
+  return new Promise((resolve) => {
+    let result: T | null = null;
+    dialog({
+      title,
+      width: 460,
+      body: h('p', { class: 'dialog-text' }, message),
+      buttons: choices.map((c) => ({ label: c.label, kind: c.kind, onClick: () => void (result = c.value) })),
+      onClose: () => resolve(result),
+    });
+  });
+}

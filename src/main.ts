@@ -2,18 +2,40 @@ import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { api } from './api';
-import { baseName, deleteGroup, groupPath, newGroup, sessionColor, uid } from './config';
+import { collections } from './collections';
+import { baseName, deleteGroup, groupColor, groupPath, newGroup, sessionColor, uid } from './config';
 import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, newSshConnection, parseQuickConnect } from './connection';
 import { confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
 import { clamp, h, isEditableTarget, setChildren } from './dom';
 import { icons, type IconName } from './icons';
 import { importSessions } from './importDialog';
-import { matchKey, shortcutFor, type Match } from './keys';
+import { matchKey, matchRequestKey, shortcutFor, type Match } from './keys';
 import type { FocusDirection } from './layout';
 import { showMenu, showMenuBelow, type MenuEntry } from './menu';
 import type { Pane } from './pane';
+import { isTerminal, type WorkspacePane } from './panes';
+import {
+  createFolder,
+  createRequest,
+  deleteFolder,
+  deleteRequest,
+  duplicateRequest,
+  environmentEntries,
+  importPostman,
+  linkFolder,
+  moveFolder,
+  moveRequest,
+  openRequest,
+  pasteCurl,
+  renameFolder,
+  renameRequest,
+} from './requestActions';
+import { requestFolder } from './requestFile';
+import { copyRequestAsCurl, RequestPane } from './requestPane';
+import { editVariables } from './variablesDialog';
 import { showPalette, type PaletteItem } from './palette';
 import { normalizeSnapshot, snapshotPanes } from './snapshot';
+import { gitSync } from './gitSync';
 import { editGroup, editSession, pickDirectory, shellEntries } from './sessionEditor';
 import { openSettings, openShortcuts } from './settingsDialog';
 import { Sidebar, type OpenTerminal } from './sidebar';
@@ -80,10 +102,37 @@ class App {
       closeTerminal: (id) => void this.workspace.requestClosePane(id),
       terminalMenu: (id, e) => {
         const pane = this.workspace.panes.get(id);
-        if (pane) this.terminalMenu(pane, e);
+        if (isTerminal(pane)) this.terminalMenu(pane, e);
       },
       settings: () => openSettings(),
       shortcuts: () => openShortcuts(),
+      openRequest: (g, path, how) => openRequest(this.workspace, g, path, how),
+      requestMenu: (g, path, e) => this.requestMenu(g, path, e),
+      folderMenu: (g, folder, e) => this.folderMenu(g, folder, e),
+      groupRequestEntries: (g) => this.groupRequestEntries(g),
+      envMenu: (g, anchor) => showMenuBelow(anchor, environmentEntries(g)),
+      openRequests: () => this.openRequests(),
+      moveRequest: (g, path, folder) => void moveRequest(this.workspace, g, path, folder),
+      moveFolder: (g, folder, target) => void moveFolder(this.workspace, g, folder, target),
+    });
+    // A request opens only while its file is there (a restored one may have been deleted since).
+    this.workspace.requestFactory = (ref, host) => (collections.request(ref.groupId, ref.path) ? new RequestPane(ref, host) : null);
+    collections.on(() => {
+      this.sidebar.render();
+      this.updateStatus(this.workspace.activePane());
+    });
+    gitSync.openTerminal = (folder) => this.workspace.open(this.defaultSpec('', folder), 'tab');
+    gitSync.start();
+    gitSync.on((groupId) => {
+      this.sidebar.render();
+      // Sync stays on the branch it started on: remember it the first time it is known.
+      const g = store.config.groups.find((x) => x.id === groupId);
+      const branch = gitSync.get(groupId)?.status?.branch;
+      if (g && g.sync !== 'off' && !g.syncBranch && branch)
+        store.update((c) => {
+          const x = c.groups.find((y) => y.id === groupId);
+          if (x) x.syncBranch = branch;
+        });
     });
 
     this.buildLayout();
@@ -168,6 +217,7 @@ class App {
       applyUiTheme(getTheme(s.theme));
       this.workspace.applySettings();
     }
+    collections.sync(store.config.groups);
     this.workspace.refreshTabs();
     this.sidebar.render();
     this.renderWelcome();
@@ -187,8 +237,9 @@ class App {
     if (empty) this.updateStatus(null);
   }
 
-  private updateStatus(pane: Pane | null): void {
-    if (!pane) {
+  private updateStatus(pane: WorkspacePane | null): void {
+    if (pane instanceof RequestPane) return this.updateRequestStatus(pane);
+    if (!isTerminal(pane)) {
       this.statusLeft.replaceChildren(h('span', { class: 'muted' }, `${store.config.sessions.length} saved sessions`));
       this.statusRight.replaceChildren(h('span', { class: 'muted' }, `${shortcutFor('palette')} quick open`));
       return;
@@ -253,6 +304,58 @@ class App {
         void getCurrentWindow().setTitle(title).catch(() => undefined);
       }
     }
+  }
+
+  /** A request pane's group, environment (a menu to change it) and file. */
+  private updateRequestStatus(pane: RequestPane): void {
+    const group = pane.group;
+    const c = group && collections.get(group.id);
+    const env = group ? collections.env(group) : '';
+    const protectedEnv = group ? collections.environment(group)?.protected : false;
+    setChildren(
+      this.statusLeft,
+      group
+        ? h(
+            'button',
+            {
+              class: `status-shell${protectedEnv ? ' protected' : ''}`,
+              title: 'Environment of the group',
+              onclick: (e: MouseEvent) => showMenu(e.clientX, e.clientY - 4, environmentEntries(group)),
+            },
+            h('span', { class: 'status-dot', style: `background:${groupColor(store.config.groups, group.id) || 'var(--muted)'}` }),
+            `${group.name} · ${env || 'no environment'}`,
+          )
+        : null,
+      c
+        ? h(
+            'button',
+            { class: 'status-link', title: 'Open the folder in Explorer', onclick: () => void api.openDir(`${c.folder}\\${requestFolder(pane.ref.path).replace(/\//g, '\\')}`.replace(/\\$/, '')).catch((e) => toast(String(e), 'error')) },
+            `${c.folder}\\${pane.ref.path.replace(/\//g, '\\')}`,
+          )
+        : null,
+    );
+    setChildren(this.statusRight, pane.status ? h('span', { class: 'muted' }, pane.status) : null, h('span', { class: 'muted' }, 'curl'));
+    if (this.workspace.activeTab) {
+      const title = `${this.workspace.tabLabel(this.workspace.activeTab)} — Shellman`;
+      if (document.title !== title) {
+        document.title = title;
+        void getCurrentWindow().setTitle(title).catch(() => undefined);
+      }
+    }
+  }
+
+  /** Open request panes for the sidebar: `groupId/path` keys. */
+  private openRequests(): { open: string[]; dirty: string[]; active: string | null } {
+    const open: string[] = [];
+    const dirty: string[] = [];
+    for (const p of this.workspace.panes.values()) {
+      if (!(p instanceof RequestPane)) continue;
+      const key = `${p.ref.groupId}/${p.ref.path}`;
+      open.push(key);
+      if (p.dirty) dirty.push(key);
+    }
+    const a = this.workspace.activePane();
+    return { open, dirty, active: a instanceof RequestPane ? `${a.ref.groupId}/${a.ref.path}` : null };
   }
 
   private renderWelcome(): void {
@@ -324,6 +427,8 @@ class App {
     try {
       const snap = normalizeSnapshot(raw);
       if (!snap) return;
+      // Request panes reopen from their files.
+      await collections.ready();
       // A folder that no longer exists falls back to its session's folder, then to the default one.
       const specs = snap.tabs.flatMap((t) => snapshotPanes(t.root));
       await Promise.all(
@@ -335,7 +440,8 @@ class App {
         }),
       );
       const tabs = snap.tabs.map((t) => this.workspace.restoreTab(t));
-      this.workspace.activateTab(tabs[snap.activeTab].id, true);
+      const active = tabs[snap.activeTab] ?? tabs.filter(Boolean).pop();
+      if (active) this.workspace.activateTab(active.id, true);
     } catch (e) {
       console.warn('Could not reopen the previous terminals:', e);
     } finally {
@@ -401,12 +507,13 @@ class App {
   /** Installs the downloaded update and starts the new version. */
   private async restartToUpdate(): Promise<void> {
     if (!updater.ready) return;
+    if (!(await this.workspace.confirmUnsaved(this.workspace.unsavedPanes()))) return;
     const busy = await this.workspace.busyPanes();
     if (busy.length) {
       const names = [...new Set(busy.map((p) => p.name))].slice(0, 5).join(', ');
       const ok = await confirmDialog(
         'Restart to update?',
-        `${busy.length} terminal${busy.length > 1 ? 's have' : ' has'} a running program (${names}). Restarting will end ${busy.length > 1 ? 'them' : 'it'}.`,
+        `${busy.length} pane${busy.length > 1 ? 's are' : ' is'} still busy: a running program or a request on its way (${names}). Restarting will end ${busy.length > 1 ? 'them' : 'it'}.`,
         'Restart',
         true,
       );
@@ -414,7 +521,7 @@ class App {
     }
     await this.saveWorkspace(true);
     await store.flush();
-    const live = [...this.workspace.panes.values()].filter((p) => p.isRunning);
+    const live = [...this.workspace.panes.values()].filter((p) => isTerminal(p) && p.isRunning) as Pane[];
     // The terminals are ended before the installer runs; keep their panes open meanwhile.
     this.workspace.keepPanesOnExit = true;
     if (await updater.install(true)) return;
@@ -471,10 +578,13 @@ class App {
     );
   }
 
-  /** New plain shell next to the active pane (same directory and shell). */
+  /** New plain shell next to the active pane (same directory and shell as a terminal there). */
   newTerminal(placement: SplitPlacement, shellId?: string): void {
     const pane = this.workspace.activePane();
-    const spec = pane ? this.workspace.specFrom(pane, false) : this.defaultSpec();
+    const terminal = this.workspace.activeTerminal();
+    // Next to a request: a terminal in its folder (e.g. for git or the server's logs).
+    const folder = pane instanceof RequestPane ? pane.group && collections.get(pane.group.id)?.folder : undefined;
+    const spec = terminal ? this.workspace.specFrom(terminal, false) : this.defaultSpec('', folder || undefined);
     if (shellId !== undefined) spec.shellId = shellId;
     this.workspace.open(spec, pane ? placement : 'tab', pane?.id);
   }
@@ -523,6 +633,7 @@ class App {
       const panes = this.workspace.panesOf(tab);
       const inactive = tab.id !== this.workspace.activeTabId;
       for (const p of panes) {
+        if (!isTerminal(p)) continue;
         // Opened from a session, or (for ad-hoc terminals) sitting in a session's directory.
         const owner = this.workspace.ownerOf(p)?.id ?? null;
         const shell = p.connection ? connectionKindName(p.connection.kind) : (p.shell?.name ?? '');
@@ -561,14 +672,14 @@ class App {
   }
 
   private async openDirectory(placement: SplitPlacement = 'tab'): Promise<void> {
-    const dir = await pickDirectory(this.workspace.activePane()?.cwd ?? store.defaultCwd());
+    const dir = await pickDirectory(this.workspace.activeTerminal()?.cwd ?? store.defaultCwd());
     if (!dir) return;
     const pane = this.workspace.activePane();
-    this.workspace.open(this.defaultSpec(pane?.spec.shellId ?? '', dir), pane ? placement : 'tab', pane?.id);
+    this.workspace.open(this.defaultSpec(this.workspace.activeTerminal()?.spec.shellId ?? '', dir), pane ? placement : 'tab', pane?.id);
   }
 
   private newTabMenuEntries(): MenuEntry[] {
-    const pane = this.workspace.activePane();
+    const pane = this.workspace.activeTerminal();
     const here = pane ? ` in ${baseName(pane.cwd)}` : '';
     return [
       ...store.shells.map((s): MenuEntry => ({ label: `${s.name}${here}`, icon: 'terminal', action: () => this.newTerminal('tab', s.id) })),
@@ -593,7 +704,7 @@ class App {
       keywords: [groupPath(store.config.groups, s.groupId)],
       run: (placement) => this.openSession(s, placement),
     }));
-    const pane = this.workspace.activePane();
+    const pane = this.workspace.activeTerminal();
     for (const sh of store.shells) {
       items.push({
         label: `New ${sh.name}${pane ? ` in ${baseName(pane.cwd)}` : ''}`,
@@ -684,7 +795,7 @@ class App {
     const res = await editGroup(parentId ? 'New subgroup' : 'New group', { name: '', color: '', parentId });
     if (!res) return;
     store.update((c) => {
-      c.groups.push(newGroup(res.name, parentId, res.color));
+      c.groups.push({ ...newGroup(res.name, parentId, res.color), ...res });
       const parent = c.groups.find((g) => g.id === parentId);
       if (parent) parent.collapsed = false;
     });
@@ -695,8 +806,12 @@ class App {
     if (res)
       store.update((c) => {
         const x = c.groups.find((y) => y.id === g.id);
-        if (x) Object.assign(x, res);
+        if (!x) return;
+        // Turning sync on (or another folder) starts on the branch checked out then.
+        if (res.folder !== x.folder || (x.sync === 'off' && res.sync !== 'off')) x.syncBranch = '';
+        Object.assign(x, res);
       });
+    if (res?.folder) void gitSync.refresh(g.id);
   }
 
   private async removeGroup(g: Group): Promise<void> {
@@ -705,14 +820,26 @@ class App {
     const subgroups = groups.filter((x) => x.parentId === g.id).length;
     const what = [count ? `${count} session${count > 1 ? 's' : ''}` : '', subgroups ? `${subgroups} subgroup${subgroups > 1 ? 's' : ''}` : ''].filter(Boolean).join(' and ');
     const parent = groups.find((x) => x.id === g.parentId);
-    const msg = what ? `The ${what} in it will be kept, ${parent ? `in "${parent.name}"` : 'outside any group'}.` : 'The group is empty.';
-    if (!(await confirmDialog(`Delete group "${g.name}"?`, msg, 'Delete', true))) return;
+    const kept = what ? `The ${what} in it will be kept, ${parent ? `in "${parent.name}"` : 'outside any group'}.` : g.folder ? '' : 'The group is empty.';
+    const folder = g.folder ? `Its requests folder (${g.folder}) is no longer linked; nothing in it is deleted.` : '';
+    if (!(await confirmDialog(`Delete group "${g.name}"?`, [kept, folder].filter(Boolean).join(' '), 'Delete', true))) return;
+    if (!(await this.closeRequestsOf(g))) return;
     store.update((c) => deleteGroup(c, g.id));
+  }
+
+  /** Closes a group's request panes, asking about unsaved changes first; false = kept open. */
+  private async closeRequestsOf(g: Group): Promise<boolean> {
+    const panes = [...this.workspace.panes.values()].filter((p): p is RequestPane => p instanceof RequestPane && p.ref.groupId === g.id);
+    if (!(await this.workspace.confirmUnsaved(panes))) return false;
+    for (const p of panes) this.workspace.closePane(p.id);
+    return true;
   }
 
   // ---- menus ----------------------------------------------------------
 
-  private paneMenu(pane: Pane, e: MouseEvent): void {
+  private paneMenu(pane: WorkspacePane, e: MouseEvent): void {
+    if (pane instanceof RequestPane) return this.requestPaneMenu(pane, e);
+    if (!isTerminal(pane)) return;
     const hasSel = pane.term.hasSelection();
     const conn = pane.connection;
     const localOnly = (entries: MenuEntry[]): MenuEntry[] => (conn ? [] : entries);
@@ -753,6 +880,137 @@ class App {
       'separator',
       { label: 'Close pane', icon: 'x', danger: true, shortcut: shortcutFor('closePane'), action: () => void this.workspace.requestClosePane(pane.id) },
     ]);
+  }
+
+  private requestPaneMenu(pane: RequestPane, e: MouseEvent): void {
+    const tab = this.workspace.tabOf(pane);
+    const split = !!tab && this.workspace.panesOf(tab).length > 1;
+    const group = pane.group;
+    showMenu(e.clientX, e.clientY, [
+      { label: 'Send', icon: 'play', shortcut: 'Ctrl+Enter', action: () => void pane.send() },
+      { label: 'Save', icon: 'save', shortcut: 'Ctrl+S', action: () => void pane.save() },
+      { label: 'Copy as curl', icon: 'copy', action: () => void pane.copyAsCurl() },
+      'separator',
+      { label: 'Terminal in split right', icon: 'splitRight', shortcut: shortcutFor('splitRight'), action: () => this.newTerminal('right') },
+      { label: 'Terminal in split down', icon: 'splitDown', shortcut: shortcutFor('splitDown'), action: () => this.newTerminal('down') },
+      { label: 'Move to new tab', icon: 'popOut', shortcut: shortcutFor('movePaneToTab'), disabled: !split, action: () => this.workspace.moveToNewTab(pane.id) },
+      'separator',
+      { label: 'Rename…', icon: 'edit', disabled: !group, action: () => group && void renameRequest(this.workspace, group, pane.ref.path) },
+      { label: 'Duplicate', icon: 'duplicate', disabled: !group, action: () => group && void duplicateRequest(this.workspace, group, pane.ref.path) },
+      'separator',
+      { label: 'Close pane', icon: 'x', danger: true, shortcut: shortcutFor('closePane'), action: () => void this.workspace.requestClosePane(pane.id) },
+    ]);
+  }
+
+  /** A request in the sidebar. */
+  private requestMenu(group: Group, path: string, e: MouseEvent): void {
+    const ws = this.workspace;
+    const c = collections.get(group.id);
+    showMenu(e.clientX, e.clientY, [
+      { label: 'Open', icon: 'play', action: () => openRequest(ws, group, path, 'pin') },
+      { label: 'Open in split right', icon: 'splitRight', action: () => openRequest(ws, group, path, 'right') },
+      { label: 'Open in split down', icon: 'splitDown', action: () => openRequest(ws, group, path, 'down') },
+      {
+        label: 'Copy as curl',
+        icon: 'copy',
+        action: () => {
+          const entry = collections.request(group.id, path);
+          if (entry) void copyRequestAsCurl(group, entry.doc);
+        },
+      },
+      'separator',
+      { label: 'Rename…', icon: 'edit', action: () => void renameRequest(ws, group, path) },
+      { label: 'Duplicate', icon: 'duplicate', action: () => void duplicateRequest(ws, group, path) },
+      { label: 'Show in Explorer', icon: 'openExternal', disabled: !c, action: () => c && void api.openDir(`${c.folder}\\${requestFolder(path).replace(/\//g, '\\')}`.replace(/\\$/, '')) },
+      'separator',
+      { label: 'Delete', icon: 'trash', danger: true, action: () => void deleteRequest(ws, group, path) },
+    ]);
+  }
+
+  /** A folder of requests in the sidebar. */
+  private folderMenu(group: Group, folder: string, e: MouseEvent): void {
+    const ws = this.workspace;
+    const c = collections.get(group.id);
+    showMenu(e.clientX, e.clientY, [
+      { label: 'New request…', icon: 'plus', action: () => void createRequest(ws, group, folder) },
+      { label: 'New folder…', icon: 'folderPlus', action: () => void createFolder(group, folder) },
+      { label: 'Paste curl command…', icon: 'paste', action: () => pasteCurl(ws, group, folder) },
+      'separator',
+      { label: 'Rename…', icon: 'edit', action: () => void renameFolder(ws, group, folder) },
+      { label: 'Show in Explorer', icon: 'openExternal', disabled: !c, action: () => c && void api.openDir(`${c.folder}\\${folder.replace(/\//g, '\\')}`) },
+      'separator',
+      { label: 'Delete folder', icon: 'trash', danger: true, action: () => void deleteFolder(ws, group, folder) },
+    ]);
+  }
+
+  /** Group menu entries about requests. */
+  private groupRequestEntries(group: Group): MenuEntry[] {
+    const ws = this.workspace;
+    if (!group.folder) {
+      return [
+        {
+          label: 'Link a requests folder…',
+          icon: 'folder',
+          action: async () => {
+            const dir = await pickDirectory(store.defaultCwd());
+            if (dir) await linkFolder(group, dir);
+          },
+        },
+      ];
+    }
+    const c = collections.get(group.id);
+    const env = collections.env(group);
+    const sync = gitSync.get(group.id);
+    const branch = sync?.status?.branch;
+    const syncEntries: MenuEntry[] =
+      group.sync === 'off'
+        ? []
+        : [
+            { label: 'Sync now', icon: 'play', disabled: !sync?.repo || !!sync.running, action: () => void gitSync.sync(group) },
+            ...(sync?.problem?.kind === 'conflict'
+              ? [{ label: 'Resolve the conflict…', icon: 'edit' as const, action: () => void gitSync.resolve(group, (sync.problem as { files: string[] }).files) }]
+              : []),
+            ...(sync?.problem?.kind === 'branch' && branch
+              ? [
+                  {
+                    label: `Sync on branch "${branch}" instead`,
+                    action: () =>
+                      store.update((cfg) => {
+                        const x = cfg.groups.find((y) => y.id === group.id);
+                        if (x) x.syncBranch = branch;
+                      }),
+                  },
+                ]
+              : []),
+            'separator' as const,
+          ];
+    return [
+      ...syncEntries,
+      { label: 'New request…', icon: 'plus', disabled: !c, action: () => void createRequest(ws, group) },
+      { label: 'New request folder…', icon: 'folderPlus', disabled: !c, action: () => void createFolder(group) },
+      { label: 'Paste curl command…', icon: 'paste', disabled: !c, action: () => pasteCurl(ws, group) },
+      { label: 'Import from Postman…', icon: 'globe', disabled: !c, action: () => void importPostman(group) },
+      { label: 'Variables…', icon: 'edit', disabled: !c, action: () => editVariables(group) },
+      { label: 'Environment', icon: 'gear', disabled: !c, submenu: environmentEntries(group) },
+      {
+        label: `Clear cookies${env ? ` (${env})` : ''}`,
+        disabled: !c,
+        action: () => void api.httpClearCookies(`${group.id}/${env}`).then(() => toast('Cookies cleared')),
+      },
+      { label: 'Open requests folder', icon: 'openExternal', action: () => void api.openDir(group.folder).catch((err) => toast(String(err), 'error')) },
+      { label: 'Read the folder again', action: () => void collections.reload(group.id) },
+      {
+        label: 'Unlink requests folder',
+        action: async () => {
+          if (!(await confirmDialog(`Unlink "${group.folder}"?`, 'Its requests no longer show in the group. Nothing in the folder is deleted.', 'Unlink'))) return;
+          if (!(await this.closeRequestsOf(group))) return;
+          store.update((cfg) => {
+            const g = cfg.groups.find((x) => x.id === group.id);
+            if (g) g.folder = '';
+          });
+        },
+      },
+    ];
   }
 
   /**
@@ -812,7 +1070,8 @@ class App {
   }
 
   private tabMenu(tab: Tab, e: MouseEvent): void {
-    const pane = this.workspace.panes.get(tab.activePaneId);
+    const active = this.workspace.panes.get(tab.activePaneId);
+    const pane = isTerminal(active) ? active : null;
     showMenu(e.clientX, e.clientY, [
       { label: 'Rename…', icon: 'edit', shortcut: shortcutFor('renameTab'), action: () => void this.renameTab(tab) },
       { label: 'New tab here', icon: 'terminal', disabled: !pane, action: () => pane && this.workspace.open(this.workspace.specFrom(pane, false), 'tab') },
@@ -833,6 +1092,7 @@ class App {
 
   private async closeOtherTabs(keep: Tab): Promise<void> {
     const others = this.workspace.tabs.filter((t) => t !== keep);
+    if (!(await this.workspace.confirmUnsaved(others.flatMap((t) => this.workspace.panesOf(t))))) return;
     if (store.settings.confirmClose) {
       const busy = (await Promise.all(others.flatMap((t) => this.workspace.panesOf(t)).map((p) => p.hasRunningProgram()))).filter(Boolean).length;
       if (busy && !(await confirmDialog('Close other tabs?', `${busy} terminal${busy > 1 ? 's have' : ' has'} a running program.`, 'Close', true))) return;
@@ -857,6 +1117,7 @@ class App {
   runAction(m: Match): boolean {
     const ws = this.workspace;
     const pane = ws.activePane();
+    const terminal = ws.activeTerminal();
     switch (m.action) {
       case 'newTab':
         this.newTerminal('tab');
@@ -868,8 +1129,8 @@ class App {
         this.newTerminal('down');
         return true;
       case 'duplicate':
-        if (pane) ws.open(ws.specFrom(pane, true), 'right', pane.id);
-        return !!pane;
+        if (terminal) ws.open(ws.specFrom(terminal, true), 'right', terminal.id);
+        return !!terminal;
       case 'closePane':
         if (pane) void ws.requestClosePane(pane.id);
         return !!pane;
@@ -913,18 +1174,18 @@ class App {
         openSettings();
         return true;
       case 'saveSession':
-        if (pane) this.saveAsSession(pane);
+        if (terminal) this.saveAsSession(terminal);
         else void this.saveSession({});
         return true;
       case 'renameTab':
         if (ws.activeTab) void this.renameTab(ws.activeTab);
         return !!ws.activeTab;
       case 'copy':
-        if (pane) void pane.copySelection(false);
-        return !!pane;
+        if (terminal) void terminal.copySelection(false);
+        return !!terminal;
       case 'paste':
-        if (pane) void pane.paste();
-        return !!pane;
+        if (terminal) void terminal.paste();
+        return !!terminal;
       case 'fontUp':
         this.zoomFont(1);
         return true;
@@ -940,9 +1201,24 @@ class App {
   private installGlobalHandlers(): void {
     window.addEventListener('keydown', (e) => {
       if (isDialogOpen()) return;
+      // Send and save reach the active request pane also when nothing in it has focus (e.g. after
+      // clicking the response). Inside the pane, the pane handles them itself.
+      const active = this.workspace.activePane();
+      // Only from the pane itself or from nowhere in particular: Ctrl+Enter in the sidebar filter, or
+      // Ctrl+S in a terminal reached with Tab, stays theirs.
+      const target = e.target as Node | null;
+      const fromPane = !target || target === document.body || (active instanceof RequestPane && active.el.contains(target));
+      const requestKey = active instanceof RequestPane && fromPane ? matchRequestKey(e) : null;
+      if (requestKey && active instanceof RequestPane) {
+        e.preventDefault();
+        if (requestKey === 'send') void active.send();
+        else void active.save();
+        return;
+      }
       const editable = isEditableTarget(e.target);
       const m = matchKey(e);
-      if (m && !(editable && (m.action === 'copy' || m.action === 'paste'))) {
+      // In a text field, copy, paste and redo (Ctrl+Shift+Z, not maximize) stay the field's.
+      if (m && !(editable && (m.action === 'copy' || m.action === 'paste' || m.action === 'zoomPane'))) {
         if (this.runAction(m)) {
           e.preventDefault();
           return;
@@ -966,13 +1242,17 @@ class App {
     });
 
     void getCurrentWindow().onCloseRequested(async (event) => {
+      if (!(await this.workspace.confirmUnsaved(this.workspace.unsavedPanes()))) {
+        event.preventDefault();
+        return;
+      }
       if (store.settings.confirmClose) {
         const busy = await this.workspace.busyPanes();
         if (busy.length) {
           const names = [...new Set(busy.map((p) => p.name))].slice(0, 5).join(', ');
           const ok = await confirmDialog(
             'Quit Shellman?',
-            `${busy.length} terminal${busy.length > 1 ? 's have' : ' has'} a running program (${names}). Quitting will end ${busy.length > 1 ? 'them' : 'it'}.`,
+            `${busy.length} pane${busy.length > 1 ? 's are' : ' is'} still busy: a running program or a request on its way (${names}). Quitting will end ${busy.length > 1 ? 'them' : 'it'}.`,
             'Quit',
             true,
           );
