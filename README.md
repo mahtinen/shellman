@@ -37,7 +37,8 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   with: Password" offers no keys at all, and ssh asks for the password in the terminal (it isn't stored).
   Without a user name, the terminal asks `login as:` first (Enter keeps ssh's default user). Old servers that only offer ssh-rsa (SHA-1), DSA or CBC ciphers ("Unable to
   negotiate") can be allowed per session (SSH options → Allow old algorithms), or by pressing A when a
-  connection fails that way. Enter
+  connection fails that way. New SSH sessions send keepalives (`-o ServerAliveInterval=30` in SSH options, which
+  you can remove), so routers and VPNs don't drop idle connections ("Connection reset"). Enter
   reconnects a closed connection, Duplicate opens another connection to the same host, and new tabs or splits
   next to it are local shells. Reopened connection tabs wait for Enter instead of logging in to every host at
   start-up (Settings → Connections can change that). Telnet needs the optional Windows feature "Telnet Client".

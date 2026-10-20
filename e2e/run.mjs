@@ -691,6 +691,8 @@ if (phase === 'main') {
     await key('KeyN', 'N', 78, ['ctrl', 'shift']);
     await waitFor(`/New connection/.test(document.querySelector('.dialog h2')?.textContent)`, 3000, 'dialog');
     assert((await ev(`document.querySelector('.dialog select').value`)) === 'ssh', 'type defaults to SSH');
+    const extra = await ev(`document.querySelectorAll('.dialog input.input')[8].value`);
+    assert(extra === '-o ServerAliveInterval=30', 'keepalives by default: ' + extra);
     await ev(`(() => {
       const inputs = document.querySelectorAll('.dialog input.input');
       const set = (el, v) => { el.value = v; el.dispatchEvent(new Event('input')); el.dispatchEvent(new Event('change')); };

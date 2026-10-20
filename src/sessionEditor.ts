@@ -1,7 +1,7 @@
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { api, type AgentKey } from './api';
 import { baseName, formatEnv, groupColor, groupOptions, newGroup, parseEnv, uid } from './config';
-import { connectionError, connectionTarget, emptyConnection, keyLabel, parseDestination, parsePort, sameKey } from './connection';
+import { connectionError, connectionTarget, DEFAULT_SSH_ARGS, keyLabel, newSshConnection, parseDestination, parsePort, sameKey } from './connection';
 import { dialog, promptDialog } from './dialogs';
 import { h } from './dom';
 import type { MenuEntry } from './menu';
@@ -138,7 +138,7 @@ export function editSession(
 ): Promise<EditResult | null> {
   return new Promise((resolve) => {
     let result: EditResult | null = null;
-    const conn = initial.connection ?? emptyConnection('ssh');
+    const conn = initial.connection ?? newSshConnection();
 
     const name = h('input', { class: 'input', value: initial.name ?? '', placeholder: 'e.g. My API', spellcheck: false });
     const cwd = h('input', { class: 'input mono', value: initial.cwd || store.defaultCwd(), placeholder: 'C:\\Projects\\my-project', spellcheck: false });
@@ -156,7 +156,7 @@ export function editSession(
     const identity = h('input', { class: 'input mono', value: conn.identityFile, placeholder: 'C:\\Users\\me\\.ssh\\id_ed25519', spellcheck: false });
     const jump = h('input', { class: 'input mono', value: conn.jumpHost, placeholder: 'Optional, e.g. user@bastion', spellcheck: false });
     const legacy = h('input', { type: 'checkbox', checked: conn.legacyAlgorithms });
-    const extra = h('input', { class: 'input mono', value: conn.extraArgs, placeholder: 'Optional, e.g. -A -o ServerAliveInterval=30', spellcheck: false });
+    const extra = h('input', { class: 'input mono', value: conn.extraArgs, placeholder: 'Optional, e.g. -A', spellcheck: false });
     // "user@host:port" typed or pasted into Host is split into the fields.
     host.addEventListener('change', () => {
       const d = parseDestination(host.value.trim());
@@ -353,7 +353,7 @@ export function editSession(
     );
     const sshAdvanced = h(
       'details',
-      { class: 'advanced', open: !!(conn.jumpHost || conn.extraArgs || conn.legacyAlgorithms) },
+      { class: 'advanced', open: !!(conn.jumpHost || (conn.extraArgs && conn.extraArgs !== DEFAULT_SSH_ARGS) || conn.legacyAlgorithms) },
       h('summary', null, 'SSH options'),
       h(
         'label',

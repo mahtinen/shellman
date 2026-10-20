@@ -3,7 +3,7 @@ import './styles.css';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { api } from './api';
 import { baseName, deleteGroup, groupPath, newGroup, sessionColor, uid } from './config';
-import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, emptyConnection, parseQuickConnect } from './connection';
+import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, newSshConnection, parseQuickConnect } from './connection';
 import { confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
 import { clamp, h, isEditableTarget, setChildren } from './dom';
 import { icons, type IconName } from './icons';
@@ -455,7 +455,7 @@ class App {
   }
 
   private newConnection(): void {
-    void this.createSession({ connection: emptyConnection('ssh') });
+    void this.createSession({ connection: newSshConnection() });
   }
 
   private reconnect(pane: Pane): void {
