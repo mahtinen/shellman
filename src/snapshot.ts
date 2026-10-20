@@ -7,7 +7,18 @@ import { normalizeConnection } from './connection';
 import type { Direction, LayoutNode } from './layout';
 import type { LaunchSpec } from './types';
 
-export type SnapshotNode = { pane: LaunchSpec } | { split: Direction; sizes: number[]; children: SnapshotNode[] };
+/** A request pane: the request file, relative to the folder of the group it is in. */
+export interface RequestRef {
+  groupId: string;
+  path: string;
+}
+
+/** One saved pane: a terminal, or a request. */
+export type SnapshotLeaf = { pane: LaunchSpec } | { request: RequestRef };
+
+export type SnapshotNode = SnapshotLeaf | { split: Direction; sizes: number[]; children: SnapshotNode[] };
+
+const isLeaf = (n: SnapshotNode): n is SnapshotLeaf => 'pane' in n || 'request' in n;
 
 export interface TabSnapshot {
   /** Name the user gave the tab, if any. */
@@ -26,13 +37,10 @@ export interface WorkspaceSnapshot {
 const MAX_TABS = 50;
 const MAX_DEPTH = 12;
 
-/** Converts a tab's layout; `spec` gives each pane's current launch spec (with its current directory). */
-export function snapshotNode(node: LayoutNode, spec: (paneId: string) => LaunchSpec | null): SnapshotNode | null {
-  if (node.type === 'pane') {
-    const s = spec(node.paneId);
-    return s ? { pane: s } : null;
-  }
-  const kids = node.children.map((c) => snapshotNode(c, spec));
+/** Converts a tab's layout; `leaf` gives each pane's saved form (null: not reopened). */
+export function snapshotNode(node: LayoutNode, leaf: (paneId: string) => SnapshotLeaf | null): SnapshotNode | null {
+  if (node.type === 'pane') return leaf(node.paneId);
+  const kids = node.children.map((c) => snapshotNode(c, leaf));
   const children: SnapshotNode[] = [];
   const sizes: number[] = [];
   kids.forEach((k, i) => {
@@ -46,19 +54,37 @@ export function snapshotNode(node: LayoutNode, spec: (paneId: string) => LaunchS
   return { split: node.direction, sizes: normalizeSizes(sizes, children.length), children };
 }
 
-/** Builds a layout tree, creating a pane for every saved one. */
-export function layoutFromSnapshot(node: SnapshotNode, createPane: (spec: LaunchSpec) => string): LayoutNode {
-  if ('pane' in node) return { type: 'pane', paneId: createPane(node.pane) };
-  return {
-    type: 'split',
-    direction: node.split,
-    sizes: [...node.sizes],
-    children: node.children.map((c) => layoutFromSnapshot(c, createPane)),
-  };
+/**
+ * Builds a layout tree, creating a pane for every saved one. A pane that can't be created (its
+ * request file is gone) is left out, and a split left with one pane collapses.
+ */
+export function layoutFromSnapshot(node: SnapshotNode, createPane: (leaf: SnapshotLeaf) => string | null): LayoutNode | null {
+  if (isLeaf(node)) {
+    const id = createPane(node);
+    return id ? { type: 'pane', paneId: id } : null;
+  }
+  const children: LayoutNode[] = [];
+  const sizes: number[] = [];
+  node.children.forEach((c, i) => {
+    const child = layoutFromSnapshot(c, createPane);
+    if (child) {
+      children.push(child);
+      sizes.push(node.sizes[i] ?? 1);
+    }
+  });
+  if (!children.length) return null;
+  if (children.length === 1) return children[0];
+  return { type: 'split', direction: node.split, sizes: normalizeSizes(sizes, children.length), children };
 }
 
+/** Every saved pane, in layout order. */
+export function snapshotLeaves(node: SnapshotNode): SnapshotLeaf[] {
+  return isLeaf(node) ? [node] : node.children.flatMap(snapshotLeaves);
+}
+
+/** The terminals' launch specs, in layout order. */
 export function snapshotPanes(node: SnapshotNode): LaunchSpec[] {
-  return 'pane' in node ? [node.pane] : node.children.flatMap(snapshotPanes);
+  return snapshotLeaves(node).flatMap((l) => ('pane' in l ? [l.pane] : []));
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -99,6 +125,10 @@ function normalizeNode(v: unknown, depth: number): SnapshotNode | null {
     const spec = normalizeSpec(v.pane);
     return spec ? { pane: spec } : null;
   }
+  if ('request' in v) {
+    const r = isObj(v.request) ? v.request : {};
+    return str(r.groupId) && str(r.path) ? { request: { groupId: str(r.groupId), path: str(r.path) } } : null;
+  }
   if ((v.split !== 'row' && v.split !== 'column') || !Array.isArray(v.children)) return null;
   const rawSizes = Array.isArray(v.sizes) ? v.sizes : [];
   const children: SnapshotNode[] = [];
@@ -124,7 +154,7 @@ export function normalizeSnapshot(raw: unknown): WorkspaceSnapshot | null {
     const root = normalizeNode(t.root, 0);
     if (!root) continue;
     const title = str(t.title).trim();
-    tabs.push({ title: title || null, activePane: int(t.activePane, snapshotPanes(root).length), root });
+    tabs.push({ title: title || null, activePane: int(t.activePane, snapshotLeaves(root).length), root });
   }
   if (!tabs.length) return null;
   return { version: 1, activeTab: int(raw.activeTab, tabs.length), tabs };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { leaf, type LayoutNode } from './layout';
-import { layoutFromSnapshot, normalizeSnapshot, snapshotNode, snapshotPanes } from './snapshot';
+import { layoutFromSnapshot, normalizeSnapshot, snapshotLeaves, snapshotNode, snapshotPanes, type SnapshotLeaf } from './snapshot';
 import type { LaunchSpec } from './types';
 
 const spec = (cwd: string, extra: Partial<LaunchSpec> = {}): LaunchSpec => ({
@@ -30,13 +30,13 @@ describe('snapshot', () => {
       children: [leaf('a'), { type: 'split', direction: 'column', sizes: [0.5, 0.5], children: [leaf('b'), leaf('c')] }],
     };
     const specs: Record<string, LaunchSpec> = { a: spec('C:\\a', { command: 'claude' }), b: spec('C:\\b'), c: spec('C:\\c') };
-    const snap = snapshotNode(tree, (id) => specs[id])!;
+    const snap = snapshotNode(tree, (id) => ({ pane: specs[id] }))!;
     expect(snapshotPanes(snap).map((s) => s.cwd)).toEqual(['C:\\a', 'C:\\b', 'C:\\c']);
 
     let n = 0;
-    const created: LaunchSpec[] = [];
-    const back = layoutFromSnapshot(snap, (s) => (created.push(s), `p${n++}`));
-    expect(created.map((s) => s.command)).toEqual(['claude', '', '']);
+    const created: SnapshotLeaf[] = [];
+    const back = layoutFromSnapshot(snap, (l) => (created.push(l), `p${n++}`));
+    expect(created.map((l) => ('pane' in l ? l.pane.command : null))).toEqual(['claude', '', '']);
     expect(back).toEqual({
       type: 'split',
       direction: 'row',
@@ -47,7 +47,28 @@ describe('snapshot', () => {
 
   it('drops panes that are gone and collapses single-child splits', () => {
     const tree: LayoutNode = { type: 'split', direction: 'row', sizes: [0.5, 0.5], children: [leaf('a'), leaf('gone')] };
-    expect(snapshotNode(tree, (id) => (id === 'a' ? spec('C:\\a') : null))).toEqual({ pane: spec('C:\\a') });
+    expect(snapshotNode(tree, (id) => (id === 'a' ? { pane: spec('C:\\a') } : null))).toEqual({ pane: spec('C:\\a') });
+  });
+
+  it('keeps request panes next to terminals', () => {
+    const tree: LayoutNode = { type: 'split', direction: 'row', sizes: [0.6, 0.4], children: [leaf('r'), leaf('t')] };
+    const leaves: Record<string, SnapshotLeaf> = { r: { request: { groupId: 'g1', path: 'users/list.request.json' } }, t: { pane: spec('C:\\a') } };
+    const snap = normalizeSnapshot({ tabs: [{ activePane: 1, root: snapshotNode(tree, (id) => leaves[id]) }] })!;
+    expect(snapshotLeaves(snap.tabs[0].root)).toEqual([leaves.r, leaves.t]);
+    expect(snapshotPanes(snap.tabs[0].root)).toEqual([spec('C:\\a')]);
+    expect(snap.tabs[0].activePane).toBe(1);
+    // A request without its group or file can't be reopened.
+    expect(normalizeSnapshot({ tabs: [{ root: { request: { groupId: 'g1' } } }, { root: { request: 'x' } }] })).toBeNull();
+  });
+
+  it('leaves out panes that can no longer be opened', () => {
+    const leaves: SnapshotLeaf[] = [{ request: { groupId: 'g', path: 'gone.request.json' } }, { pane: spec('C:\\a') }, { pane: spec('C:\\b') }];
+    const root = { split: 'row' as const, sizes: [0.5, 0.125, 0.375], children: leaves };
+    let n = 0;
+    const back = layoutFromSnapshot(root, (l) => ('request' in l ? null : `p${n++}`));
+    expect(back).toEqual({ type: 'split', direction: 'row', sizes: [0.25, 0.75], children: [leaf('p0'), leaf('p1')] });
+    expect(layoutFromSnapshot(leaves[0], () => null)).toBeNull();
+    expect(layoutFromSnapshot({ ...root, children: [leaves[0], leaves[1]] }, (l) => ('request' in l ? null : 'only'))).toEqual(leaf('only'));
   });
 
   it('normalizes what is read from disk', () => {

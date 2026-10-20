@@ -48,6 +48,38 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   folder you choose) and imports the SSH and Telnet hosts, ports and users. XShell's folders become subgroups
   (Prod › Web › web1), or go in front of the names ("Prod / Web / web1") if you choose so. Hosts that are
   already saved are skipped; saved passwords and XShell's own keys are not imported.
+- **API requests, shared through git.** A group can be linked to a folder of request files (Edit group →
+  Requests folder, or right-click → Link a requests folder): often a git repository your team clones. Its
+  requests show in the group; a click opens one in a preview tab, a double-click keeps it, and a request sits
+  in tabs and splits like a terminal (handy next to a terminal tailing the server's log). Drag a request or
+  folder onto another folder to move it. Send with
+  Ctrl+Enter, save with Ctrl+S. Requests run through Windows' own `curl.exe`; the response shows as folding
+  JSON with search, headers, timing and cookies, and a Console tab with the exact curl command, the options
+  it read and curl's own log (secrets hidden). Login cookies are kept per group and environment until
+  Shellman closes. Variables are `{{name}}` (a value may use other variables), edited in the app (Variables, or click an undefined one in the
+  URL): shared values in `.env` and `environments/<env>.json` (pick the environment next to Send or on the
+  group; one marked `"protected": true` asks before anything but GET). Each variable applies to every
+  environment or one, and is secret or not: normal values are shared through git (`.env`,
+  `environments/<env>.json`), secret ones stay on your computer in `.env.local` / `.env.<env>.local`, which
+  git must ignore (Shellman checks and offers to add them to `.gitignore`). A value can also be a 1Password reference like
+  `op://Vault/Item/field`, which is safe to commit: 1Password's CLI fills it in when sending. Secret values
+  never go into a command line or the request text: curl reads them from its environment. Also: Copy as
+  curl (PowerShell 7, cmd or bash), Paste curl command (e.g. a browser's "Copy as cURL"), and Import from
+  Postman (collection v2.0/2.1, environment and globals exports; globals go to `.env`, and secrets to
+  `.env.local`, not the shared files). Settings → Requests has the options.
+- **Git sync for request folders.** Per group (Edit group → Git sync): off, with the Sync button, or
+  automatically. Sync commits only Shellman's files in the folder (requests, environments, `.env` and
+  `.gitignore`; never the secret `.env*.local` ones, nor anything else in the folder or repository), pulls
+  teammates' changes and pushes. Automatically, saves made within a minute (adjustable) go up together as
+  one commit, and teammates' changes are pulled every few minutes while Shellman is in front (never in the
+  background, so no sign-in or 1Password prompt pops up out of nowhere). The badge on the group shows
+  what's waiting (●2 changes, ↑1 to push, ↓3 to pull) and syncs on click. Git runs as you (your credential
+  manager and keys); if it needs a sign-in, Shellman says so and stops trying until you sync. Automatic sync
+  pauses instead of pushing your other unpushed commits in the same repository or setting your other
+  changes aside, and Sync asks first. When a teammate changed the same request, you choose to keep yours or
+  take theirs. Sync stays on the branch it started on. Meant for a repository (or branch) of requests that
+  takes pushes without pull requests and runs no CI; for request folders inside a code repository, use the
+  Sync button.
 - **Open terminals tree.** Each session lists its open terminals underneath it: the ones opened from it, plus
   any other terminal sitting in its directory. Click one to jump to its tab, middle-click to close it,
   right-click for more. The chevron next to a session collapses its list, like a group, and the state is
@@ -128,6 +160,9 @@ Only installers signed with the project's update key are accepted.
 | Paste with the mouse | Right-click (Settings can switch it to "copy selection, otherwise paste" or "show menu"). Programs that use the mouse, like Claude Code, get the right-click themselves (Claude Code pastes on its own) |
 | Terminal menu (split, save as session, find…) | Shift+Right-click |
 | Select text in Claude Code | Shift+drag |
+| Send / save a request (in a request pane) | Ctrl+Enter / Ctrl+S |
+| Open a request in a split | Middle-click it in the sidebar |
+| Move a request or folder | Drag it onto another folder in the sidebar |
 
 No shortcut uses Ctrl+Alt, because that's AltGr on Nordic and other European layouts (AltGr+2 = @).
 
@@ -196,10 +231,13 @@ backup: if it's lost, installed copies can't verify new versions and everyone ha
 | `src-tauri/src/shell.rs` | Shell detection and launch arguments (startup commands, shell integration) |
 | `src-tauri/src/connect.rs` | SSH/Telnet: finds `ssh.exe`/`telnet.exe` and builds their arguments (checked against option injection) |
 | `src-tauri/src/config.rs` | Atomic config persistence with backup and corrupt-file quarantine |
+| `src-tauri/src/http.rs`, `collection.rs`, `git.rs` | Requests through curl (options as a config on stdin, secrets as curl variables), linked folders, git |
 | `src/workspace.ts` | Tabs, split layout rendering, focus, activity tracking, GPU budget |
 | `src/pane.ts` | One terminal: xterm.js, input/clipboard handling, OSC parsing, search |
 | `src/layout.ts` | Pure split-tree operations (unit tested) |
 | `src/connection.ts` | Connection validation, labels and quick-open parsing (unit tested) |
+| `src/requestPane.ts`, `collections.ts`, `requestActions.ts` | Request panes, linked folders, request menus |
+| `src/requestFile.ts`, `variables.ts`, `dotenv.ts`, `curl.ts`, `postman.ts`, `jsonView.ts` | Request files, variables, curl copy/paste, Postman import (unit tested) |
 | `src/sidebar.ts`, `sessionEditor.ts`, `settingsDialog.ts`, `palette.ts` | UI |
 | `src/updater.ts` | Background update checks, download and install-on-restart |
 | `.github/workflows/` | CI checks and the Release workflow |

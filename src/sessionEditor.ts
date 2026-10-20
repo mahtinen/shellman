@@ -7,7 +7,7 @@ import { h } from './dom';
 import type { MenuEntry } from './menu';
 import { store } from './store';
 import { SESSION_COLORS } from './themes';
-import type { Connection, ConnectionKind, SavedSession } from './types';
+import type { Connection, ConnectionKind, Group, SavedSession } from './types';
 
 export const COMMAND_SUGGESTIONS = [
   'claude',
@@ -76,18 +76,112 @@ function colorPicker(initial: string, inherited: () => string, inheritTitle: str
 }
 
 /** The group dialog: name and colour. Resolves with them, or null when cancelled. */
-export function editGroup(title: string, initial: { name: string; color: string; parentId: string | null }): Promise<{ name: string; color: string } | null> {
+/** What the group editor edits. */
+export type GroupFields = Pick<Group, 'name' | 'color' | 'folder' | 'sync' | 'syncPush' | 'syncCheck' | 'syncDelay' | 'commitTemplate'>;
+
+export function editGroup(title: string, initial: Partial<GroupFields> & { name: string; color: string; parentId: string | null }): Promise<GroupFields | null> {
   return new Promise((resolve) => {
-    let result: { name: string; color: string } | null = null;
+    let result: GroupFields | null = null;
     const name = h('input', { class: 'input', value: initial.name, placeholder: 'Group name', spellcheck: false });
+    const folder = h('input', { class: 'input', value: initial.folder ?? '', placeholder: 'None', spellcheck: false });
+    const browse = h('button', {
+      class: 'btn',
+      onclick: async () => {
+        const dir = await pickDirectory(folder.value || store.defaultCwd());
+        if (dir) folder.value = dir;
+        showSync();
+      },
+    }, 'Browse…');
     const colors = colorPicker(initial.color, () => groupColor(store.config.groups, initial.parentId), 'Same as the group it is in');
     const error = h('div', { class: 'field-error' });
+
+    // Git sync of the folder.
+    const select = <T extends string>(value: T, options: [T, string][], field: string) => {
+      const el = h('select', { class: 'input', dataset: { field } }, ...options.map(([v, label]) => h('option', { value: v }, label)));
+      el.value = value;
+      return el;
+    };
+    const sync = select(initial.sync ?? 'manual', [
+      ['off', 'Off'],
+      ['manual', 'With the Sync button'],
+      ['auto', 'Automatically'],
+    ], 'sync');
+    const push = select(initial.syncPush ?? 'push', [
+      ['push', 'Commit and push each save'],
+      ['commit', 'Commit saves, push with Sync'],
+    ], 'push');
+    const check = select(String(initial.syncCheck ?? 180), [
+      ['60', 'Every minute'],
+      ['180', 'Every 3 minutes'],
+      ['300', 'Every 5 minutes'],
+      ['600', 'Every 10 minutes'],
+      ['-1', 'Only when Shellman gets focus'],
+      ['0', 'Never (only with Sync)'],
+    ], 'check');
+    const delay = select(String(initial.syncDelay ?? 60), [
+      ['10', '10 seconds'],
+      ['60', '1 minute'],
+      ['300', '5 minutes'],
+    ], 'delay');
+    // Automatic sync is meant for a repository (or branch) of requests only.
+    const repoNote = h('small', { class: 'hint err-text' });
+    let noteFor = '';
+    const checkRepo = () => {
+      const dir = folder.value.trim();
+      if (!dir || dir === noteFor) return;
+      noteFor = dir;
+      repoNote.textContent = '';
+      void api.gitStatus(dir).then(
+        (st) => {
+          if (folder.value.trim() !== dir) return;
+          repoNote.textContent = !st
+            ? "This folder isn't in a git repository, so it can't sync."
+            : st.sharedRepo
+              ? 'This repository has other work in it. Automatic sync pauses whenever it would push or set aside that work; the Sync button may suit better.'
+              : '';
+        },
+        () => undefined,
+      );
+    };
+    const template = h('input', { class: 'input', value: initial.commitTemplate ?? 'Update {request}', spellcheck: false });
+    const pushField = h('div', { class: 'row two' }, h('label', { class: 'field' }, h('span', null, 'Saving'), push), h('label', { class: 'field' }, h('span', null, 'Group saves made within'), delay));
+    const syncBox = h(
+      'details',
+      { class: 'advanced', open: !!initial.folder },
+      h('summary', null, 'Git sync'),
+      h('label', { class: 'field' }, h('span', null, 'Sync the folder'), sync),
+      pushField,
+      h('div', { class: 'row two' }, h('label', { class: 'field' }, h('span', null, "Look for teammates' changes"), check), h('label', { class: 'field' }, h('span', null, 'Commit message'), template)),
+      h(
+        'small',
+        { class: 'hint' },
+        "Uses your own git and sign-in. Only request files are committed, never your secret .env.local files. Automatically: saves go up together as one commit, and teammates' changes come in while Shellman is in front. {request} in the message becomes the request names. Best for a repository of requests without CI or required pull requests.",
+      ),
+      repoNote,
+    );
+    const showSync = () => {
+      syncBox.hidden = !folder.value.trim();
+      pushField.hidden = sync.value !== 'auto';
+      checkRepo();
+    };
+    folder.addEventListener('input', showSync);
+    sync.addEventListener('change', showSync);
+    showSync();
+
     dialog({
       title,
-      width: 420,
+      width: 520,
       body: [
         h('label', { class: 'field' }, h('span', null, 'Name'), name),
         h('div', { class: 'field' }, h('span', null, 'Color'), colors.el, h('small', { class: 'hint' }, 'Sessions in the group and its subgroups get this color unless they have their own.')),
+        h(
+          'div',
+          { class: 'field' },
+          h('span', null, 'Requests folder'),
+          h('div', { class: 'row' }, folder, browse),
+          h('small', { class: 'hint' }, 'A folder of API requests, often a git repository the team shares. Its requests show in the group. Leave empty for sessions only.'),
+        ),
+        syncBox,
         error,
       ],
       buttons: [
@@ -101,7 +195,16 @@ export function editGroup(title: string, initial: { name: string; color: string;
               name.focus();
               return false;
             }
-            result = { name: name.value.trim(), color: colors.value() };
+            result = {
+              name: name.value.trim(),
+              color: colors.value(),
+              folder: folder.value.trim(),
+              sync: sync.value as Group['sync'],
+              syncPush: push.value as Group['syncPush'],
+              syncCheck: Number(check.value),
+              syncDelay: Number(delay.value),
+              commitTemplate: template.value.trim() || 'Update {request}',
+            };
           },
         },
       ],

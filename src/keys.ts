@@ -83,12 +83,31 @@ export const BINDINGS: Binding[] = [
   { action: 'fontReset', code: 'Numpad0', ctrl: true },
 ];
 
+/** Keys of a request pane, handled by the pane itself (Ctrl+S must still reach terminals). */
+export type RequestAction = 'send' | 'save';
+
+export const REQUEST_BINDINGS: { action: RequestAction; code: string; ctrl?: boolean; shift?: boolean; alt?: boolean }[] = [
+  { action: 'send', code: 'Enter', ctrl: true },
+  { action: 'send', code: 'NumpadEnter', ctrl: true },
+  { action: 'save', code: 'KeyS', ctrl: true },
+];
+
+export const REQUEST_LABELS: Record<RequestAction, string> = {
+  send: 'Send the request (in a request pane)',
+  save: 'Save the request (in a request pane)',
+};
+
 export interface KeyLike {
   code: string;
   ctrlKey: boolean;
   shiftKey: boolean;
   altKey: boolean;
   metaKey: boolean;
+}
+
+export function matchRequestKey(e: KeyLike): RequestAction | null {
+  if (e.metaKey) return null;
+  return REQUEST_BINDINGS.find((b) => b.code === e.code && !!b.ctrl === e.ctrlKey && !!b.shift === e.shiftKey && !!b.alt === e.altKey)?.action ?? null;
 }
 
 export function matchKey(e: KeyLike, bindings: Binding[] = BINDINGS): Match | null {
@@ -119,7 +138,7 @@ const CODE_LABELS: Record<string, string> = {
   PageUp: 'PgUp',
 };
 
-export function bindingLabel(b: Binding): string {
+export function bindingLabel(b: { code: string; ctrl?: boolean; shift?: boolean; alt?: boolean; action?: string; arg?: number }): string {
   const key = CODE_LABELS[b.code] ?? b.code.replace(/^Key/, '').replace(/^Digit/, '');
   return [b.ctrl && 'Ctrl', b.shift && 'Shift', b.alt && 'Alt', key].filter(Boolean).join('+');
 }

@@ -944,6 +944,326 @@ if (phase === 'main') {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  await step('request backend: curl, linked folder and git commands', async () => {
+    const http = await import('node:http');
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', () => {
+        if (req.url === '/login') {
+          res.writeHead(204, { 'set-cookie': 'sid=e2e; HttpOnly; Path=/' });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(js({ method: req.method, auth: req.headers.authorization ?? null, cookie: req.headers.cookie ?? null, body }));
+      });
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-collection-'));
+    const invoke = (cmd, args) => ev(`window.__TAURI_INTERNALS__.invoke(${js(cmd)}, ${js(args)})`);
+    try {
+      const jar = 'e2e/dev';
+      const login = await invoke('http_send', { id: 9001, request: { method: 'POST', url: `${base}/login`, cookieJar: jar } });
+      assert(login?.status === 204, `login: ${js(login)}`);
+      const res = await invoke('http_send', {
+        id: 9002,
+        request: {
+          method: 'POST',
+          url: `${base}/echo`,
+          cookieJar: jar,
+          headers: [{ name: 'Authorization', value: 'Bearer {{E2E_TOKEN}}' }],
+          secrets: [{ name: 'E2E_TOKEN', value: 'from-env' }],
+          body: { type: 'raw', text: '{"a":1}' },
+        },
+      });
+      const echo = JSON.parse(res?.body ?? 'null');
+      assert(res.status === 200 && echo?.auth === 'Bearer from-env' && echo.cookie === 'sid=e2e' && echo.body === '{"a":1}', js(res));
+      const cookies = await invoke('http_cookies', { key: jar });
+      assert(cookies?.length === 1 && cookies[0].httpOnly, js(cookies));
+      await invoke('http_discard', { id: 9002 });
+
+      await invoke('collection_write', { folder: dir, path: 'users/list.request.json', kind: 'request', text: '{}\n' });
+      await invoke('collection_create_folder', { folder: dir, path: 'orders' });
+      const scan = await invoke('collection_scan', { folder: dir });
+      assert(js(scan?.requests.map((r) => r.path)) === js(['users/list.request.json']) && scan.folders.includes('orders'), js(scan));
+      const bad = await ev(
+        `window.__TAURI_INTERNALS__.invoke('collection_write', { folder: ${js(dir)}, path: '../x.request.json', kind: 'request', text: '' }).then(() => 'written', (e) => String(e))`,
+      );
+      assert(bad.includes('Invalid name'), bad);
+      assert((await invoke('git_status', { folder: dir })) === null, 'a temporary folder is not a repository');
+    } finally {
+      server.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await step('requests: a linked folder, preview tabs, sending, cookies, saving, environments', async () => {
+    const http = await import('node:http');
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', () => {
+        if (req.url === '/login') {
+          res.writeHead(204, { 'set-cookie': 'sid=e2e; HttpOnly; Path=/' });
+          return res.end();
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(js({ path: req.url, method: req.method, auth: req.headers.authorization ?? null, tenant: req.headers['x-tenant'] ?? null, cookie: req.headers.cookie ?? null, body }));
+      });
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-requests-'));
+    const put = (rel, value) => {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), typeof value === 'string' ? value : JSON.stringify(value, null, 2) + '\n');
+    };
+    put('environments/dev.json', { variables: { baseUrl: base } });
+    put('environments/prod.json', { variables: { baseUrl: base }, protected: true });
+    put('.env', 'TENANT=acme-test\n');
+    put('.env.local', 'API_TOKEN=s3cret-e2e\n');
+    put('users/list.request.json', { method: 'GET', url: '{{baseUrl}}/users', headers: [{ name: 'X-Tenant', value: '{{TENANT}}' }], auth: { type: 'bearer', token: '{{API_TOKEN}}' } });
+    put('login.request.json', { method: 'POST', url: '{{baseUrl}}/login' });
+    put('me.request.json', { method: 'GET', url: '{{baseUrl}}/me' });
+    const row = (name) => `[...document.querySelectorAll('.req-row')].find(r => r.querySelector('.req-name').textContent === ${js(name)})`;
+    const active = `__t.active()`;
+    const send = async () => {
+      const before = await ev(`${active}.el.querySelector('.rq-status')?.textContent ?? ''`);
+      await ev(`${active}.el.querySelector('.rq-url').focus()`);
+      await key('Enter', 'Enter', 13, ['ctrl']);
+      await waitFor(`!!${active}.el.querySelector('.rq-status .chip') && ${active}.el.querySelector('.rq-status').textContent !== ${js(before)}`, 15000, 'response');
+      return ev(`${active}.el.querySelector('.rq-response-body').textContent`);
+    };
+    const menuItem = (text) => `[...document.querySelectorAll('.menu-item')].find(m => m.textContent.includes(${js(text)}))`;
+    try {
+      await click('.sidebar-header .icon-btn[title="New group"]');
+      await waitFor(`document.querySelectorAll('.dialog input').length >= 2`, 3000, 'group dialog');
+      await ev(`(() => { const [name, folder] = document.querySelectorAll('.dialog input.input'); name.value = 'API'; folder.value = ${js(dir)}; return true; })()`);
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Save').click()`);
+      await waitFor(`document.querySelectorAll('.req-row').length === 3 && !!document.querySelector('.req-folder-row')`, 8000, 'request tree');
+      assert((await ev(`document.querySelector('.env-pill')?.textContent`)) === 'dev', 'environment pill');
+
+      // A click previews; the next click replaces the preview; a double-click keeps it.
+      const tabs = await ev(`__t.ws.tabs.length`);
+      await ev(`${row('list')}.click()`);
+      await waitFor(`${active}?.kind === 'request' && __t.ws.activeTab.preview`, 5000, 'preview tab');
+      await ev(`${row('me')}.click()`);
+      await waitFor(`${active}?.ref.path === 'me.request.json'`, 5000, 'preview replaced');
+      assert((await ev(`__t.ws.tabs.length`)) === tabs + 1, 'the preview tab was reused');
+      await ev(`${row('me')}.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+      await waitFor(`!__t.ws.activeTab.preview`, 2000, 'pinned');
+
+      // Variables: plain values filled in, the secret by curl.
+      await ev(`${row('list')}.click()`);
+      await waitFor(`${active}?.ref.path === 'users/list.request.json'`, 5000, 'list open');
+      const listBody = await send();
+      assert(listBody.includes('"Bearer s3cret-e2e"') && listBody.includes('"acme-test"'), 'variables: ' + listBody.slice(0, 300));
+      await shot(path.join(OUT, '20-request-pane.png'));
+
+      // The console shows what ran, without the secret.
+      await ev(`[...${active}.el.querySelectorAll('.rq-tab')].find(b => b.textContent === 'Console').click()`);
+      const consoleText = await waitFor(`${active}.el.querySelector('.rq-console')?.textContent`, 3000, 'console');
+      assert(consoleText.includes('curl.exe') && consoleText.includes('> GET /users HTTP/1.1') && consoleText.includes('Bearer ••••••') && !consoleText.includes('s3cret-e2e'), 'console: ' + consoleText.slice(0, 600));
+      await shot(path.join(OUT, '21-request-console.png'));
+
+      // A variable used in a header opens the editor on itself.
+      await ev(`[...${active}.el.querySelectorAll('.rq-tab')].find(b => b.textContent.startsWith('Headers')).click()`);
+      await waitFor(`[...${active}.el.querySelectorAll('.rq-var-link')].some(b => b.textContent === '{{TENANT}}')`, 3000, 'variables used in headers');
+      await ev(`[...${active}.el.querySelectorAll('.rq-var-link')].find(b => b.textContent === '{{TENANT}}').click()`);
+      await waitFor(`document.querySelector('.variables-dialog .var-row.focus input.mono')?.value === 'TENANT'`, 3000, 'editor on TENANT');
+      await ev(`[...document.querySelectorAll('.variables-dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
+      await waitFor(`!document.querySelector('.variables-dialog')`, 2000, 'editor closed');
+
+      // Variables are edited in the app: a new one goes to the environment's file.
+      await ev(`[...${active}.el.querySelectorAll('.rq-tool')].find(b => b.textContent.includes('Variables')).click()`);
+      await waitFor(`!!document.querySelector('.variables-dialog .var-row:not(.var-head)')`, 3000, 'variables dialog');
+      await ev(`[...document.querySelectorAll('.variables-dialog .btn')].find(b => b.textContent.includes('Add variable')).click()`);
+      await ev(`(() => { const rows = document.querySelectorAll('.variables-dialog .var-row:not(.var-head)'); const [n, v] = rows[rows.length - 1].querySelectorAll('input.mono'); n.value = 'NEWVAR'; n.dispatchEvent(new Event('input')); v.value = 'hello'; v.dispatchEvent(new Event('input')); return true; })()`);
+      await sleep(400); // past the dialog's fade-in
+      await shot(path.join(OUT, '22-variables.png'));
+      await ev(`[...document.querySelectorAll('.variables-dialog .btn')].find(b => b.textContent === 'Save').click()`);
+      await waitFor(`!document.querySelector('.variables-dialog')`, 3000, 'dialog closed');
+      // A normal variable for every environment is shared: it goes to .env.
+      assert(fs.readFileSync(path.join(dir, '.env'), 'utf8').includes('NEWVAR=hello'), 'variable not saved');
+      assert((await ev(`${active}.el.querySelector('.rq-env').textContent`)) === 'dev', 'environment button');
+
+      // A login cookie is kept and sent with the next request.
+      await ev(`${row('login')}.click()`);
+      await waitFor(`${active}?.ref.path === 'login.request.json'`, 5000, 'login open');
+      await send();
+      await ev(`${row('me')}.click()`);
+      await waitFor(`${active}?.ref.path === 'me.request.json'`, 5000, 'me open');
+      assert((await send()).includes('sid=e2e'), 'cookie not sent');
+
+      // Editing marks it unsaved; Ctrl+S writes the file.
+      await ev(`(() => { const u = ${active}.el.querySelector('.rq-url'); u.value = '{{baseUrl}}/me?x=1'; u.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+      await waitFor(`${active}.dirty && !!document.querySelector('.req-row .dirty-dot')`, 2000, 'unsaved');
+      // Ctrl+S saves also when nothing in the pane has focus.
+      await ev(`document.activeElement.blur(), true`);
+      await key('KeyS', 's', 83, ['ctrl']);
+      await waitFor(`!${active}.dirty`, 3000, 'saved');
+      assert(JSON.parse(fs.readFileSync(path.join(dir, 'me.request.json'), 'utf8')).url === '{{baseUrl}}/me?x=1', 'file not written');
+
+      // A change on disk (a git pull) shows in a pane without unsaved changes.
+      put('me.request.json', { method: 'GET', url: '{{baseUrl}}/me?pulled=1' });
+      await waitFor(`${active}.el.querySelector('.rq-url').value === '{{baseUrl}}/me?pulled=1'`, 5000, 'reloaded from disk');
+
+      // Copy as curl leaves the secret to curl.
+      await ev(`${row('list')}.click()`);
+      await waitFor(`${active}?.ref.path === 'users/list.request.json'`, 5000, 'list open');
+      await ev(`[...${active}.el.querySelectorAll('.rq-tool')].find(b => b.textContent.includes('curl')).click()`);
+      await sleep(500);
+      const copied = await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_read')`);
+      assert(copied.includes('curl.exe') && copied.includes('--variable %API_TOKEN') && !copied.includes('s3cret'), 'copied: ' + copied);
+
+      // A protected environment asks before anything but GET (switched from the button next to Send).
+      await ev(`${active}.el.querySelector('.rq-env').click()`);
+      await waitFor(`!!${menuItem('prod')}`, 2000, 'environment menu');
+      await ev(`${menuItem('prod')}.click()`);
+      await waitFor(`document.querySelector('.env-pill')?.textContent === 'prod' && document.querySelector('.env-pill').classList.contains('protected')`, 3000, 'prod chosen');
+      await ev(`${row('login')}.click()`);
+      await waitFor(`${active}?.ref.path === 'login.request.json'`, 5000, 'login open');
+      await ev(`${active}.el.querySelector('.rq-send').click()`);
+      await waitFor(`document.querySelector('.dialog h2')?.textContent.includes('prod')`, 3000, 'confirm dialog');
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
+
+      // A request dragged onto a folder moves there; its open pane follows.
+      await ev(`(() => {
+        const dt = new DataTransfer();
+        const src = ${row('me')};
+        const dst = [...document.querySelectorAll('.req-folder-row')].find(r => r.textContent.includes('users'));
+        src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+        dst.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        dst.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+        return true;
+      })()`);
+      await waitFor(`__t.panes().some(p => p.kind === 'request' && p.ref.path === 'users/me.request.json')`, 5000, 'pane follows the move');
+      assert(fs.existsSync(path.join(dir, 'users', 'me.request.json')) && !fs.existsSync(path.join(dir, 'me.request.json')), 'file not moved');
+
+      // Request panes are saved with the workspace and reopen from their files.
+      const snap = await ev(`JSON.stringify(__t.ws.snapshot())`);
+      const saved = JSON.parse(snap).tabs.find((t) => t.root.request?.path === 'login.request.json');
+      assert(saved, 'request not in the snapshot: ' + snap);
+      await ev(`__t.ws.removeTab(__t.ws.activeTab)`);
+      await ev(`__t.ws.restoreTab(${js(saved)})`);
+      await waitFor(`__t.panes().some(p => p.kind === 'request' && p.ref.path === 'login.request.json')`, 3000, 'restored request pane');
+
+      // Clean up: close the request tabs and remove the group.
+      for (const t of await ev(`__t.ws.tabs.filter(t => __t.ws.panesOf(t).some(p => p.kind === 'request')).map(t => t.id)`)) await ev(`__t.ws.removeTab(__t.ws.tabs.find(x => x.id === ${js(t)}))`);
+      await ev(`[...document.querySelectorAll('.group-row')].find(r => r.querySelector('.group-name').textContent === 'API').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`!!${menuItem('Delete group')}`, 2000, 'group menu');
+      await ev(`${menuItem('Delete group')}.click()`);
+      await waitFor(`!!document.querySelector('.dialog .btn.danger')`, 2000, 'confirm');
+      await ev(`document.querySelector('.dialog .btn.danger').click()`);
+      await waitFor(`!document.querySelector('.req-row')`, 3000, 'group removed');
+    } finally {
+      server.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await step('git sync: Sync button, teammates\' changes, automatic commit and push', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-sync-'));
+    const [mine, theirs] = [path.join(root, 'mine'), path.join(root, 'theirs')];
+    git(root, 'init', '--quiet', '--bare', '-b', 'main', 'remote.git');
+    for (const dir of [mine, theirs]) {
+      git(root, 'clone', '--quiet', 'remote.git', path.basename(dir));
+      for (const [k, v] of [['user.name', 'E2E'], ['user.email', 'e2e@example.com'], ['commit.gpgsign', 'false'], ['core.autocrlf', 'false']]) git(dir, 'config', k, v);
+    }
+    const req = (url) => JSON.stringify({ method: 'GET', url }, null, 2) + '\n';
+    fs.mkdirSync(path.join(mine, 'api'));
+    fs.writeFileSync(path.join(mine, 'api', 'list.request.json'), req('https://api.example.com/v1'));
+    fs.writeFileSync(path.join(mine, 'api', '.gitignore'), '.env*.local\n');
+    git(mine, 'add', '.');
+    git(mine, 'commit', '--quiet', '-m', 'init');
+    git(mine, 'push', '--quiet', '-u', 'origin', 'main');
+    git(theirs, 'pull', '--quiet', 'origin', 'main');
+    git(theirs, 'branch', '--quiet', '--set-upstream-to=origin/main');
+    const badge = `document.querySelector('.group-row .sync-badge')`;
+    const active = `__t.active()`;
+    const menuItem = (text) => `[...document.querySelectorAll('.menu-item')].find(m => m.textContent.includes(${js(text)}))`;
+    try {
+      await click('.sidebar-header .icon-btn[title="New group"]');
+      await waitFor(`document.querySelectorAll('.dialog input').length >= 2`, 3000, 'group dialog');
+      await ev(`(() => { const [name, folder] = document.querySelectorAll('.dialog input.input'); name.value = 'Synced'; folder.value = ${js(path.join(mine, 'api'))}; return true; })()`);
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Save').click()`);
+      await waitFor(`${badge}?.textContent === '✓'`, 10000, 'in sync');
+      // Sync stays on the branch it started on (the config is saved a moment later).
+      const branchEnd = Date.now() + 5000;
+      while (JSON.parse(fs.readFileSync(CONFIG, 'utf8')).groups.find((g) => g.name === 'Synced')?.syncBranch !== 'main') {
+        if (Date.now() > branchEnd) throw new Error('branch not remembered');
+        await sleep(200);
+      }
+
+      // Manual: a save shows as a change; Sync commits, pulls and pushes.
+      await ev(`[...document.querySelectorAll('.req-row')].find(r => r.textContent.includes('list')).click()`);
+      await waitFor(`${active}?.kind === 'request'`, 5000, 'request open');
+      await ev(`(() => { const u = ${active}.el.querySelector('.rq-url'); u.value = 'https://api.example.com/v2'; u.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+      await key('KeyS', 's', 83, ['ctrl']);
+      await waitFor(`${badge}?.textContent === '●1'`, 5000, 'one change');
+      await ev(`${badge}.click()`);
+      await waitFor(`${badge}?.textContent === '✓'`, 20000, 'synced');
+      git(theirs, 'pull', '--quiet');
+      assert(fs.readFileSync(path.join(theirs, 'api', 'list.request.json'), 'utf8').includes('/v2'), 'not pushed');
+      assert(git(theirs, 'log', '-1', '--format=%s').trim() === 'Update list', 'commit message');
+
+      // A teammate's change comes in with Sync and shows in the open request.
+      fs.writeFileSync(path.join(theirs, 'api', 'list.request.json'), req('https://api.example.com/v3'));
+      git(theirs, 'commit', '--quiet', '-am', 'Teammate');
+      git(theirs, 'push', '--quiet');
+      await ev(`${badge}.click()`);
+      await waitFor(`${active}.el.querySelector('.rq-url').value === 'https://api.example.com/v3'`, 20000, "teammate's change in the pane");
+
+      // Automatic: a save is committed and pushed by itself.
+      await ev(`[...document.querySelectorAll('.group-row')].find(r => r.textContent.includes('Synced')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`!!${menuItem('Edit…')}`, 2000, 'group menu');
+      await ev(`${menuItem('Edit…')}.click()`);
+      await waitFor(`!!document.querySelector('.dialog select[data-field=sync]')`, 3000, 'group editor');
+      await ev(`(() => { const s = document.querySelector('.dialog select[data-field=sync]'); s.value = 'auto'; s.dispatchEvent(new Event('change')); document.querySelector('.dialog select[data-field=delay]').value = '10'; return true; })()`);
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Save').click()`);
+      await waitFor(`!document.querySelector('.dialog')`, 2000, 'editor closed');
+      await ev(`(() => { const u = ${active}.el.querySelector('.rq-url'); u.value = 'https://api.example.com/v4'; u.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+      await key('KeyS', 's', 83, ['ctrl']);
+      const pushed = async () => {
+        git(theirs, 'pull', '--quiet');
+        return fs.readFileSync(path.join(theirs, 'api', 'list.request.json'), 'utf8').includes('/v4');
+      };
+      const end = Date.now() + 30000;
+      while (!(await pushed())) {
+        if (Date.now() > end) throw new Error('automatic sync did not push');
+        await sleep(1000);
+      }
+      await waitFor(`${badge}?.textContent === '✓'`, 10000, 'in sync after the automatic push');
+
+      // Someone's own unpushed commit elsewhere in the repository: automatic sync pauses rather
+      // than push it along, and Sync asks first.
+      fs.writeFileSync(path.join(mine, 'notes.txt'), 'my own work\n');
+      git(mine, 'add', 'notes.txt');
+      git(mine, 'commit', '--quiet', '-m', 'Own work');
+      await ev(`(() => { const u = ${active}.el.querySelector('.rq-url'); u.value = 'https://api.example.com/v5'; u.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+      await key('KeyS', 's', 83, ['ctrl']);
+      await waitFor(`${badge}?.textContent === 'paused'`, 30000, 'paused for the other commit');
+      assert(!git(root, '--git-dir', path.join(root, 'remote.git'), 'log', '--format=%s', 'main').includes('Own work'), 'the other commit was pushed');
+      await ev(`${badge}.click()`);
+      await waitFor(`document.querySelector('.dialog h2')?.textContent === 'Sync other work too?'`, 5000, 'asks before syncing other work');
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
+
+      for (const t of await ev(`__t.ws.tabs.filter(t => __t.ws.panesOf(t).some(p => p.kind === 'request')).map(t => t.id)`)) await ev(`__t.ws.removeTab(__t.ws.tabs.find(x => x.id === ${js(t)}))`);
+      await ev(`[...document.querySelectorAll('.group-row')].find(r => r.textContent.includes('Synced')).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`!!${menuItem('Delete group')}`, 2000, 'group menu');
+      await ev(`${menuItem('Delete group')}.click()`);
+      await waitFor(`!!document.querySelector('.dialog .btn.danger')`, 2000, 'confirm');
+      await ev(`document.querySelector('.dialog .btn.danger').click()`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   await step('open terminals are saved for the next start', async () => {
     // A known layout: the session with a cmd split beside it (cmd focused), and a renamed PowerShell tab.
     await ev(`(() => { for (const t of [...__t.ws.tabs]) __t.ws.removeTab(t); return true; })()`);

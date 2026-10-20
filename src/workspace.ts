@@ -1,6 +1,6 @@
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
 import { baseName, ownerSession, sessionColor, uid } from './config';
-import { confirmDialog, toast } from './dialogs';
+import { choiceDialog, confirmDialog, toast } from './dialogs';
 import { h } from './dom';
 import { icons } from './icons';
 import type { Match } from './keys';
@@ -19,7 +19,9 @@ import {
   type SplitNode,
 } from './layout';
 import { Pane, type PaneHost } from './pane';
-import { layoutFromSnapshot, snapshotNode, type TabSnapshot, type WorkspaceSnapshot } from './snapshot';
+import { isTerminal, type HeaderAction, type WorkspacePane } from './panes';
+import type { RequestHost, RequestPane } from './requestPane';
+import { layoutFromSnapshot, snapshotNode, type RequestRef, type SnapshotLeaf, type TabSnapshot, type WorkspaceSnapshot } from './snapshot';
 import { store } from './store';
 import type { LaunchSpec, SavedSession, SplitPlacement } from './types';
 
@@ -37,15 +39,17 @@ export interface Tab {
   busy: boolean;
   bell: boolean;
   hiddenAt: number;
+  /** A preview: the next request opened with a single click replaces it (until it is edited). */
+  preview: boolean;
 }
 
 export interface WorkspaceEvents {
   /** Tabs or panes were added/removed/activated. */
   onChange(): void;
   /** The active pane or its title/cwd/state changed. */
-  onActiveInfo(pane: Pane | null): void;
+  onActiveInfo(pane: WorkspacePane | null): void;
   onShortcut(match: Match): boolean;
-  onPaneContextMenu(pane: Pane, e: MouseEvent): void;
+  onPaneContextMenu(pane: WorkspacePane, e: MouseEvent): void;
   onTabContextMenu(tab: Tab, e: MouseEvent): void;
   /** Some tab or pane's label, cwd, state or activity changed. */
   onTerminalsInfo(): void;
@@ -62,10 +66,10 @@ interface PaneDrop {
   side: FocusDirection;
 }
 
-export class Workspace implements PaneHost {
+export class Workspace implements PaneHost, RequestHost {
   tabs: Tab[] = [];
   activeTabId: string | null = null;
-  readonly panes = new Map<string, Pane>();
+  readonly panes = new Map<string, WorkspacePane>();
   private readonly paneTab = new Map<string, Tab>();
   private gpuOrder: string[] = [];
   readonly windowsBuild = store.sys.windowsBuild;
@@ -75,6 +79,10 @@ export class Workspace implements PaneHost {
   /** The tab being dragged, which can be dropped onto a pane of the visible tab to join its split. */
   private draggingTab: Tab | null = null;
   private readonly dropEl = h('div', { class: 'pane-drop', hidden: true });
+  /** The request pane a single click opened in a split ("Open requests in: split"); the next one replaces it. */
+  private previewSplitId: string | null = null;
+  /** Makes request panes (set by the app, which knows the linked folders). */
+  requestFactory: ((ref: RequestRef, host: RequestHost) => RequestPane | null) | null = null;
 
   constructor(
     private readonly tabsEl: HTMLElement,
@@ -108,12 +116,12 @@ export class Workspace implements PaneHost {
   settings = () => store.settings;
   resolveShell = (id: string) => store.resolveShell(id);
 
-  onFocus(pane: Pane): void {
+  onFocus(pane: WorkspacePane): void {
     const tab = this.paneTab.get(pane.id);
     if (tab && tab.activePaneId !== pane.id) this.setActivePane(pane.id, false);
   }
 
-  onInfoChange(pane: Pane): void {
+  onInfoChange(pane: WorkspacePane): void {
     const tab = this.paneTab.get(pane.id);
     if (!tab) return;
     this.updateTabEl(tab);
@@ -151,16 +159,22 @@ export class Workspace implements PaneHost {
     if (conn.legacyAlgorithms && !session.connection.legacyAlgorithms) toast(`"${session.name}" now allows old algorithms (Edit → SSH options).`);
   }
 
-  onShortcut(_pane: Pane, match: Match): boolean {
+  onEdited(pane: WorkspacePane): void {
+    const tab = this.paneTab.get(pane.id);
+    if (tab?.preview) this.pin(tab);
+    if (this.previewSplitId === pane.id) this.previewSplitId = null;
+  }
+
+  onShortcut(_pane: WorkspacePane, match: Match): boolean {
     return this.events.onShortcut(match);
   }
 
-  onContextMenu(pane: Pane, e: MouseEvent): void {
+  onContextMenu(pane: WorkspacePane, e: MouseEvent): void {
     this.setActivePane(pane.id, true);
     this.events.onPaneContextMenu(pane, e);
   }
 
-  onHeaderAction(pane: Pane, action: 'zoom' | 'tab' | 'close'): void {
+  onHeaderAction(pane: WorkspacePane, action: HeaderAction): void {
     if (action === 'zoom') this.toggleZoom(pane.id);
     else if (action === 'tab') this.moveToNewTab(pane.id);
     else void this.requestClosePane(pane.id);
@@ -172,19 +186,25 @@ export class Workspace implements PaneHost {
     return this.tabs.find((t) => t.id === this.activeTabId) ?? null;
   }
 
-  activePane(): Pane | null {
+  activePane(): WorkspacePane | null {
     const tab = this.activeTab;
     return tab ? (this.panes.get(tab.activePaneId) ?? null) : null;
   }
 
-  tabOf(pane: Pane): Tab | undefined {
+  /** The active pane when it is a terminal. */
+  activeTerminal(): Pane | null {
+    const pane = this.activePane();
+    return isTerminal(pane) ? pane : null;
+  }
+
+  tabOf(pane: WorkspacePane): Tab | undefined {
     return this.paneTab.get(pane.id);
   }
 
-  panesOf(tab: Tab): Pane[] {
+  panesOf(tab: Tab): WorkspacePane[] {
     return paneIds(tab.root)
       .map((id) => this.panes.get(id))
-      .filter((p): p is Pane => !!p);
+      .filter((p): p is WorkspacePane => !!p);
   }
 
   tabLabel(tab: Tab): string {
@@ -193,18 +213,20 @@ export class Workspace implements PaneHost {
   }
 
   /** The saved session a pane is in now: it follows `cd` (see ownerSession). A connection stays with its session. */
-  ownerOf(pane: Pane): SavedSession | undefined {
+  ownerOf(pane: WorkspacePane): SavedSession | undefined {
+    if (!isTerminal(pane)) return undefined;
     if (pane.connection) return store.session(pane.spec.sessionId);
     return ownerSession(store.config.sessions, pane.cwd, pane.spec.sessionId);
   }
 
   /** Colour of the session a pane is in now (tab stripe and pane header). */
-  private paneColor(pane: Pane, owner = this.ownerOf(pane)): string {
-    return owner ? sessionColor(store.config.groups, owner) : pane.spec.color;
+  private paneColor(pane: WorkspacePane, owner = this.ownerOf(pane)): string {
+    return owner ? sessionColor(store.config.groups, owner) : pane.color;
   }
 
-  /** A terminal's name, shared by its tab and its entry in the sidebar tree. */
-  paneLabel(pane: Pane): string {
+  /** A pane's name, shared by its tab and its entry in the sidebar tree. */
+  paneLabel(pane: WorkspacePane): string {
+    if (!isTerminal(pane)) return pane.name;
     const owner = this.ownerOf(pane);
     // Claude Code animates a spinner at the start of its title; leave it out to keep the label stable.
     const title = pane.title.replace(/^[^\p{L}\p{N}]+/u, '').trim();
@@ -247,6 +269,12 @@ export class Workspace implements PaneHost {
 
   open(spec: LaunchSpec, placement: SplitPlacement = 'tab', targetPaneId?: string): Pane {
     const pane = new Pane(spec, this);
+    this.add(pane, placement, targetPaneId);
+    return pane;
+  }
+
+  /** Shows a new pane in a tab of its own, or split next to `targetPaneId` (default: the active pane). */
+  add(pane: WorkspacePane, placement: SplitPlacement = 'tab', targetPaneId?: string): void {
     this.panes.set(pane.id, pane);
     const targetTab = targetPaneId ? this.paneTab.get(targetPaneId) : this.activeTab;
 
@@ -257,6 +285,7 @@ export class Workspace implements PaneHost {
       tab = targetTab;
       const target = targetPaneId ?? tab.activePaneId;
       tab.zoomedPaneId = null;
+      tab.preview = false;
       tab.root = splitPane(tab.root, target, pane.id, placement === 'right' ? 'row' : 'column');
     }
     this.paneTab.set(pane.id, tab);
@@ -269,7 +298,6 @@ export class Workspace implements PaneHost {
     this.ensureGpu(tab);
     void pane.start();
     this.events.onChange();
-    return pane;
   }
 
   /** Adds an empty tab after `after` (default: the active tab). */
@@ -286,6 +314,7 @@ export class Workspace implements PaneHost {
       busy: false,
       bell: false,
       hiddenAt: 0,
+      preview: false,
     };
     this.areaEl.append(tab.el);
     const afterIdx = after ? this.tabs.indexOf(after) : -1;
@@ -329,6 +358,7 @@ export class Workspace implements PaneHost {
     const target = this.paneTab.get(targetPaneId);
     if (!target || target === source) return;
     target.zoomedPaneId = null;
+    target.preview = false;
     target.root = insertNode(target.root, targetPaneId, moved, side === 'left' || side === 'right' ? 'row' : 'column', side === 'left' || side === 'up');
     for (const id of paneIds(moved)) this.paneTab.set(id, target);
     this.renderLayout(target);
@@ -382,10 +412,7 @@ export class Workspace implements PaneHost {
     const tabs: TabSnapshot[] = [];
     let activeTab = 0;
     for (const tab of this.tabs) {
-      const root = snapshotNode(tab.root, (id) => {
-        const p = this.panes.get(id);
-        return p ? { ...p.spec, cwd: p.cwd, env: { ...p.spec.env } } : null;
-      });
+      const root = snapshotNode(tab.root, (id) => this.panes.get(id)?.snapshot() ?? null);
       if (!root) continue;
       if (tab.id === this.activeTabId) activeTab = tabs.length;
       tabs.push({ title: tab.customTitle, activePane: Math.max(0, paneIds(tab.root).indexOf(tab.activePaneId)), root });
@@ -393,19 +420,105 @@ export class Workspace implements PaneHost {
     return { version: 1, activeTab, tabs };
   }
 
+  /** A pane for a saved one; null when it can't be reopened. */
+  private paneFromSnapshot(leaf: SnapshotLeaf): WorkspacePane | null {
+    if ('pane' in leaf) return new Pane(leaf.pane, this);
+    return this.requestFactory?.(leaf.request, this) ?? null;
+  }
+
+  /** The open pane of a request file, if any. */
+  requestPane(ref: RequestRef): RequestPane | undefined {
+    for (const p of this.panes.values()) {
+      if (p.kind === 'request' && (p as RequestPane).ref.groupId === ref.groupId && (p as RequestPane).ref.path === ref.path) return p as RequestPane;
+    }
+    return undefined;
+  }
+
+  /**
+   * Opens a request. One already open is focused. A `preview` replaces the preview tab, if there
+   * is one, so clicking through requests doesn't pile up tabs.
+   */
+  openRequest(ref: RequestRef, how: { preview: boolean; placement: SplitPlacement; targetPaneId?: string }): RequestPane | null {
+    const open = this.requestPane(ref);
+    if (open) {
+      const tab = this.paneTab.get(open.id);
+      if (tab && !how.preview && tab.preview) this.pin(tab);
+      this.setActivePane(open.id, true);
+      return open;
+    }
+    const pane = this.requestFactory?.(ref, this);
+    if (!pane) return null;
+    // A preview with unsaved changes, or with a request on its way, stays.
+    const replaceable = (p: WorkspacePane | undefined) => !!p && !p.dirty && !(p as RequestPane).isSending;
+    if (how.preview && how.placement === 'tab') {
+      const old = this.tabs.find((t) => t.preview && paneIds(t.root).length === 1);
+      const oldPane = old && this.panes.get(old.activePaneId);
+      if (old && replaceable(oldPane)) {
+        this.replacePane(old, oldPane!, pane);
+        return pane;
+      }
+    } else if (how.preview && this.previewSplitId) {
+      const oldPane = this.panes.get(this.previewSplitId);
+      const tab = oldPane && this.paneTab.get(oldPane.id);
+      if (tab && replaceable(oldPane)) {
+        this.replacePane(tab, oldPane!, pane);
+        this.previewSplitId = pane.id;
+        return pane;
+      }
+    }
+    this.add(pane, how.placement, how.targetPaneId);
+    const tab = this.paneTab.get(pane.id);
+    if (tab && how.preview && how.placement === 'tab' && paneIds(tab.root).length === 1) {
+      tab.preview = true;
+      this.updateTabEl(tab);
+    }
+    if (how.preview && how.placement !== 'tab') this.previewSplitId = pane.id;
+    return pane;
+  }
+
+  /** Puts `pane` where `old` is in `tab` (a preview's place). */
+  private replacePane(tab: Tab, old: WorkspacePane, pane: WorkspacePane): void {
+    const swap = (n: LayoutNode): LayoutNode =>
+      n.type === 'pane' ? (n.paneId === old.id ? leaf(pane.id) : n) : { ...n, children: n.children.map(swap) };
+    this.disposePane(old);
+    this.panes.set(pane.id, pane);
+    this.paneTab.set(pane.id, tab);
+    tab.root = swap(tab.root);
+    tab.activePaneId = pane.id;
+    tab.zoomedPaneId = null;
+    this.renderLayout(tab);
+    pane.mount();
+    this.activateTab(tab.id, false);
+    this.setActivePane(pane.id, true);
+    void pane.start();
+    this.events.onChange();
+  }
+
+  /** A preview tab becomes an ordinary one. */
+  pin(tab: Tab): void {
+    if (!tab.preview) return;
+    tab.preview = false;
+    this.updateTabEl(tab);
+  }
+
   /**
    * Reopens a saved tab with all its splits; every pane starts its shell again. Connections wait
    * for Enter unless Settings say to reconnect, so a start doesn't fire a burst of logins.
+   * Null when none of its panes could be reopened.
    */
-  restoreTab(saved: TabSnapshot): Tab {
-    const created: Pane[] = [];
-    const root = layoutFromSnapshot(saved.root, (spec) => {
-      const pane = new Pane(spec, this);
+  restoreTab(saved: TabSnapshot): Tab | null {
+    // In layout order, with a gap for each pane that couldn't be reopened (activePane counts those).
+    const slots: (WorkspacePane | null)[] = [];
+    const root = layoutFromSnapshot(saved.root, (leaf) => {
+      const pane = this.paneFromSnapshot(leaf);
+      slots.push(pane);
+      if (!pane) return null;
       this.panes.set(pane.id, pane);
-      created.push(pane);
       return pane.id;
     });
-    const active = created[saved.activePane] ?? created[0];
+    const created = slots.filter((p): p is WorkspacePane => !!p);
+    if (!root || !created.length) return null;
+    const active = slots[saved.activePane] ?? created[0];
     const tab = this.createTab(root, active.id);
     tab.customTitle = saved.title;
     for (const p of created) this.paneTab.set(p.id, tab);
@@ -417,7 +530,7 @@ export class Workspace implements PaneHost {
     this.setActivePane(active.id, false);
     this.ensureGpu(tab);
     for (const p of created) {
-      if (p.connection && !store.settings.reconnectOnStart) p.showIdle();
+      if (isTerminal(p) && p.connection && !store.settings.reconnectOnStart) p.showIdle();
       else void p.start();
     }
     this.events.onChange();
@@ -606,7 +719,8 @@ export class Workspace implements PaneHost {
       if (e.button === 1) void this.requestCloseTab(tab.id);
     });
     el.addEventListener('click', () => this.activateTab(tab.id));
-    el.addEventListener('dblclick', () => this.events.onShortcut({ action: 'renameTab' }));
+    // Double-click keeps a preview tab; on any other it renames.
+    el.addEventListener('dblclick', () => (tab.preview ? this.pin(tab) : this.events.onShortcut({ action: 'renameTab' })));
     // The menu leaves the current tab showing, so a background tab can be moved into its split.
     el.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -660,25 +774,38 @@ export class Workspace implements PaneHost {
     const active = this.panes.get(tab.activePaneId);
     const label = this.tabLabel(tab);
     const progress = panes.some((p) => p.progress);
-    const exited = panes.length > 0 && panes.every((p) => p.state === 'exited' || p.state === 'error' || p.state === 'idle');
+    const exited = panes.length > 0 && panes.every((p) => p.ended);
     (el.querySelector('.tab-label') as HTMLElement).textContent = label;
     el.title = [label, active?.title && active.title !== label ? active.title : '', active?.location, panes.length > 1 ? `${panes.length} panes` : '']
       .filter(Boolean)
       .join('\n');
     el.classList.toggle('active', tab.id === this.activeTabId);
     el.classList.toggle('exited', exited);
+    el.classList.toggle('preview', tab.preview);
     el.style.setProperty('--session-color', (active ? this.paneColor(active) : '') || 'transparent');
     for (const p of panes) {
+      if (!isTerminal(p)) continue;
       const owner = this.ownerOf(p);
       p.setIdentity(owner?.name ?? p.spec.name, this.paneColor(p, owner));
     }
     const status = el.querySelector('.tab-status') as HTMLElement;
-    const state = progress ? 'progress' : tab.bell ? 'bell' : tab.busy ? 'busy' : tab.unread ? 'unread' : '';
+    const dirty = panes.some((p) => p.dirty);
+    const state = progress ? 'progress' : tab.bell ? 'bell' : tab.busy ? 'busy' : tab.unread ? 'unread' : dirty ? 'dirty' : '';
     if (status.dataset.state !== state) {
       status.dataset.state = state;
       status.innerHTML = state === 'bell' ? icons.bell : '';
       status.title =
-        state === 'progress' ? 'Working…' : state === 'bell' ? 'Needs attention' : state === 'busy' ? 'Output in progress' : state === 'unread' ? 'New output' : '';
+        state === 'progress'
+          ? 'Working…'
+          : state === 'bell'
+            ? 'Needs attention'
+            : state === 'busy'
+              ? 'Output in progress'
+              : state === 'unread'
+                ? 'New output'
+                : state === 'dirty'
+                  ? 'Unsaved changes'
+                  : '';
     }
   }
 
@@ -740,11 +867,31 @@ export class Workspace implements PaneHost {
 
   // ---- closing --------------------------------------------------------
 
+  /**
+   * Asks what to do with unsaved changes in `panes`: true when they were saved or may be thrown
+   * away, false to keep them open.
+   */
+  async confirmUnsaved(panes: WorkspacePane[]): Promise<boolean> {
+    const dirty = panes.filter((p) => p.dirty);
+    if (!dirty.length) return true;
+    const names = dirty.map((p) => `"${p.name}"`).join(', ');
+    const answer = await choiceDialog(dirty.length > 1 ? 'Save the changes?' : `Save "${dirty[0].name}"?`, `${names} ${dirty.length > 1 ? 'have' : 'has'} changes that aren't saved.`, [
+      { label: 'Cancel', value: 'cancel' as const },
+      { label: "Don't save", value: 'discard' as const },
+      { label: 'Save', value: 'save' as const, kind: 'primary' },
+    ]);
+    if (answer === 'discard') return true;
+    if (answer !== 'save') return false;
+    for (const p of dirty) if (!(await p.save?.())) return false;
+    return true;
+  }
+
   async requestClosePane(paneId: string): Promise<void> {
     const pane = this.panes.get(paneId);
     if (!pane) return;
+    if (!(await this.confirmUnsaved([pane]))) return pane.focus();
     if (store.settings.confirmClose && (await pane.hasRunningProgram())) {
-      const why = pane.connection ? 'The connection is still open.' : 'A program is still running in this terminal.';
+      const why = !isTerminal(pane) ? 'A request is still on its way.' : pane.connection ? 'The connection is still open.' : 'A program is still running in this terminal.';
       const ok = await confirmDialog(`Close "${pane.name}"?`, why, 'Close', true);
       if (!ok) return pane.focus();
     }
@@ -754,6 +901,7 @@ export class Workspace implements PaneHost {
   async requestCloseTab(tabId: string): Promise<void> {
     const tab = this.tabs.find((t) => t.id === tabId);
     if (!tab) return;
+    if (!(await this.confirmUnsaved(this.panesOf(tab)))) return;
     if (store.settings.confirmClose) {
       const busy = (await Promise.all(this.panesOf(tab).map((p) => p.hasRunningProgram()))).filter(Boolean).length;
       if (busy) {
@@ -790,7 +938,7 @@ export class Workspace implements PaneHost {
     this.events.onChange();
   }
 
-  private disposePane(pane: Pane): void {
+  private disposePane(pane: WorkspacePane): void {
     pane.dispose();
     this.panes.delete(pane.id);
     this.paneTab.delete(pane.id);
@@ -824,8 +972,13 @@ export class Workspace implements PaneHost {
     for (const t of [...this.tabs]) if (t !== keep) this.removeTab(t);
   }
 
+  /** Panes with unsaved changes (asked about before quitting). */
+  unsavedPanes(): WorkspacePane[] {
+    return [...this.panes.values()].filter((p) => p.dirty);
+  }
+
   /** Panes whose shell is running a program (used to confirm quitting). */
-  async busyPanes(): Promise<Pane[]> {
+  async busyPanes(): Promise<WorkspacePane[]> {
     const all = [...this.panes.values()];
     const flags = await Promise.all(all.map((p) => p.hasRunningProgram()));
     return all.filter((_, i) => flags[i]);

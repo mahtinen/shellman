@@ -29,6 +29,23 @@ export function defaultSettings(): Settings {
     restoreTerminals: 'all',
     reconnectOnStart: false,
     sshPath: '',
+    requestPreviewTabs: true,
+    requestOpenIn: 'tab',
+    responseLayout: 'auto',
+    responseWrap: false,
+    requestTimeout: 30,
+    requestFollowRedirects: true,
+    responseMaxMb: 10,
+    confirmProtectedSend: true,
+    hideSecrets: true,
+    warnSecretsOnSave: true,
+    saveOnSend: false,
+    copyCurlShell: 'powershell',
+    proxyMode: 'none',
+    proxyUrl: '',
+    curlPath: '',
+    opPath: '',
+    opAccount: '',
   };
 }
 
@@ -107,6 +124,23 @@ export function normalizeConfig(raw: unknown): Config {
     restoreTerminals: oneOf(s.restoreTerminals, ['all', 'shells', 'off'] as const, d.restoreTerminals),
     reconnectOnStart: bool(s.reconnectOnStart, d.reconnectOnStart),
     sshPath: str(s.sshPath, d.sshPath).trim(),
+    requestPreviewTabs: bool(s.requestPreviewTabs, d.requestPreviewTabs),
+    requestOpenIn: oneOf(s.requestOpenIn, ['tab', 'split'] as const, d.requestOpenIn),
+    responseLayout: oneOf(s.responseLayout, ['auto', 'below', 'right'] as const, d.responseLayout),
+    responseWrap: bool(s.responseWrap, d.responseWrap),
+    requestTimeout: Math.round(num(s.requestTimeout, d.requestTimeout, 1, 3600)),
+    requestFollowRedirects: bool(s.requestFollowRedirects, d.requestFollowRedirects),
+    responseMaxMb: Math.round(num(s.responseMaxMb, d.responseMaxMb, 1, 500)),
+    confirmProtectedSend: bool(s.confirmProtectedSend, d.confirmProtectedSend),
+    hideSecrets: bool(s.hideSecrets, d.hideSecrets),
+    warnSecretsOnSave: bool(s.warnSecretsOnSave, d.warnSecretsOnSave),
+    saveOnSend: bool(s.saveOnSend, d.saveOnSend),
+    copyCurlShell: oneOf(s.copyCurlShell, ['powershell', 'cmd', 'bash'] as const, d.copyCurlShell),
+    proxyMode: oneOf(s.proxyMode, ['none', 'environment', 'custom'] as const, d.proxyMode),
+    proxyUrl: str(s.proxyUrl, d.proxyUrl).trim(),
+    curlPath: str(s.curlPath, d.curlPath).trim(),
+    opPath: str(s.opPath, d.opPath).trim(),
+    opAccount: str(s.opAccount, d.opAccount).trim(),
   };
 
   const groups: Group[] = [];
@@ -117,7 +151,21 @@ export function normalizeConfig(raw: unknown): Config {
       const id = str(g.id) || uid('g-');
       if (groupIds.has(id)) continue;
       groupIds.add(id);
-      groups.push({ id, name: str(g.name) || 'Group', parentId: str(g.parentId) || null, color: str(g.color), collapsed: bool(g.collapsed, false) });
+      groups.push({
+        id,
+        name: str(g.name) || 'Group',
+        parentId: str(g.parentId) || null,
+        color: str(g.color),
+        collapsed: bool(g.collapsed, false),
+        folder: str(g.folder).trim(),
+        env: str(g.env),
+        sync: oneOf(g.sync, ['off', 'manual', 'auto'] as const, 'manual'),
+        syncPush: oneOf(g.syncPush, ['push', 'commit'] as const, 'push'),
+        syncCheck: [-1, 0, 60, 180, 300, 600].includes(g.syncCheck as number) ? (g.syncCheck as number) : 180,
+        syncDelay: [10, 60, 300].includes(g.syncDelay as number) ? (g.syncDelay as number) : 60,
+        syncBranch: str(g.syncBranch),
+        commitTemplate: str(g.commitTemplate) || 'Update {request}',
+      });
     }
   }
   fixParents(groups, groupIds);
@@ -168,7 +216,7 @@ function fixParents(groups: Group[], ids: Set<string>): void {
 }
 
 export function newGroup(name: string, parentId: string | null = null, color = ''): Group {
-  return { id: uid('g-'), name, parentId, color, collapsed: false };
+  return { id: uid('g-'), name, parentId, color, collapsed: false, folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
 }
 
 /** The colour a group gives its sessions: its own, or the nearest one from the groups it is in. */

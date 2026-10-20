@@ -73,23 +73,30 @@ static NEXT_TMP: AtomicU32 = AtomicU32::new(0);
 
 pub fn save_file(dir: &Path, name: &str, value: &Value) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    let path = dir.join(name);
+    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+    write_atomic(&dir.join(name), text.as_bytes(), true)
+}
+
+/// Writes `bytes` to `path` (whose folder exists) through a temporary file next to it, so the file
+/// is always either the old or the new version. `backup` keeps the old one as `<name>.bak`.
+pub fn write_atomic(path: &Path, bytes: &[u8], backup: bool) -> Result<(), String> {
+    let dir = path.parent().ok_or_else(|| format!("Invalid path: {}", path.display()))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     // Unique per process and save, so overlapping saves never rename each other's half-written file.
     let tmp: PathBuf = dir.join(format!("{name}.{}-{}.tmp", std::process::id(), NEXT_TMP.fetch_add(1, Ordering::Relaxed)));
-    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     let written = (|| -> std::io::Result<()> {
         let mut f = fs::File::create(&tmp)?;
-        f.write_all(text.as_bytes())?;
+        f.write_all(bytes)?;
         f.sync_all()
     })();
     if let Err(e) = written {
         let _ = fs::remove_file(&tmp);
         return Err(format!("Could not save {}: {e}", path.display()));
     }
-    if path.exists() {
-        let _ = fs::copy(&path, dir.join(format!("{name}.bak")));
+    if backup && path.exists() {
+        let _ = fs::copy(path, dir.join(format!("{name}.bak")));
     }
-    fs::rename(&tmp, &path).map_err(|e| {
+    fs::rename(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("Could not save {}: {e}", path.display())
     })

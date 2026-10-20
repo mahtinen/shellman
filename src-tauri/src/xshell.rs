@@ -74,7 +74,7 @@ fn walk(dir: &Path, folder: &mut Vec<String>, out: &mut Vec<XshFile>) -> Result<
 }
 
 /// XShell 6 and later write UTF-16 (little endian, with a byte-order mark); older versions UTF-8.
-fn decode(bytes: &[u8]) -> String {
+pub(crate) fn decode(bytes: &[u8]) -> String {
     let utf16 = |le: bool, b: &[u8]| {
         let units: Vec<u16> = b
             .chunks_exact(2)

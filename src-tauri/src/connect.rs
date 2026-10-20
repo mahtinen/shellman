@@ -164,7 +164,7 @@ pub fn agent_keys(ssh_path: &str) -> Result<AgentKeys, String> {
 }
 
 /// 64-bit FNV-1a, for stable file names.
-fn fnv1a(s: &str) -> u64 {
+pub(crate) fn fnv1a(s: &str) -> u64 {
     s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
 
@@ -287,7 +287,7 @@ pub fn build_connection(c: &Connection, client: &Path, key_file: Option<&Path>, 
     })
 }
 
-fn system32() -> PathBuf {
+pub(crate) fn system32() -> PathBuf {
     std::env::var_os("SystemRoot")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))

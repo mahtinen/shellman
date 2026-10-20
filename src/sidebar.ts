@@ -1,8 +1,12 @@
+import { collections, type RequestEntry } from './collections';
+import { gitSync } from './gitSync';
 import { childGroups, groupAndDescendants, groupColor, groupOptions, moveGroup, sessionColor } from './config';
 import { connectionKindName, connectionLabel, connectionTarget, keyLabel } from './connection';
 import { h } from './dom';
 import { icons } from './icons';
 import { showMenu, showMenuBelow, type MenuEntry } from './menu';
+import type { OpenHow } from './requestActions';
+import { requestFolder, requestName } from './requestFile';
 import { shellEntries } from './sessionEditor';
 import { store } from './store';
 import type { Group, SavedSession, SplitPlacement } from './types';
@@ -46,7 +50,23 @@ export interface SidebarActions {
   terminalMenu(paneId: string, e: MouseEvent): void;
   settings(): void;
   shortcuts(): void;
+  /** Requests of a group's linked folder. */
+  openRequest(group: Group, path: string, how: OpenHow): void;
+  requestMenu(group: Group, path: string, e: MouseEvent): void;
+  folderMenu(group: Group, folder: string, e: MouseEvent): void;
+  /** Group menu entries about requests (link a folder, new request, import, environments). */
+  groupRequestEntries(group: Group): MenuEntry[];
+  envMenu(group: Group, anchor: HTMLElement): void;
+  /** Open request panes (`groupId/path`), those with unsaved changes, and the active one. */
+  openRequests(): { open: string[]; dirty: string[]; active: string | null };
+  /** Drag and drop within a linked folder: into `folder` ('' = its top). */
+  moveRequest(group: Group, path: string, folder: string): void;
+  moveFolder(group: Group, folder: string, target: string): void;
 }
+
+const REQUEST_DRAG = 'application/x-shellman-request';
+
+const METHOD_LABEL: Record<string, string> = { DELETE: 'DEL', OPTIONS: 'OPT', PATCH: 'PATCH' };
 
 const SESSION_DRAG = 'application/x-shellman-session';
 const GROUP_DRAG = 'application/x-shellman-group';
@@ -61,11 +81,16 @@ export class Sidebar {
   /** The group being dragged (dragover can't read the drag data). */
   private draggedGroup: string | null = null;
   private refreshQueued = false;
+  /** Folders of linked groups that are folded (`groupId/folder`), for this run. */
+  private readonly foldedFolders = new Set<string>();
+  private requestsState: { open: Set<string>; dirty: Set<string>; active: string | null } = { open: new Set(), dirty: new Set(), active: null };
+  /** The request or folder being dragged (dragover can't read the drag data). */
+  private draggedItem: { groupId: string; path: string; folder: boolean } | null = null;
 
   constructor(private readonly actions: SidebarActions) {
     this.search = h('input', {
       class: 'input small sidebar-search',
-      placeholder: 'Filter sessions',
+      placeholder: 'Filter sessions and requests',
       spellcheck: false,
       oninput: () => this.render(),
       onkeydown: (e: KeyboardEvent) => {
@@ -137,6 +162,11 @@ export class Sidebar {
     return [s.name, s.cwd, s.command, s.connection ? connectionLabel(s.connection) : ''].some((f) => f.toLowerCase().includes(q));
   }
 
+  private matchesRequest(r: RequestEntry): boolean {
+    const q = this.search.value.trim().toLowerCase();
+    return !q || [requestName(r.path), r.path, r.doc.url].some((f) => f.toLowerCase().includes(q));
+  }
+
   /** Sessions in the order they are shown (subgroups before a group's own sessions). */
   private visibleSessions(): SavedSession[] {
     const { sessions, groups } = store.config;
@@ -162,13 +192,20 @@ export class Sidebar {
       this.refreshQueued = false;
       // Re-rendering mid-drag would drop the drag source and drop targets.
       if (this.dragging) return;
-      if (JSON.stringify([...this.actions.terminals()]) !== this.termsKey) this.render();
+      if (this.stateKey() !== this.termsKey) this.render();
     });
+  }
+
+  /** What the open terminals and requests look like, to re-render only when it changed. */
+  private stateKey(): string {
+    return JSON.stringify([[...this.actions.terminals()], this.actions.openRequests()]);
   }
 
   render(): void {
     this.terms = this.actions.terminals();
-    this.termsKey = JSON.stringify([...this.terms]);
+    const reqs = this.actions.openRequests();
+    this.requestsState = { open: new Set(reqs.open), dirty: new Set(reqs.dirty), active: reqs.active };
+    this.termsKey = this.stateKey();
     const { sessions, groups } = store.config;
     const filtering = !!this.search.value.trim();
     const rows: HTMLElement[] = [];
@@ -217,8 +254,9 @@ export class Sidebar {
     const { sessions, groups } = store.config;
     const inside = groupAndDescendants(groups, g.id);
     const members = sessions.filter((s) => s.groupId && inside.has(s.groupId));
-    if (filtering && !members.some((s) => this.matches(s))) return [];
-    const row = this.groupRow(g, members.length, depth);
+    const requests = groups.filter((x) => inside.has(x.id) && x.folder).flatMap((x) => collections.get(x.id)?.requests ?? []);
+    if (filtering && !members.some((s) => this.matches(s)) && !requests.some((r) => this.matchesRequest(r))) return [];
+    const row = this.groupRow(g, members.length + requests.length, depth, members.length);
     if (g.collapsed && !filtering) return [row];
     const body = h(
       'div',
@@ -226,6 +264,7 @@ export class Sidebar {
       { class: 'group-body', style: `--depth:${depth}` },
       ...childGroups(groups, g.id).flatMap((c) => this.groupRows(c, depth + 1, filtering)),
       ...sessions.filter((s) => s.groupId === g.id && this.matches(s)).flatMap((s) => this.sessionRows(s)),
+      ...(g.folder ? this.requestRows(g, filtering) : []),
     );
     if (!body.childElementCount) body.append(h('div', { class: 'group-empty' }, 'Drop sessions here'));
     return [row, body];
@@ -238,19 +277,32 @@ export class Sidebar {
     return y < 0.25 ? 'before' : y > 0.75 ? 'after' : 'into';
   }
 
-  private groupRow(g: Group, count: number, depth: number): HTMLElement {
+  private groupRow(g: Group, count: number, depth: number, sessions = count): HTMLElement {
     const color = groupColor(store.config.groups, g.id);
+    const env = g.folder ? collections.env(g) : '';
+    const envDoc = env ? collections.environment(g) : undefined;
     const row = h(
       'div',
       {
         class: `group-row${g.collapsed ? ' collapsed' : ''}`,
         draggable: true,
-        title: `${g.name} (${count})`,
+        title: `${g.name} (${count})${g.folder ? `\nRequests: ${g.folder}` : ''}`,
         style: `--depth:${depth}${color ? `;--group-color:${color}` : ''}`,
       },
       h('span', { class: 'chevron', html: g.collapsed ? icons.chevronRight : icons.chevronDown }),
       h('span', { class: 'group-icon', html: icons.folder }),
       h('span', { class: 'group-name' }, g.name),
+      env
+        ? h('button', {
+            class: `env-pill${envDoc?.protected ? ' protected' : ''}`,
+            title: `Environment: ${env}${envDoc?.protected ? ' (protected)' : ''}. Click to change.`,
+            onclick: (e: MouseEvent) => {
+              e.stopPropagation();
+              this.actions.envMenu(g, e.currentTarget as HTMLElement);
+            },
+          }, env)
+        : null,
+      this.syncBadge(g),
       h('span', { class: 'group-count' }, String(count)),
     );
     row.addEventListener('click', () => store.update((c) => {
@@ -260,10 +312,12 @@ export class Sidebar {
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const entries: MenuEntry[] = [
-        { label: 'Open all in tabs', icon: 'play', disabled: !count, action: () => this.actions.openGroup(g) },
+        { label: 'Open all sessions in tabs', icon: 'play', disabled: !sessions, action: () => this.actions.openGroup(g) },
         { label: 'New session in group…', icon: 'plus', action: () => this.actions.create(g.id) },
         { label: 'New subgroup…', icon: 'folderPlus', action: () => this.actions.createGroup(g.id) },
         { label: 'Import sessions here…', icon: 'globe', action: () => this.actions.importSessions(g.id) },
+        'separator',
+        ...this.actions.groupRequestEntries(g),
         'separator',
         { label: 'Edit…', icon: 'edit', action: () => this.actions.editGroup(g) },
         { label: 'Delete group', icon: 'trash', danger: true, action: () => this.actions.removeGroup(g) },
@@ -297,6 +351,7 @@ export class Sidebar {
         row.classList.toggle('drop-after', zone === 'after');
       }
     });
+    if (g.folder) this.dropTarget(row, g, '');
     row.addEventListener('dragleave', () => row.classList.remove('drop-into', 'drop-before', 'drop-after'));
     row.addEventListener('drop', (e) => {
       row.classList.remove('drop-into', 'drop-before', 'drop-after');
@@ -317,6 +372,158 @@ export class Sidebar {
         });
       }
     });
+    return row;
+  }
+
+  /** The git sync state of a linked group; a click syncs (or settles a conflict). */
+  private syncBadge(g: Group): HTMLElement | null {
+    const b = gitSync.badge(g);
+    if (!b) return null;
+    return h(
+      'button',
+      {
+        class: `sync-badge ${b.kind}`,
+        title: b.title,
+        onclick: (e: MouseEvent) => {
+          e.stopPropagation();
+          const problem = gitSync.get(g.id)?.problem;
+          if (problem?.kind === 'conflict') void gitSync.resolve(g, problem.files);
+          else void gitSync.sync(g);
+        },
+      },
+      b.text,
+    );
+  }
+
+  /** The folders and requests of a linked group's folder, as a tree. */
+  private requestRows(g: Group, filtering: boolean): HTMLElement[] {
+    const c = collections.get(g.id);
+    if (!c) return [h('div', { class: 'req-note' }, 'Reading the folder…')];
+    if (c.error) return [h('div', { class: 'req-note error', title: c.error }, c.error)];
+    const walk = (folder: string, level: number): HTMLElement[] => {
+      const { folders, requests } = collections.children(g.id, folder);
+      const out: HTMLElement[] = [];
+      for (const f of folders) {
+        const inside = c.requests.filter((r) => r.path.startsWith(`${f}/`));
+        if (filtering && !inside.some((r) => this.matchesRequest(r))) continue;
+        const folded = !filtering && this.foldedFolders.has(`${g.id}/${f}`);
+        out.push(this.folderRow(g, f, level, folded, inside.length));
+        if (!folded) out.push(...walk(f, level + 1));
+      }
+      for (const r of requests) if (this.matchesRequest(r)) out.push(this.requestRow(g, r, level));
+      return out;
+    };
+    const rows = walk('', 0);
+    if (!c.requests.length && !filtering)
+      rows.push(h('div', { class: 'req-note' }, 'No requests yet. Right-click the group for New request, Paste curl command or Import from Postman.'));
+    return rows;
+  }
+
+  /** Whether the dragged request or folder may go into `folder` of `g`. */
+  private canDrop(g: Group, folder: string): boolean {
+    const d = this.draggedItem;
+    if (!d || d.groupId !== g.id) return false;
+    if (!d.folder) return requestFolder(d.path) !== folder;
+    return folder !== d.path && !folder.startsWith(`${d.path}/`) && requestFolder(d.path) !== folder;
+  }
+
+  /** Lets a request or folder of the same group be dropped on `row`, into `folder`. */
+  private dropTarget(row: HTMLElement, g: Group, folder: string): void {
+    row.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer?.types.includes(REQUEST_DRAG) || !this.canDrop(g, folder)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      row.classList.add('drop-into');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop-into'));
+    row.addEventListener('drop', (e) => {
+      row.classList.remove('drop-into');
+      const d = this.draggedItem;
+      if (!e.dataTransfer?.types.includes(REQUEST_DRAG) || !d || !this.canDrop(g, folder)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.draggedItem = null;
+      if (d.folder) this.actions.moveFolder(g, d.path, folder);
+      else this.actions.moveRequest(g, d.path, folder);
+    });
+  }
+
+  /** Makes a request or folder row draggable. */
+  private dragSource(row: HTMLElement, g: Group, path: string, folder: boolean): void {
+    row.draggable = true;
+    row.addEventListener('dragstart', (e) => {
+      e.stopPropagation();
+      e.dataTransfer?.setData(REQUEST_DRAG, `${g.id}\n${path}`);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+      this.dragging = true;
+      this.draggedItem = { groupId: g.id, path, folder };
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      this.dragging = false;
+      this.draggedItem = null;
+      this.refreshTerminals();
+    });
+  }
+
+  private folderRow(g: Group, folder: string, level: number, folded: boolean, count: number): HTMLElement {
+    const row = h(
+      'div',
+      { class: 'req-folder-row', style: `--level:${level}`, title: `${folder}\nDrag requests or folders here to move them in.` },
+      h('span', { class: 'chevron', html: folded ? icons.chevronRight : icons.chevronDown }),
+      h('span', { class: 'group-icon', html: icons.folder }),
+      h('span', { class: 'group-name' }, folder.split('/').pop() ?? folder),
+      h('span', { class: 'group-count' }, String(count)),
+    );
+    row.addEventListener('click', () => {
+      const key = `${g.id}/${folder}`;
+      if (this.foldedFolders.has(key)) this.foldedFolders.delete(key);
+      else this.foldedFolders.add(key);
+      this.render();
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.actions.folderMenu(g, folder, e);
+    });
+    this.dragSource(row, g, folder, true);
+    this.dropTarget(row, g, folder);
+    return row;
+  }
+
+  private requestRow(g: Group, r: RequestEntry, level: number): HTMLElement {
+    const key = `${g.id}/${r.path}`;
+    const st = this.requestsState;
+    const method = r.doc.method;
+    const row = h(
+      'div',
+      {
+        class: `req-row${st.active === key ? ' active' : ''}${st.open.has(key) ? ' open' : ''}`,
+        style: `--level:${level}`,
+        title: [`${method} ${r.doc.url}`, r.path, r.doc.notes, '', 'Click: open · Double-click: keep open · Middle-click: split right · Drag: move to another folder'].filter((x, i) => x || i === 3).join('\n'),
+        dataset: { request: r.path },
+      },
+      h('span', { class: `req-method m-${method}` }, METHOD_LABEL[method] ?? method),
+      h('span', { class: 'req-name' }, requestName(r.path)),
+      st.dirty.has(key) ? h('span', { class: 'dirty-dot', title: 'Unsaved changes' }) : null,
+    );
+    row.addEventListener('click', () => this.actions.openRequest(g, r.path, 'click'));
+    row.addEventListener('dblclick', () => this.actions.openRequest(g, r.path, 'pin'));
+    row.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+    row.addEventListener('auxclick', (e) => {
+      if (e.button === 1) this.actions.openRequest(g, r.path, 'right');
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.actions.requestMenu(g, r.path, e);
+    });
+    this.dragSource(row, g, r.path, false);
+    // Dropped on a request: into the folder it is in.
+    this.dropTarget(row, g, requestFolder(r.path));
     return row;
   }
 
