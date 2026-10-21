@@ -134,6 +134,7 @@ Shellman checks GitHub Releases (`github.com/mahtinen/shellman`) 15 seconds afte
 the tab bar. If you don't restart, the update installs when you close Shellman, and the next start runs the
 new version. Settings → Updates can switch this to "tell me when a new version is out" or turn checks off.
 Only installers signed with the project's update key are accepted.
+Settings → About lists what changed in the five latest versions, with their release dates.
 
 ## Keyboard shortcuts
 

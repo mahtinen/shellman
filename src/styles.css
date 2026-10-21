@@ -1619,6 +1619,31 @@ select.input {
   margin-bottom: 16px;
 }
 
+.whats-new h3 {
+  margin: 18px 0 8px;
+  font-size: 13px;
+}
+
+.release {
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.release-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.release p,
+.release ul {
+  margin: 3px 0 0;
+}
+
+.release ul {
+  padding-left: 18px;
+}
+
 .detected {
   margin: 4px 0 10px;
   font-size: 12px;

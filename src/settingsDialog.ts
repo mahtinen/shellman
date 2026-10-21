@@ -1,4 +1,5 @@
 import { api } from './api';
+import { bundledChangelog, releaseDate, releaseNotes } from './changelog';
 import { DEFAULT_FONT, defaultSettings, guessShellKind, uid } from './config';
 import { dialog } from './dialogs';
 import { h } from './dom';
@@ -18,6 +19,31 @@ function check(label: string, value: boolean, hint?: string): [HTMLElement, () =
 
 function field(label: string, control: HTMLElement, hint?: string): HTMLElement {
   return h('label', { class: 'field' }, h('span', null, label), control, hint ? h('small', { class: 'hint' }, hint) : null);
+}
+
+/** The latest releases and what they changed, from the notes baked into this build. */
+function whatsNew(): HTMLElement {
+  const { repo, releases } = bundledChangelog();
+  const allReleases = repo
+    ? h('a', { href: '#', onclick: (e: Event) => { e.preventDefault(); void api.openUrl(`https://github.com/${repo}/releases`); } }, 'All releases on GitHub')
+    : null;
+  return h(
+    'div',
+    { class: 'whats-new' },
+    h('h3', null, "What's new"),
+    ...releases.map((r) => {
+      const changes = releaseNotes(r.notes);
+      const when = [releaseDate(r.date), r.version === store.sys.version ? 'this version' : ''].filter(Boolean).join(' · ');
+      return h(
+        'div',
+        { class: 'release' },
+        h('div', { class: 'release-head' }, h('b', null, r.version), when ? h('span', { class: 'hint' }, when) : null),
+        changes.length > 1 ? h('ul', null, ...changes.map((c) => h('li', null, c))) : h('p', null, changes[0] ?? 'Small fixes.'),
+      );
+    }),
+    releases.length ? null : h('p', { class: 'hint' }, 'Release builds list the latest changes here.'),
+    allReleases,
+  );
 }
 
 export type SettingsTab = 'Appearance' | 'Terminal' | 'Shells' | 'Connections' | 'Requests' | 'Updates' | 'About';
@@ -282,7 +308,7 @@ export function openSettings(tab?: SettingsTab): void {
         field('New versions', updates, 'Updates come from GitHub Releases and are signed; only signed installers are accepted.'),
         h('div', { class: 'row update-row' }, updateStatus, updateBtn),
       ),
-      section('About', h('p', { class: 'hint' }, `Shellman ${store.sys.version} · settings are stored in `, configLink)),
+      section('About', h('p', { class: 'hint' }, `Shellman ${store.sys.version} · settings are stored in `, configLink), whatsNew()),
   ];
   // One tab per category; every control stays in the form, so Save takes them all.
   const tabs = sections.map((sec) => h('button', { class: 'settings-tab', type: 'button', role: 'tab', onclick: () => show(sec.dataset.tab as SettingsTab) }, sec.dataset.tab));
