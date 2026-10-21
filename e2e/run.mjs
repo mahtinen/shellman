@@ -437,6 +437,25 @@ if (phase === 'main') {
     await waitFor(`!document.querySelector('.dialog')`, 2000, 'settings closed');
   });
 
+  await step('settings dialog and its tab list stay in place on every tab', async () => {
+    await key('Comma', ',', 188, ['ctrl']);
+    await waitFor(`!!document.querySelector('.settings-dialog')`, 2000);
+    // Tabs have different amounts of content; the dialog box and the tab list must not move or resize.
+    const rects = await ev(`(() => {
+      const out = [];
+      for (const t of document.querySelectorAll('.settings-tab')) {
+        t.click();
+        const d = document.querySelector('.settings-dialog').getBoundingClientRect();
+        const n = document.querySelector('.settings-tabs').getBoundingClientRect();
+        out.push([d.top, d.left, d.width, d.height, n.top, n.left, n.height].map(Math.round).join(','));
+      }
+      return out;
+    })()`);
+    assert(rects.length > 1 && new Set(rects).size === 1, `settings dialog moved between tabs: ${rects.join(' | ')}`);
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Cancel').click(), true`);
+    await waitFor(`!document.querySelector('.dialog')`, 2000, 'settings closed');
+  });
+
   await step('config is persisted to disk', async () => {
     await sleep(800);
     const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
