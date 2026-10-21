@@ -63,7 +63,7 @@
       { "@type": "Question", "name": "How do teammates get my changes to requests?", "acceptedAnswer": { "@type": "Answer", "text": "Through git. With Git sync set to Automatically, saves go up together as one commit a minute later, and teammates' changes are pulled every few minutes while Shellman is in front. Git runs with your own sign-in, and only Shellman's files (requests, environments and .env) are committed, never your secrets in .env.local or your other work in the same repository or folder. If two people changed the same request, you choose which version stays." } },
       { "@type": "Question", "name": "Where do API tokens and passwords go?", "acceptedAnswer": { "@type": "Answer", "text": "Not in the shared request files. Put them in .env.local, which git ignores, or refer to 1Password with op://Vault/Item/field, which is safe to commit: 1Password's CLI fills in the value when sending. Shellman passes secrets to curl through its environment, never on a command line." } },
       { "@type": "Question", "name": "Does Shellman store my passwords or SSH keys?", "acceptedAnswer": { "@type": "Answer", "text": "No. ssh asks for passwords in the terminal, and private keys stay in your key files or SSH agent. For a key you pick from the agent, Shellman keeps only its public half." } },
-      { "@type": "Question", "name": "How does Shellman update?", "acceptedAnswer": { "@type": "Answer", "text": "New versions download in the background and install the next time you restart Shellman. Updates are signed, and you can switch to notifications only or turn checks off." } },
+      { "@type": "Question", "name": "How does Shellman update?", "acceptedAnswer": { "@type": "Answer", "text": "New versions download in the background and install the next time you restart Shellman. Updates are signed, and you can switch to notifications only or turn checks off. Settings → About lists what changed in the latest versions." } },
       { "@type": "Question", "name": "Why does Windows SmartScreen warn about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The installer is not code-signed with a paid certificate yet, so SmartScreen asks you to confirm. Choose More info, then Run anyway. The source code and build scripts are on GitHub." } }
     ]
   }
@@ -258,7 +258,7 @@
         </details>
         <details>
           <summary>How do updates work?</summary>
-          <p>Shellman checks for new versions in the background, downloads them and installs them the next time you restart it. Updates are signed. In Settings you can switch to notifications only or turn checks off.</p>
+          <p>Shellman checks for new versions in the background, downloads them and installs them the next time you restart it. Updates are signed. In Settings you can switch to notifications only or turn checks off. Settings → About lists what changed in the latest versions.</p>
         </details>
         <details>
           <summary>Why does Windows SmartScreen warn about the installer?</summary>

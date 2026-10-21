@@ -82,6 +82,11 @@ jobs:
       - name: Set version
         run: node scripts/set-version.mjs ${{ env.VERSION }}
 
+      # "What's new" in Settings → About: this release and the ones before it, baked into the app.
+      - name: Write the changelog
+        shell: bash
+        run: node scripts/changelog.mjs "$VERSION" --notes "$NOTES"
+
       - name: Build and sign
         env:
           # Marks this as an official build, which updates itself in the background (src/updater.ts).

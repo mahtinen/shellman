@@ -456,6 +456,24 @@ if (phase === 'main') {
     await waitFor(`!document.querySelector('.dialog')`, 2000, 'settings closed');
   });
 
+  await step('settings About lists what is new', async () => {
+    await key('Comma', ',', 188, ['ctrl']);
+    await waitFor(`!!document.querySelector('.settings-dialog')`, 2000);
+    await ev(`[...document.querySelectorAll('.settings-tab')].find(t => t.textContent === 'About').click(), true`);
+    // Builds made after `node scripts/changelog.mjs` list releases; others say where the list comes from.
+    const shown = await ev(`(() => {
+      const w = document.querySelector('.settings-dialog .whats-new');
+      if (!w || w.closest('[hidden]')) return 'not visible';
+      const releases = [...w.querySelectorAll('.release')];
+      if (!releases.length) return /Release builds/.test(w.textContent) ? 'ok' : 'empty without a hint';
+      return releases.every(r => /^\\d+\\.\\d+\\.\\d+$/.test(r.querySelector('.release-head b').textContent) && r.querySelector('p, li')) ? 'ok' : 'release without version or changes';
+    })()`);
+    assert(shown === 'ok', `What's new: ${shown}`);
+    await shot(path.join(OUT, '07b-whats-new.png'));
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Cancel').click(), true`);
+    await waitFor(`!document.querySelector('.dialog')`, 2000, 'settings closed');
+  });
+
   await step('config is persisted to disk', async () => {
     await sleep(800);
     const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
