@@ -22,6 +22,11 @@ describe('snapshot', () => {
     expect(snapshotPanes(snap.tabs[1].root)[0].connection).toBeUndefined();
   });
 
+  it('keeps a hex pane colour only', () => {
+    const snap = normalizeSnapshot({ tabs: [{ root: { pane: spec('C:\\a', { color: '#A1B2C3' }) } }, { root: { pane: spec('C:\\b', { color: 'red;x' }) } }] })!;
+    expect(snap.tabs.map((t) => snapshotPanes(t.root)[0].color)).toEqual(['#a1b2c3', '']);
+  });
+
   it('round-trips a nested layout with sizes', () => {
     const tree: LayoutNode = {
       type: 'split',

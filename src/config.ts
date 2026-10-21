@@ -65,6 +65,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d);
 const num = (v: unknown, d: number, min: number, max: number): number =>
   typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : d;
+/** A colour as #rrggbb, or ''. Colours go into style attributes, so nothing else gets through. */
+export const hexColor = (v: unknown): string => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : '');
 const bool = (v: unknown, d: boolean): boolean => (typeof v === 'boolean' ? v : d);
 const oneOf = <T extends string>(v: unknown, options: readonly T[], d: T): T =>
   options.includes(v as T) ? (v as T) : d;
@@ -155,7 +157,7 @@ export function normalizeConfig(raw: unknown): Config {
         id,
         name: str(g.name) || 'Group',
         parentId: str(g.parentId) || null,
-        color: str(g.color),
+        color: hexColor(g.color),
         collapsed: bool(g.collapsed, false),
         folder: str(g.folder).trim(),
         env: str(g.env),
@@ -188,7 +190,7 @@ export function normalizeConfig(raw: unknown): Config {
         cwd: connection ? '' : str(x.cwd),
         command: str(x.command),
         shellId: str(x.shellId),
-        color: str(x.color),
+        color: hexColor(x.color),
         env: strRecord(x.env),
         collapsed: bool(x.collapsed, false),
       });

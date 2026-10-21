@@ -516,6 +516,19 @@ if (phase === 'main') {
     await pickColor('#f7768e');
     await waitFor(`document.querySelector('.session-row').style.getPropertyValue('--session-color') === '#f7768e'`, 2000, 'own colour wins');
     await savedSoon((c) => c.sessions[0].color === '#f7768e', 'session colour');
+    // A custom colour from the colour input, shown as selected when the dialog opens again.
+    await menuOn(`document.querySelector('.session-row')`);
+    await pick('Edit…');
+    await waitFor(`!!document.querySelector('.dialog .swatch.custom')`, 2000, 'custom colour swatch');
+    await ev(`(() => { const i = document.querySelector('.dialog .swatch.custom'); i.value = '#123abc'; i.dispatchEvent(new Event('input')); })()`);
+    await pickColor('Custom color #123abc');
+    await savedSoon((c) => c.sessions[0].color === '#123abc', 'custom session colour');
+    assert((await sessionColor()) === '#123abc', 'custom colour shows on the row');
+    await menuOn(`document.querySelector('.session-row')`);
+    await pick('Edit…');
+    await waitFor(`!!document.querySelector('.dialog .swatch.custom.selected')`, 2000, 'custom colour selected again');
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
+    await waitFor(`!document.querySelector('.dialog')`, 2000, 'dialog closed');
     await menuOn(`document.querySelector('.session-row')`);
     await pick('Edit…');
     await waitFor(`!!document.querySelector('.dialog .swatch')`, 2000, 'session dialog');
