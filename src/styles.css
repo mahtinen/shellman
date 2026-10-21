@@ -1556,10 +1556,23 @@ select.input {
   opacity: 0;
 }
 
+/* A fixed height, with only the panel scrolling, keeps the dialog and its tab list in place on every tab. */
+.settings-dialog {
+  height: min(600px, calc(100vh - 48px));
+}
+
+.settings-dialog .dialog-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .settings-layout {
   display: flex;
+  flex: 1;
   gap: 18px;
-  min-height: min(470px, 60vh);
+  min-height: 0;
 }
 
 .settings-tabs {
@@ -1598,6 +1611,8 @@ select.input {
 .settings-panels {
   flex: 1;
   min-width: 0;
+  overflow-y: auto;
+  padding-right: 6px;
 }
 
 .settings-section {
