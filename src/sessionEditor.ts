@@ -49,27 +49,45 @@ export function shellEntries(run: (shellId: string) => void, current?: string, p
 
 /**
  * Colour swatches. The first one means "no colour of its own": it shows the colour inherited from
- * the group (`inherited`, re-read on refresh), striped, and says so with `inheritTitle`.
+ * the group (`inherited`, re-read on refresh), striped, and says so with `inheritTitle`. The last one
+ * picks any colour; it shows a rainbow until a colour outside the presets is chosen.
  */
 function colorPicker(initial: string, inherited: () => string, inheritTitle: string): { el: HTMLElement; value: () => string; refresh: () => void } {
   let color = initial;
-  const el = h('div', { class: 'swatches' });
+  const presets = SESSION_COLORS.map((c) =>
+    h('button', {
+      class: `swatch${c ? '' : ' none'}`,
+      style: c ? `background:${c}` : undefined,
+      title: c,
+      type: 'button',
+      onclick: () => {
+        color = c;
+        refresh();
+      },
+    }),
+  );
+  // Updated in place rather than rebuilt: replacing the input would close its picker while it is open.
+  const custom = h('input', {
+    class: 'swatch custom',
+    type: 'color',
+    title: 'Custom color',
+    oninput: () => {
+      color = custom.value;
+      refresh();
+    },
+  });
+  const el = h('div', { class: 'swatches' }, ...presets, custom);
   const refresh = () => {
     const from = inherited();
-    el.replaceChildren(
-      ...SESSION_COLORS.map((c) =>
-        h('button', {
-          class: `swatch${c === color ? ' selected' : ''}${c ? '' : ' none'}`,
-          style: c ? `background:${c}` : from ? `--inherited:${from}` : undefined,
-          title: c || (from ? inheritTitle : 'No color'),
-          type: 'button',
-          onclick: () => {
-            color = c;
-            refresh();
-          },
-        }),
-      ),
-    );
+    presets.forEach((b, i) => b.classList.toggle('selected', SESSION_COLORS[i] === color));
+    presets[0].style.cssText = from ? `--inherited:${from}` : '';
+    presets[0].title = from ? inheritTitle : 'No color';
+    const isCustom = !!color && !SESSION_COLORS.includes(color);
+    custom.classList.toggle('selected', isCustom);
+    custom.classList.toggle('set', isCustom);
+    // The picker opens at the colour in use, so it is easy to pick a shade of it.
+    custom.value = color || from || SESSION_COLORS[1];
+    custom.title = isCustom ? `Custom color ${color}` : 'Custom color';
   };
   refresh();
   return { el, value: () => color, refresh };

@@ -3,6 +3,7 @@
  * after a restart. Pure functions; the workspace does the opening.
  */
 import { isUuid } from './claude';
+import { hexColor } from './config';
 import { normalizeConnection } from './connection';
 import type { Direction, LayoutNode } from './layout';
 import type { LaunchSpec } from './types';
@@ -107,7 +108,7 @@ function normalizeSpec(v: unknown): LaunchSpec | null {
     command: str(v.command),
     shellId: str(v.shellId),
     env,
-    color: str(v.color),
+    color: hexColor(v.color),
     sessionId: str(v.sessionId) || null,
   };
   const connection = normalizeConnection(v.connection);

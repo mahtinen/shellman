@@ -1516,6 +1516,7 @@ select.input {
 
 .swatches {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -1534,6 +1535,25 @@ select.input {
 
 .swatch.selected {
   border-color: var(--text);
+}
+
+.swatch.custom {
+  appearance: none;
+  background: conic-gradient(#f7768e, #e0af68, #9ece6a, #7dcfff, #7aa2f7, #bb9af7, #f7768e);
+}
+
+.swatch.custom::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.swatch.custom::-webkit-color-swatch {
+  border: none;
+  border-radius: 50%;
+}
+
+/* Until a custom colour is chosen, the rainbow shows instead of the input's value. */
+.swatch.custom:not(.set)::-webkit-color-swatch {
+  opacity: 0;
 }
 
 .settings-layout {

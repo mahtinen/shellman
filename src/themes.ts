@@ -106,4 +106,8 @@ export function applyUiTheme(theme: Theme): void {
 }
 
 /** Colours offered for saved sessions in the sidebar. */
-export const SESSION_COLORS = ['', '#7aa2f7', '#9ece6a', '#e0af68', '#f7768e', '#bb9af7', '#7dcfff', '#ff9e64'];
+export const SESSION_COLORS = [
+  '',
+  '#7aa2f7', '#2e7de9', '#7dcfff', '#73daca', '#9ece6a', '#b9f27c', '#e0af68',
+  '#ff9e64', '#f7768e', '#db4b4b', '#ff007c', '#f5a3c7', '#bb9af7', '#c0a36e', '#a9b1d6',
+];

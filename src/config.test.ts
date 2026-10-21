@@ -105,6 +105,12 @@ describe('normalizeConfig', () => {
     expect(c.groups.map((g) => g.color)).toEqual(['#9ece6a', '']);
   });
 
+  it('keeps custom hex colours and drops anything else', () => {
+    const colors = ['#12AB9F', '#abc', 'red', '#123456;background:url(x)', ''];
+    const c = normalizeConfig({ sessions: colors.map((color, i) => ({ id: `s${i}`, name: 'S', cwd: 'C:\Projects', color })) });
+    expect(c.sessions.map((s) => s.color)).toEqual(['#12ab9f', '', '', '', '']);
+  });
+
   it('keeps subgroups and moves groups with a missing parent to the top level', () => {
     const c = normalizeConfig({ groups: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B', parentId: 'a' }, { id: 'c', name: 'C', parentId: 'gone' }] });
     expect(c.groups.map((g) => g.parentId)).toEqual([null, 'a', null]);
