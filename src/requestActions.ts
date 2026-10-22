@@ -5,6 +5,7 @@
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { api } from './api';
 import { collections, type Collection } from './collections';
+import { moveFolded } from './config';
 import { parseCurl } from './curl';
 import { confirmDialog, dialog, promptDialog, toast } from './dialogs';
 import { h } from './dom';
@@ -112,6 +113,7 @@ export async function renameFolder(ws: Workspace, group: Group, folder: string):
     return toast(String(e), 'error');
   }
   for (const p of panesUnder(ws, group, `${folder}/`)) p.moveTo(to + p.ref.path.slice(folder.length));
+  keepFolded(group, folder, to);
   await collections.reload(group.id);
   void gitSync.changed(group.id, [folder, to]);
 }
@@ -143,6 +145,7 @@ export async function moveFolder(ws: Workspace, group: Group, folder: string, ta
     return toast(String(e), 'error');
   }
   for (const p of panesUnder(ws, group, `${folder}/`)) p.moveTo(to + p.ref.path.slice(folder.length));
+  keepFolded(group, folder, to);
   await collections.reload(group.id);
   gitSync.changed(group.id, [folder, to]);
 }
@@ -165,6 +168,16 @@ export async function deleteRequest(ws: Workspace, group: Group, path: string): 
   );
 }
 
+/** Carries the sidebar's folded state along when a folder moves (to = null: it was deleted). */
+function keepFolded(group: Group, from: string, to: string | null): void {
+  const g = store.config.groups.find((x) => x.id === group.id);
+  if (!g?.folded.some((f) => f === from || f.startsWith(`${from}/`))) return;
+  store.update((cfg) => {
+    const x = cfg.groups.find((y) => y.id === group.id);
+    if (x) x.folded = moveFolded(x.folded, from, to);
+  });
+}
+
 export async function deleteFolder(ws: Workspace, group: Group, folder: string): Promise<void> {
   const c = collections.get(group.id);
   if (!c) return;
@@ -173,7 +186,10 @@ export async function deleteFolder(ws: Workspace, group: Group, folder: string):
   if (!(await confirmDialog(`Delete folder "${folder}"?`, what, 'Delete', true))) return;
   for (const p of panesUnder(ws, group, `${folder}/`)) ws.closePane(p.id);
   await api.collectionDelete(c.folder, folder, 'folder').then(
-    () => collections.reload(group.id).then(() => gitSync.changed(group.id, [folder])),
+    () => {
+      keepFolded(group, folder, null);
+      return collections.reload(group.id).then(() => gitSync.changed(group.id, [folder]));
+    },
     (e) => toast(String(e), 'error'),
   );
 }
@@ -370,6 +386,8 @@ export async function linkFolder(group: Group, dir: string): Promise<void> {
   store.update((cfg) => {
     const g = cfg.groups.find((x) => x.id === group.id);
     if (g) {
+      // Folded folders belong to the folder that was linked before.
+      if (g.folder !== dir) g.folded = [];
       g.folder = dir;
       g.collapsed = false;
     }
