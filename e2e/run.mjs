@@ -1179,6 +1179,36 @@ if (phase === 'main') {
       await waitFor(`document.querySelector('.dialog h2')?.textContent.includes('prod')`, 3000, 'confirm dialog');
       await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
 
+      // The JSON body editor colours what is typed, indents on Enter and closes brackets and quotes.
+      await ev(`[...${active}.el.querySelectorAll('.rq-tab')].find(b => b.textContent.startsWith('Body')).click()`);
+      await ev(`(() => { const s = ${active}.el.querySelector('.rq-bodybar select'); s.value = 'json'; s.dispatchEvent(new Event('change')); return true; })()`);
+      await waitFor(`!!${active}.el.querySelector('.rq-code-input')`, 3000, 'body editor');
+      await ev(`${active}.el.querySelector('.rq-code-input').focus()`);
+      const typeKey = async (ch) => {
+        await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch });
+        await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
+      };
+      await typeKey('{');
+      await key('Enter', 'Enter', 13);
+      await typeKey('"');
+      await type('id');
+      await typeKey('"');
+      await type(': "{{userId}}", "tags": ');
+      await typeKey('[');
+      await typeKey('"');
+      await type('a');
+      await typeKey('"');
+      await typeKey(']');
+      const typed = await ev(`${active}.el.querySelector('.rq-code-input').value`);
+      assert(typed === '{\n  "id": "{{userId}}", "tags": ["a"]\n}', 'typed body: ' + js(typed));
+      assert((await ev(`${active}.doc.body.text`)) === typed, 'body not kept in the request');
+      const colours = await ev(`[...${active}.el.querySelectorAll('.rq-code-view span')].map(s => s.className + '=' + s.textContent).join(' ')`);
+      assert(colours.includes('j-key="id"') && colours.includes('j-var={{userId}}') && colours.includes('j-str="a"'), 'colours: ' + colours);
+      await ev(`[...${active}.el.querySelectorAll('.rq-bodybar .btn')].find(b => b.textContent === 'Format').click()`);
+      await waitFor(`${active}.el.querySelector('.rq-code-input').value.includes('"tags": [\\n    "a"\\n  ]')`, 2000, 'formatted');
+      await key('KeyZ', 'z', 90, ['ctrl']);
+      await waitFor(`${active}.el.querySelector('.rq-code-input').value === ${js(typed)}`, 2000, 'Ctrl+Z undoes Format');
+
       // A request dragged onto a folder moves there; its open pane follows.
       await ev(`(() => {
         const dt = new DataTransfer();

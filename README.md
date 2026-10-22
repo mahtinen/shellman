@@ -53,7 +53,8 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   requests show in the group; a click opens one in a preview tab, a double-click keeps it, and a request sits
   in tabs and splits like a terminal (handy next to a terminal tailing the server's log). Drag a request or
   folder onto another folder to move it. Send with
-  Ctrl+Enter, save with Ctrl+S. Requests run through Windows' own `curl.exe`; the response shows as folding
+  Ctrl+Enter, save with Ctrl+S. The JSON body editor colours keys, values and `{{variables}}` as you type,
+  indents on Enter and closes brackets and quotes. Requests run through Windows' own `curl.exe`; the response shows as folding
   JSON with search, headers, timing and cookies, and a Console tab with the exact curl command, the options
   it read and curl's own log (secrets hidden). Login cookies are kept per group and environment until
   Shellman closes. Variables are `{{name}}` (a value may use other variables), edited in the app (Variables, or click an undefined one in the
@@ -237,8 +238,8 @@ backup: if it's lost, installed copies can't verify new versions and everyone ha
 | `src/pane.ts` | One terminal: xterm.js, input/clipboard handling, OSC parsing, search |
 | `src/layout.ts` | Pure split-tree operations (unit tested) |
 | `src/connection.ts` | Connection validation, labels and quick-open parsing (unit tested) |
-| `src/requestPane.ts`, `collections.ts`, `requestActions.ts` | Request panes, linked folders, request menus |
-| `src/requestFile.ts`, `variables.ts`, `dotenv.ts`, `curl.ts`, `postman.ts`, `jsonView.ts` | Request files, variables, curl copy/paste, Postman import (unit tested) |
+| `src/requestPane.ts`, `codeEditor.ts`, `collections.ts`, `requestActions.ts` | Request panes, the body editor, linked folders, request menus |
+| `src/requestFile.ts`, `variables.ts`, `dotenv.ts`, `curl.ts`, `postman.ts`, `jsonView.ts`, `codeEdit.ts` | Request files, variables, curl copy/paste, Postman import, JSON colours and editing keys (unit tested) |
 | `src/sidebar.ts`, `sessionEditor.ts`, `settingsDialog.ts`, `palette.ts` | UI |
 | `src/updater.ts` | Background update checks, download and install-on-restart |
 | `.github/workflows/` | CI checks and the Release workflow |

@@ -5,6 +5,7 @@
  */
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { api, type HttpRequest, type HttpResult } from './api';
+import { codeEditor } from './codeEditor';
 import { collections } from './collections';
 import { groupColor, uid } from './config';
 import { curlCommand } from './curl';
@@ -897,21 +898,12 @@ export class RequestPane implements WorkspacePane {
     const bar = h('div', { class: 'rq-bodybar' }, type);
     if (b.type === 'none') return h('div', null, bar, h('p', { class: 'hint' }, 'This request has no body.'));
     if (b.type === 'json' || b.type === 'text' || b.type === 'xml') {
-      const ta = h('textarea', { class: 'input rq-code', spellcheck: false, placeholder: b.type === 'json' ? '{ "name": "{{userName}}" }' : '' });
-      ta.value = b.text;
+      const editor = codeEditor(b.text, b.type === 'json', b.type === 'json' ? '{ "name": "{{userName}}" }' : '');
       const check = h('span', { class: 'hint' });
       const validate = () => {
         check.textContent = b.type === 'json' && b.text.trim() && !isJsonish(b.text) ? 'Not valid JSON' : '';
       };
-      ta.addEventListener('input', () => this.edit(() => ((b.text = ta.value), validate())));
-      ta.addEventListener('keydown', (e) => {
-        // Tab indents instead of leaving the field.
-        if (e.key === 'Tab' && !e.ctrlKey && !e.altKey) {
-          e.preventDefault();
-          ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
-          this.edit(() => (b.text = ta.value));
-        }
-      });
+      editor.input.addEventListener('input', () => this.edit(() => ((b.text = editor.input.value), validate())));
       validate();
       if (b.type === 'json')
         bar.append(
@@ -921,12 +913,12 @@ export class RequestPane implements WorkspacePane {
             onclick: () => {
               const lines = jsonLines(b.text);
               if (!lines) return toast('The body is not valid JSON (variables can only stand where values go).', 'error');
-              this.edit(() => (b.text = lines.map(lineText).join('\n')), true);
+              editor.replace(lines.map(lineText).join('\n'));
             },
           }, 'Format'),
         );
       bar.append(check);
-      return h('div', { class: 'rq-bodywrap' }, bar, ta);
+      return h('div', { class: 'rq-bodywrap' }, bar, editor.el);
     }
     if (b.type === 'form' || b.type === 'multipart') {
       return h('div', null, bar, this.kvTable(b.fields, () => undefined, { names: ['Field', 'Value'], toggle: true, files: b.type === 'multipart' }));
