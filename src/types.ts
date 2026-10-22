@@ -66,6 +66,8 @@ export interface Group {
   /** Colour of the sessions inside, unless they have their own; '' = the parent group's. */
   color: string;
   collapsed: boolean;
+  /** Request folders (paths inside `folder`) folded in the sidebar. */
+  folded: string[];
   /** A folder of request files (often a git repository the team shares); '' = none. */
   folder: string;
   /** The environment its requests use (`environments/<env>.json`); '' = the first one. */

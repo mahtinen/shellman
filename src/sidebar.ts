@@ -81,8 +81,6 @@ export class Sidebar {
   /** The group being dragged (dragover can't read the drag data). */
   private draggedGroup: string | null = null;
   private refreshQueued = false;
-  /** Folders of linked groups that are folded (`groupId/folder`), for this run. */
-  private readonly foldedFolders = new Set<string>();
   private requestsState: { open: Set<string>; dirty: Set<string>; active: string | null } = { open: new Set(), dirty: new Set(), active: null };
   /** The request or folder being dragged (dragover can't read the drag data). */
   private draggedItem: { groupId: string; path: string; folder: boolean } | null = null;
@@ -406,7 +404,7 @@ export class Sidebar {
       for (const f of folders) {
         const inside = c.requests.filter((r) => r.path.startsWith(`${f}/`));
         if (filtering && !inside.some((r) => this.matchesRequest(r))) continue;
-        const folded = !filtering && this.foldedFolders.has(`${g.id}/${f}`);
+        const folded = !filtering && g.folded.includes(f);
         out.push(this.folderRow(g, f, level, folded, inside.length));
         if (!folded) out.push(...walk(f, level + 1));
       }
@@ -476,12 +474,10 @@ export class Sidebar {
       h('span', { class: 'group-name' }, folder.split('/').pop() ?? folder),
       h('span', { class: 'group-count' }, String(count)),
     );
-    row.addEventListener('click', () => {
-      const key = `${g.id}/${folder}`;
-      if (this.foldedFolders.has(key)) this.foldedFolders.delete(key);
-      else this.foldedFolders.add(key);
-      this.render();
-    });
+    row.addEventListener('click', () => store.update((c) => {
+      const x = c.groups.find((y) => y.id === g.id);
+      if (x) x.folded = folded ? x.folded.filter((f) => f !== folder) : [...x.folded, folder];
+    }));
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();

@@ -10,6 +10,7 @@ import {
   groupPath,
   groupTree,
   guessShellKind,
+  moveFolded,
   moveGroup,
   normalizeConfig,
   ownerSession,
@@ -62,7 +63,7 @@ describe('normalizeConfig', () => {
 
   it('loads groups saved before subgroups existed as top-level groups', () => {
     const c = normalizeConfig({ groups: [{ id: 'g1', name: 'Work', collapsed: true }] });
-    expect(c.groups).toEqual([{ id: 'g1', name: 'Work', parentId: null, color: '', collapsed: true, folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' }]);
+    expect(c.groups).toEqual([{ id: 'g1', name: 'Work', parentId: null, color: '', collapsed: true, folded: [], folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' }]);
   });
 
   it('keeps a group\'s linked folder and environment', () => {
@@ -167,14 +168,31 @@ describe('normalizeConfig', () => {
     expect(c.settings.customShells[0].name).toBe('C:\\x\\nu.exe');
   });
 
+  it('keeps the folded request folders of a group', () => {
+    const c = normalizeConfig({ groups: [{ id: 'g1', name: 'API', folded: ['users', 'users/admin', 'users', 7, ''] }, { id: 'g2', name: 'X', folded: 'users' }] });
+    expect(c.groups.map((g) => g.folded)).toEqual([['users', 'users/admin'], []]);
+  });
+
   it('is idempotent', () => {
     const once = normalizeConfig({ groups: [{ id: 'g', name: 'G' }], sessions: [{ id: 's', name: 'S', groupId: 'g' }] });
     expect(normalizeConfig(JSON.parse(JSON.stringify(once)))).toEqual(once);
   });
 });
 
+describe('moveFolded', () => {
+  const folded = ['users', 'users/admin', 'orders', 'usersx'];
+
+  it('follows a folder that was renamed or moved, with the folders inside it', () => {
+    expect(moveFolded(folded, 'users', 'v2/people')).toEqual(['v2/people', 'v2/people/admin', 'orders', 'usersx']);
+  });
+
+  it('forgets a deleted folder and the folders inside it', () => {
+    expect(moveFolded(folded, 'users', null)).toEqual(['orders', 'usersx']);
+  });
+});
+
 describe('group tree', () => {
-  const g = (id: string, parentId: string | null = null, color = ''): Group => ({ id, name: id.toUpperCase(), parentId, color, collapsed: false, folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' });
+  const g = (id: string, parentId: string | null = null, color = ''): Group => ({ id, name: id.toUpperCase(), parentId, color, collapsed: false, folded: [], folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' });
   // a > (b > c), d
   const groups = [g('a'), g('d'), g('b', 'a'), g('c', 'b')];
 

@@ -159,6 +159,7 @@ export function normalizeConfig(raw: unknown): Config {
         parentId: str(g.parentId) || null,
         color: hexColor(g.color),
         collapsed: bool(g.collapsed, false),
+        folded: [...new Set(Array.isArray(g.folded) ? g.folded.filter((f): f is string => typeof f === 'string' && f !== '') : [])],
         folder: str(g.folder).trim(),
         env: str(g.env),
         sync: oneOf(g.sync, ['off', 'manual', 'auto'] as const, 'manual'),
@@ -218,7 +219,15 @@ function fixParents(groups: Group[], ids: Set<string>): void {
 }
 
 export function newGroup(name: string, parentId: string | null = null, color = ''): Group {
-  return { id: uid('g-'), name, parentId, color, collapsed: false, folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
+  return { id: uid('g-'), name, parentId, color, collapsed: false, folded: [], folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
+}
+
+/** Folded request folders after `from` moved to `to` (null = deleted), so folders inside keep their state. */
+export function moveFolded(folded: string[], from: string, to: string | null): string[] {
+  return folded.flatMap((f) => {
+    if (f !== from && !f.startsWith(`${from}/`)) return [f];
+    return to === null ? [] : [to + f.slice(from.length)];
+  });
 }
 
 /** The colour a group gives its sessions: its own, or the nearest one from the groups it is in. */
