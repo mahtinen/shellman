@@ -23,6 +23,7 @@ export type Action =
   | 'goToTab'
   | 'find'
   | 'palette'
+  | 'showFiles'
   | 'newConnection'
   | 'toggleSidebar'
   | 'settings'
@@ -69,6 +70,7 @@ export const BINDINGS: Binding[] = [
   ...Array.from({ length: 9 }, (_, i): Binding => ({ action: 'goToTab', code: `Digit${i + 1}`, alt: true, arg: i })),
   { action: 'find', code: 'KeyF', ctrl: true, shift: true },
   { action: 'palette', code: 'KeyP', ctrl: true, shift: true },
+  { action: 'showFiles', code: 'KeyG', ctrl: true, shift: true },
   { action: 'newConnection', code: 'KeyN', ctrl: true, shift: true },
   { action: 'toggleSidebar', code: 'KeyB', ctrl: true, shift: true },
   { action: 'settings', code: 'Comma', ctrl: true },
@@ -166,6 +168,7 @@ export const ACTION_LABELS: Record<Action, string> = {
   goToTab: 'Go to tab 1–9',
   find: 'Find in terminal',
   palette: 'Quick open saved session (or type user@host to connect)',
+  showFiles: 'Show the files and changes of the current folder',
   newConnection: 'New SSH or Telnet connection',
   toggleSidebar: 'Show / hide sidebar',
   settings: 'Settings',

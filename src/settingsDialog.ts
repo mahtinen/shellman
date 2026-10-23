@@ -46,7 +46,7 @@ function whatsNew(): HTMLElement {
   );
 }
 
-export type SettingsTab = 'Appearance' | 'Terminal' | 'Shells' | 'Connections' | 'Requests' | 'Updates' | 'About';
+export type SettingsTab = 'Appearance' | 'Terminal' | 'Shells' | 'Connections' | 'Requests' | 'Worktrees' | 'Updates' | 'About';
 
 /** The tab shown last, so Settings opens where you were. */
 let lastTab: SettingsTab = 'Appearance';
@@ -106,6 +106,19 @@ export function openSettings(tab?: SettingsTab): void {
     s.reconnectOnStart,
     "Off: reopened connections wait until you press Enter, so starting Shellman doesn't log in to every host (or ask 1Password for every key) at once.",
   );
+  const [worktreesEl, worktreesOn] = check(
+    'Offer git worktrees for sessions',
+    s.worktrees,
+    'Open in new worktree and Worktrees… in a session\'s menu, and "Open each terminal in a new git worktree" for a session. Off: none of it shows.',
+  );
+  const worktreeDir = h('input', { class: 'input mono', value: s.worktreeDir, placeholder: 'Next to the repository, in <repository>.worktrees', spellcheck: false });
+  const worktreeBrowse = h('button', { class: 'btn', type: 'button' }, 'Browse…');
+  worktreeBrowse.addEventListener('click', async () => {
+    const d = await pickDirectory(worktreeDir.value);
+    if (d) worktreeDir.value = d;
+  });
+  const worktreePrefix = h('input', { class: 'input mono', value: s.worktreeBranchPrefix, placeholder: 'none', spellcheck: false });
+  const worktreeCopy = h('input', { class: 'input mono', value: s.worktreeCopy, placeholder: 'e.g. .env.local, appsettings.Development.json', spellcheck: false });
   const sshPath = h('input', { class: 'input mono', value: s.sshPath, placeholder: 'Windows OpenSSH (System32\\OpenSSH\\ssh.exe)', spellcheck: false });
 
   // Requests
@@ -304,6 +317,22 @@ export function openSettings(tab?: SettingsTab): void {
         field('1Password account', opAccount, 'With several 1Password accounts, the one the op:// references are in. Shellman runs op without a terminal, so op can\'t ask.'),
       ),
       section(
+        'Worktrees',
+        h(
+          'p',
+          { class: 'hint' },
+          'A worktree is a folder and branch of its own for one terminal, so several Claudes can work in one repository without changing each other\'s files. Its Files pane shows everything done in it.',
+        ),
+        worktreesEl,
+        field('Folder for new worktrees', h('div', { class: 'row' }, worktreeDir, worktreeBrowse), 'Each worktree gets a folder here, named after it.'),
+        h(
+          'div',
+          { class: 'row two' },
+          field('Branch name starts with', worktreePrefix, 'claude/ makes branches like claude/fix-login.'),
+          field('Copy into new worktrees', worktreeCopy, 'Files git ignores that a worktree needs, like .env.local (globs, separated by commas).'),
+        ),
+      ),
+      section(
         'Updates',
         field('New versions', updates, 'Updates come from GitHub Releases and are signed; only signed installers are accepted.'),
         h('div', { class: 'row update-row' }, updateStatus, updateBtn),
@@ -365,6 +394,10 @@ export function openSettings(tab?: SettingsTab): void {
             restoreTerminals: restore.value as RestoreMode,
             reconnectOnStart: reconnect(),
             sshPath: sshPath.value.trim().replace(/^"(.*)"$/, '$1'),
+            worktrees: worktreesOn(),
+            worktreeDir: worktreeDir.value.trim().replace(/^"(.*)"$/, '$1'),
+            worktreeBranchPrefix: worktreePrefix.value.trim(),
+            worktreeCopy: worktreeCopy.value.trim(),
             requestPreviewTabs: preview(),
             requestOpenIn: openIn.value as Settings['requestOpenIn'],
             responseLayout: layout.value as ResponseLayout,

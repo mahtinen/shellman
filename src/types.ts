@@ -56,6 +56,8 @@ export interface SavedSession {
   env: Record<string, string>;
   /** Its open terminals are folded away in the sidebar. */
   collapsed: boolean;
+  /** Each terminal opened from it gets a git worktree of its own (when worktrees are on in Settings). */
+  newWorktree: boolean;
 }
 
 export interface Group {
@@ -142,6 +144,20 @@ export interface Settings {
   requestOpenIn: 'tab' | 'split';
   responseLayout: ResponseLayout;
   responseWrap: boolean;
+  /** Files pane: diffs side by side or inline. */
+  diffLayout: 'split' | 'inline';
+  /** Files pane: files git ignores are listed (dimmed). */
+  showIgnoredFiles: boolean;
+  /** Files pane: Markdown files open as a preview (or as their source). */
+  markdownPreview: boolean;
+  /** Git worktrees for sessions are offered (Open in new worktree, Worktrees). */
+  worktrees: boolean;
+  /** Where new worktrees go; '' = next to the repository, in <repo>.worktrees. */
+  worktreeDir: string;
+  /** Put in front of a new worktree's branch name. */
+  worktreeBranchPrefix: string;
+  /** Files git ignores that new worktrees get a copy of (globs, e.g. .env.local). */
+  worktreeCopy: string;
   /** Seconds; a request's own timeout wins. */
   requestTimeout: number;
   requestFollowRedirects: boolean;
@@ -188,6 +204,16 @@ export interface LaunchSpec {
   claudeId?: string;
   /** The conversation has been started once, so later starts resume it. */
   claudeStarted?: boolean;
+  /** It was opened in a git worktree of its session's repository. */
+  worktree?: WorktreeRef;
+}
+
+export interface WorktreeRef {
+  /** The worktree's folder. */
+  path: string;
+  branch: string;
+  /** The commit it started from: what its changes are compared with. */
+  base: string;
 }
 
 export type SplitPlacement = 'tab' | 'right' | 'down';

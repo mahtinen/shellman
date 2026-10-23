@@ -1,4 +1,4 @@
-import { Terminal, type ITerminalOptions } from '@xterm/xterm';
+import { Terminal, type IBufferLine, type ILink, type ITerminalOptions } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -8,6 +8,7 @@ import { api, type PtyMessage } from './api';
 import { claudeCommand, isTrackableClaude } from './claude';
 import { uid } from './config';
 import { connectionError, connectionLabel, connectionRequest, connectionTarget, needsLegacyAlgorithms } from './connection';
+import { fileUriPath, findPathLinks, resolvePath } from './fileLinks';
 import { h } from './dom';
 import { icons } from './icons';
 import { matchKey } from './keys';
@@ -34,6 +35,23 @@ export interface PaneHost extends PaneEvents {
   onExit(pane: Pane, code: number | null): void;
   /** The pane's connection settings changed (e.g. old algorithms were allowed); keep its session in step. */
   onConnectionChange(pane: Pane): void;
+  /** A file path in the output was Ctrl+clicked: show the file (`line` 1-based). */
+  onOpenFile(pane: Pane, path: string, line: number | null): void;
+}
+
+/** How long a path is known to be (or not be) a file, before it is checked again. */
+const FILE_CHECK_MS = 5000;
+
+/** Where each character of a buffer line's text is (0-based cells; wide characters take two). */
+function cellsOf(line: IBufferLine): number[] {
+  const cells: number[] = [];
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x);
+    if (!cell || cell.getWidth() === 0) continue;
+    // An empty cell reads as a space in translateToString.
+    for (let i = 0; i < (cell.getChars() || ' ').length; i++) cells.push(x);
+  }
+  return cells;
 }
 
 function terminalOptions(s: Settings, windowsBuild: number): ITerminalOptions {
@@ -96,6 +114,8 @@ export class Pane implements WorkspacePane {
   private loginInput = '';
   /** The user name was asked once (an empty answer keeps ssh's default on reconnects too). */
   private loginAsked = false;
+  /** Paths printed in the output that were checked: are they files? */
+  private readonly knownFiles = new Map<string, { file: boolean; at: number }>();
 
   constructor(spec: LaunchSpec, host: PaneHost) {
     // A terminal that starts Claude gets its own conversation (kept when it is restored or restarted).
@@ -133,7 +153,8 @@ export class Pane implements WorkspacePane {
       ...terminalOptions(host.settings(), host.windowsBuild),
       linkHandler: {
         activate: (e, text) => this.openLink(e, text),
-        allowNonHttpProtocols: false,
+        // For file:// links (shown in the Files pane); other schemes are ignored in openLink.
+        allowNonHttpProtocols: true,
       },
     });
     this.term.loadAddon(this.fit);
@@ -141,6 +162,7 @@ export class Pane implements WorkspacePane {
     this.term.loadAddon(new Unicode11Addon());
     this.term.unicode.activeVersion = '11';
     this.term.loadAddon(new WebLinksAddon((e, uri) => this.openLink(e, uri)));
+    this.term.registerLinkProvider({ provideLinks: (y, callback) => this.provideFileLinks(y, callback) });
 
     this.term.onData((d) => this.sendInput(d));
     this.term.onBinary((d) => {
@@ -495,7 +517,49 @@ export class Pane implements WorkspacePane {
     // gets this click too and opens the link itself; opening it here as well
     // would open it twice. Shift keeps the click from the program.
     if (this.term.modes.mouseTrackingMode !== 'none' && !e.shiftKey) return;
-    void api.openUrl(uri).catch(() => undefined);
+    const file = fileUriPath(uri);
+    if (file) this.host.onOpenFile(this, file, null);
+    else if (/^https?:\/\//i.test(uri)) void api.openUrl(uri).catch(() => undefined);
+  }
+
+  /**
+   * Paths of files in a line of output (`src/app.ts:42`, `C:\…\Program.cs(12,5)`) as links that open
+   * in the Files pane. Only paths that are files on this computer become links.
+   */
+  private provideFileLinks(y: number, callback: (links: ILink[] | undefined) => void): void {
+    const line = this.spec.connection ? undefined : this.term.buffer.active.getLine(y - 1);
+    if (!line) return callback(undefined);
+    const text = line.translateToString(true);
+    const found = findPathLinks(text).flatMap((link) => {
+      const path = resolvePath(link.path, this.cwd);
+      return path ? [{ link, path }] : [];
+    });
+    if (!found.length) return callback(undefined);
+    const now = performance.now();
+    const unknown = [...new Set(found.map((f) => f.path))].filter((p) => now - (this.knownFiles.get(p)?.at ?? -Infinity) > FILE_CHECK_MS);
+    const done = () => {
+      const cells = cellsOf(line);
+      const links = found
+        .filter((f) => this.knownFiles.get(f.path)?.file)
+        .map(({ link, path }): ILink => ({
+          range: { start: { x: (cells[link.start] ?? link.start) + 1, y }, end: { x: (cells[link.end - 1] ?? link.end - 1) + 1, y } },
+          text: text.slice(link.start, link.end),
+          decorations: { pointerCursor: true, underline: true },
+          activate: (e) => {
+            if (e.ctrlKey) this.host.onOpenFile(this, path, link.line);
+          },
+        }));
+      callback(links.length ? links : undefined);
+    };
+    if (!unknown.length) return done();
+    api.filesExist(unknown).then(
+      (files) => {
+        unknown.forEach((p, i) => this.knownFiles.set(p, { file: !!files[i], at: performance.now() }));
+        if (this.knownFiles.size > 500) this.knownFiles.clear();
+        done();
+      },
+      () => callback(undefined),
+    );
   }
 
   private registerOscHandlers(): void {

@@ -102,6 +102,19 @@ export function applyUiTheme(theme: Theme): void {
   const root = document.documentElement;
   for (const [k, v] of Object.entries(theme.ui)) root.style.setProperty(`--${k}`, v);
   root.style.setProperty('--term-bg', theme.term.background ?? '#000');
+  // The terminal's colours also colour code in the Files pane, so it matches the theme.
+  const t = theme.term;
+  const ansi: Record<string, string | undefined> = {
+    fg: t.foreground,
+    red: t.red,
+    green: t.green,
+    yellow: t.yellow,
+    blue: t.blue,
+    magenta: t.magenta,
+    cyan: t.cyan,
+    comment: t.brightBlack,
+  };
+  for (const [k, v] of Object.entries(ansi)) if (v) root.style.setProperty(`--ansi-${k}`, v);
   root.style.colorScheme = theme.dark ? 'dark' : 'light';
 }
 

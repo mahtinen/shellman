@@ -140,6 +140,75 @@ export type GitOutcome =
   | { state: 'conflict'; files: string[] }
   | { state: 'needsLogin' | 'noUpstream' | 'offline' | 'failed'; message: string };
 
+/** One entry of a folder in the Files pane. */
+export interface FileEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+  /** A symlink or junction. */
+  link: boolean;
+}
+
+export type FileContent =
+  | { kind: 'text'; text: string; size: number }
+  | { kind: 'image'; dataUrl: string; size: number }
+  | { kind: 'binary' | 'tooLarge'; size: number };
+
+export type FileState = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflict';
+
+export interface FileChange {
+  /** Relative to the folder, with `/`. */
+  path: string;
+  oldPath: string | null;
+  state: FileState;
+  /** Null for a binary file. */
+  added: number | null;
+  removed: number | null;
+}
+
+export interface SearchMatch {
+  path: string;
+  /** 1-based. */
+  line: number;
+  text: string;
+}
+
+export interface Worktree {
+  path: string;
+  branch: string | null;
+  head: string;
+  /** The repository's own folder. */
+  main: boolean;
+  locked: boolean;
+  /** Its folder is gone. */
+  prunable: boolean;
+}
+
+export interface Commit {
+  sha: string;
+  subject: string;
+  author: string;
+  /** Unix time. */
+  time: number;
+}
+
+export interface GitChanges {
+  branch: string | null;
+  /** The commit compared with ('' before the first commit). */
+  base: string;
+  files: FileChange[];
+  /** Ignored paths relative to the folder; folders end with `/`. */
+  ignored: string[];
+}
+
+/** 1-based line runs, as in git's `@@ -old +new @@` (a count of 0: inserted or removed after that line). */
+export interface Hunk {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+}
+
 export const api = {
   spawn(request: SpawnRequest, onMessage: (msg: PtyMessage) => void): Promise<number> {
     const output = new Channel<PtyMessage>();
@@ -200,6 +269,38 @@ export const api = {
   gitCommit: (folder: string, paths: string[], message: string) => invoke<boolean>('git_commit', { folder, paths, message }),
   gitSync: (folder: string, prefer: 'neither' | 'mine' | 'theirs', interactive: boolean) =>
     invoke<GitOutcome>('git_sync', { folder, prefer, interactive }),
+  /** Null outside a repository. `base` is a commit, or HEAD for what isn't committed. */
+  gitChanges: (root: string, base: string) => invoke<GitChanges | null>('git_changes', { root, base }),
+  /** Null when the file wasn't there at `base`. */
+  gitFileAt: (root: string, path: string, base: string) => invoke<FileContent | null>('git_file_at', { root, path, base }),
+  /** Recent commits and other branches, for "Compare with"; null outside a repository. */
+  /** The repository a folder is in and its worktrees; null outside a repository. */
+  worktreeInfo: (folder: string) =>
+    invoke<{ top: string; prefix: string; branch: string | null; worktrees: Worktree[] } | null>('worktree_info', { folder }),
+  /** A new worktree at `path` on a new `branch` from `from`; `copy` lists ignored files to copy in. */
+  worktreeAdd: (folder: string, path: string, branch: string, from: string, copy: string) =>
+    invoke<{ path: string; branch: string; base: string; copied: number }>('worktree_add', { folder, path, branch, from, copy }),
+  /** What removing a worktree would lose. */
+  worktreeStatus: (path: string) => invoke<{ branch: string | null; changes: number; onlyHere: number }>('worktree_status', { path }),
+  worktreeRemove: (folder: string, path: string, deleteBranch: boolean, force: boolean) => invoke<void>('worktree_remove', { folder, path, deleteBranch, force }),
+  gitCompareTargets: (root: string) => invoke<{ branch: string | null; branches: string[]; commits: Commit[] } | null>('git_compare_targets', { root }),
+  gitHunks: (root: string, path: string, oldPath: string | null, base: string) => invoke<Hunk[]>('git_hunks', { root, path, oldPath, base }),
+  filesList: (root: string, dir: string) => invoke<{ entries: FileEntry[]; truncated: boolean }>('files_list', { root, dir }),
+  filesRead: (root: string, path: string) => invoke<FileContent>('files_read', { root, path }),
+  /** Which of `paths` (absolute) are files. */
+  filesExist: (paths: string[]) => invoke<boolean[]>('files_exist', { paths }),
+  filesAll: (root: string) => invoke<{ files: string[]; truncated: boolean }>('files_all', { root }),
+  /** Calls `onChange` (debounced) when something in `root` changes; stop with `collectionUnwatch`. */
+  filesWatch(root: string, onChange: () => void): Promise<number> {
+    const channel = new Channel<null>();
+    channel.onmessage = onChange;
+    return invoke<number>('files_watch', { root, onChange: channel });
+  },
+  /** Opens the folder in VS Code, with `file` open at `line`. */
+  /** Finds text in the folder's files (git grep); stops at `max` matches. */
+  filesSearch: (root: string, query: { query: string; caseSensitive: boolean; word: boolean; regex: boolean; include: string; max: number }) =>
+    invoke<{ matches: SearchMatch[]; truncated: boolean }>('files_search', { root, query }),
+  openInEditor: (root: string, file: string | null, line: number | null) => invoke<void>('open_in_editor', { root, file, line }),
   readJsonFile: (path: string) => invoke<string>('read_json_file', { path }),
   /** The 1Password CLI's path, or null when it isn't installed. */
   opPath: (custom: string) => invoke<string | null>('op_path', { custom }),

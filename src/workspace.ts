@@ -1,6 +1,8 @@
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
-import { baseName, ownerSession, sessionColor, uid } from './config';
+import { baseName, ownerSession, pathKey, sessionColor, uid } from './config';
 import { choiceDialog, confirmDialog, toast } from './dialogs';
+import { FilesPane } from './filesPane';
+import { isInside } from './worktrees';
 import { h } from './dom';
 import { icons } from './icons';
 import type { Match } from './keys';
@@ -21,7 +23,7 @@ import {
 import { Pane, type PaneHost } from './pane';
 import { isTerminal, type HeaderAction, type WorkspacePane } from './panes';
 import type { RequestHost, RequestPane } from './requestPane';
-import { layoutFromSnapshot, snapshotNode, type RequestRef, type SnapshotLeaf, type TabSnapshot, type WorkspaceSnapshot } from './snapshot';
+import { layoutFromSnapshot, snapshotNode, type FilesRef, type RequestRef, type SnapshotLeaf, type TabSnapshot, type WorkspaceSnapshot } from './snapshot';
 import { store } from './store';
 import type { LaunchSpec, SavedSession, SplitPlacement } from './types';
 
@@ -159,6 +161,19 @@ export class Workspace implements PaneHost, RequestHost {
     if (conn.legacyAlgorithms && !session.connection.legacyAlgorithms) toast(`"${session.name}" now allows old algorithms (Edit → SSH options).`);
   }
 
+  /**
+   * A path in a terminal was Ctrl+clicked. It opens in the Files pane of a folder it is in: one that is
+   * open already, the terminal's session folder, the terminal's own folder, or else the file's folder.
+   */
+  onOpenFile(pane: Pane, path: string, line: number | null): void {
+    const key = pathKey(path);
+    const inside = (root: string) => key.startsWith(`${pathKey(root)}\\`);
+    const open = [...this.panes.values()].filter((p): p is FilesPane => p instanceof FilesPane).map((p) => p.root);
+    const root = [...open, this.ownerOf(pane)?.cwd ?? '', pane.cwd].find((r) => r && inside(r)) ?? path.slice(0, path.lastIndexOf('\\'));
+    const rel = path.slice(root.replace(/[\\/]+$/, '').length + 1).replace(/\\/g, '/');
+    this.openFiles(root, { path: rel, line: line ?? undefined, mode: 'file' });
+  }
+
   onEdited(pane: WorkspacePane): void {
     const tab = this.paneTab.get(pane.id);
     if (tab?.preview) this.pin(tab);
@@ -216,6 +231,9 @@ export class Workspace implements PaneHost, RequestHost {
   ownerOf(pane: WorkspacePane): SavedSession | undefined {
     if (!isTerminal(pane)) return undefined;
     if (pane.connection) return store.session(pane.spec.sessionId);
+    // A worktree of a session's repository is outside the session's folder, but it is still the session's.
+    const wt = pane.spec.worktree;
+    if (wt && isInside(pane.cwd, wt.path)) return store.session(pane.spec.sessionId) ?? ownerSession(store.config.sessions, pane.cwd, pane.spec.sessionId);
     return ownerSession(store.config.sessions, pane.cwd, pane.spec.sessionId);
   }
 
@@ -250,6 +268,8 @@ export class Workspace implements PaneHost, RequestHost {
   specFrom(pane: Pane, rerunCommand: boolean): LaunchSpec {
     // A duplicate gets its own Claude conversation rather than sharing this one.
     if (rerunCommand) return { ...pane.spec, cwd: pane.cwd, claudeId: undefined, claudeStarted: undefined };
+    // Next to a worktree terminal: still in that worktree, and still the session's.
+    const wt = pane.spec.worktree && isInside(pane.cwd, pane.spec.worktree.path) ? pane.spec.worktree : undefined;
     if (pane.connection) {
       const cwd = store.defaultCwd();
       return { name: baseName(cwd), cwd, command: '', shellId: '', env: {}, color: '', sessionId: null };
@@ -260,8 +280,9 @@ export class Workspace implements PaneHost, RequestHost {
       command: '',
       shellId: pane.spec.shellId,
       env: {},
-      color: '',
-      sessionId: null,
+      color: wt ? pane.spec.color : '',
+      sessionId: wt ? pane.spec.sessionId : null,
+      ...(wt ? { worktree: { ...wt } } : {}),
     };
   }
 
@@ -423,7 +444,26 @@ export class Workspace implements PaneHost, RequestHost {
   /** A pane for a saved one; null when it can't be reopened. */
   private paneFromSnapshot(leaf: SnapshotLeaf): WorkspacePane | null {
     if ('pane' in leaf) return new Pane(leaf.pane, this);
+    if ('files' in leaf) return new FilesPane(leaf.files, this);
     return this.requestFactory?.(leaf.request, this) ?? null;
+  }
+
+  /**
+   * Shows a folder in a Files pane, and `path` (relative to it) in that pane. A pane already open
+   * for the folder is reused.
+   */
+  openFiles(
+    root: string,
+    how: { path?: string; line?: number; mode?: FilesRef['mode']; base?: string; baseLabel?: string; placement?: SplitPlacement; targetPaneId?: string } = {},
+  ): FilesPane {
+    let pane = [...this.panes.values()].find((p): p is FilesPane => p instanceof FilesPane && p.isFor(root));
+    if (pane) this.setActivePane(pane.id, true);
+    else {
+      pane = new FilesPane({ root, path: '', view: 'all', mode: how.mode ?? 'file', base: how.base ?? 'HEAD', baseLabel: how.base ? (how.baseLabel ?? '') : '' }, this);
+      this.add(pane, how.placement ?? 'tab', how.targetPaneId);
+    }
+    if (how.path) pane.open(how.path, how.mode, how.line);
+    return pane;
   }
 
   /** The open pane of a request file, if any. */

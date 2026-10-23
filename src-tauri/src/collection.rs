@@ -298,6 +298,11 @@ pub struct Watches {
 impl Watches {
     /// Starts watching `folder`; `changed` returning false (its listener is gone) stops it.
     pub fn watch(&self, folder: &Path, changed: impl Fn() -> bool + Send + 'static) -> Result<u32, String> {
+        self.watch_with(folder, relevant, changed)
+    }
+
+    /// Like `watch`, with `relevant` deciding which changed paths count.
+    pub fn watch_with(&self, folder: &Path, relevant: fn(&Path) -> bool, changed: impl Fn() -> bool + Send + 'static) -> Result<u32, String> {
         use notify::Watcher;
         let (tx, rx) = mpsc::channel::<()>();
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {

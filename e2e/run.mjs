@@ -1426,6 +1426,258 @@ if (phase === 'main') {
     }
   });
 
+  await step('Files pane: tree, changes, diff, search, navigation and live refresh (read-only)', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-files-'));
+    const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const put = (rel, text) => {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), text);
+    };
+    const invoke = (cmd, args) => ev(`window.__TAURI_INTERNALS__.invoke(${js(cmd)}, ${js(args)}).then((v) => ({ v }), (e) => ({ e: String(e) }))`);
+    const files = `[...__t.ws.panes.values()].find((p) => p.kind === 'files')`;
+    try {
+      put('src/app.ts', 'const a = 1;\nconst b = 2;\nexport const sum = a + b;\n');
+      put('src/use.ts', "import { sum } from './app';\nconsole.log(sum);\n");
+      put('.gitignore', 'out/\n');
+      put('out/build.js', 'built\n');
+      git('init', '-q', '-b', 'main');
+      for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.autocrlf', 'false']]) git('config', k, v);
+      git('add', '.');
+      git('commit', '-q', '-m', 'init');
+      put('src/app.ts', 'const a = 1;\nconst b = 3;\nexport const sum = a + b;\n');
+      put('src/new.ts', 'export {};\n');
+
+      await ev(`void __t.ws.openFiles(${js(root)})`);
+      await waitFor(`${files}?.changeCount === 2`, 10000, 'two changes');
+      await waitFor(`[...document.querySelectorAll('.files-pane .fp-row .fp-name')].map((e) => e.textContent).join() === 'out,src,.gitignore'`, 5000, 'tree');
+      assert(await ev(`document.querySelector('.files-pane .fp-row.dir.ignored .fp-name').textContent === 'out'`), 'ignored folder not dimmed');
+      assert(await ev(`!!document.querySelector('.files-pane .fp-row.has-changes .fp-dot')`), 'folder with changes not marked');
+
+      await ev(`void ${files}.show('src/app.ts', 'diff')`);
+      await waitFor(`document.querySelectorAll('.files-pane .lv-row.d-del').length === 1 && document.querySelectorAll('.files-pane .lv-row.d-add').length === 1`, 5000, 'one line changed');
+      assert(await ev(`[...document.querySelectorAll('.files-pane .d-add .wd')].map((e) => e.textContent).join() === '3'`), 'changed word');
+      await shot(path.join(OUT, '07-files-pane.png'));
+
+      // Search, and going to a definition and its references.
+      await ev(`${files}.searchProject('sum')`);
+      await waitFor(`document.querySelectorAll('.files-pane .fp-match').length === 3`, 5000, 'three matches for sum');
+      await ev(`void ${files}.goToDefinition('sum')`);
+      await waitFor(`${files}.path === 'src/app.ts' && document.querySelector('.files-pane .lv-target .wd')?.textContent === 'sum'`, 5000, 'definition of sum');
+      await ev(`void ${files}.findReferences('sum')`);
+      await waitFor(`document.querySelector('.files-pane .fp-searchnote')?.textContent.startsWith('References to sum: 3 results in 2 files')`, 5000, 'references');
+      await ev(`void ${files}.goBack(1)`);
+      await waitFor(`${files}.path === 'src/app.ts'`, 5000, 'back');
+
+      // Right-click a line → Copy reference: path:line for Claude.
+      const clip = await invoke('clipboard_read', {});
+      try {
+        const at = await ev(`(() => { const r = document.querySelector('.files-pane .lv-row[data-row="2"] .lv-ln').getBoundingClientRect(); return { x: r.left + 4, y: r.top + r.height / 2 }; })()`);
+        for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'right', clickCount: 1 });
+        const item = `[...document.querySelectorAll('.menu-item')].find((e) => e.textContent.includes('Copy reference app.ts:3'))`;
+        await waitFor(`!!${item}`, 3000, 'Copy reference in the menu');
+        await ev(`${item}.click()`);
+        await waitFor(`window.__TAURI_INTERNALS__.invoke('clipboard_read').then((t) => t === 'src/app.ts:3')`, 3000, 'reference on the clipboard');
+      } finally {
+        await invoke('clipboard_write', { text: clip.v ?? '' });
+      }
+
+      // Only paths inside the folder can be read.
+      assert((await invoke('files_read', { root, path: '../outside.txt' })).e, 'a path outside the folder was read');
+      assert((await invoke('git_file_at', { root, path: '../x', base: 'HEAD' })).e, 'git read outside the folder');
+      assert((await invoke('git_changes', { root, base: '--output=x' })).e, 'an option was taken as the base');
+
+      // It follows changes on disk, and is saved for the next start.
+      put('src/third.ts', 'export {};\n');
+      await waitFor(`${files}.changeCount === 3`, 10000, 'refreshed after a new file');
+
+      // Compared from the first commit on, the committed files count as changes too.
+      const first = git('rev-parse', 'HEAD').trim();
+      await ev(`${files}.setBase(${js(`${first}^`)}, ${js(`${first.slice(0, 7)} init`)})`);
+      await waitFor(`${files}.changeCount === 5`, 10000, 'changes from the first commit on');
+      assert(await ev(`document.querySelector('.files-pane .fp-base').textContent.includes('from ${first.slice(0, 7)}')`), 'footer shows the base');
+      const leaf = await ev(`JSON.stringify(__t.ws.snapshot().tabs.map((t) => t.root).find((r) => r.files))`);
+      const saved = JSON.parse(leaf).files;
+      assert(saved.path === 'src/app.ts' && saved.view === 'search' && saved.base === `${first}^`, 'snapshot: ' + leaf);
+      await ev(`__t.ws.closePane(${files}.id)`);
+
+      // A path printed in a terminal: Ctrl+click opens it in the Files pane at its line.
+      await ev(`void __t.ws.open({ name: 'links', cwd: ${js(root)}, command: '', shellId: 'powershell', env: {}, color: '', sessionId: null }, 'tab')`);
+      await waitFor(`__t.text().includes(${prompt(root)})`, 15000, 'prompt in the temp repo');
+      await type("Write-Output ('see ' + 'src/app.ts:2 here')");
+      await key('Enter', 'Enter', 13);
+      await waitFor(`__t.text().includes('see src/app.ts:2 here')`, 5000, 'path printed');
+      const at = await ev(`(() => {
+        const t = __t.active().term;
+        const b = t.buffer.active;
+        for (let y = b.length - 1; y >= 0; y--) {
+          const text = b.getLine(y).translateToString(true);
+          const x = text.indexOf('see src/app.ts');
+          if (x < 0 || text.includes('Write-Output')) continue;
+          const cell = t._core._renderService.dimensions.css.cell;
+          const r = t.element.querySelector('.xterm-screen').getBoundingClientRect();
+          return { x: r.left + (x + 6) * cell.width + cell.width / 2, y: r.top + (y - b.viewportY) * cell.height + cell.height / 2 };
+        }
+        return null;
+      })()`);
+      assert(at, 'printed path not on screen');
+      await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y, modifiers: 2 });
+      await sleep(400);
+      for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1, modifiers: 2 });
+      await waitFor(`${files}?.path === 'src/app.ts' && document.querySelector('.files-pane .lv-target .lv-ln')?.textContent === '2'`, 8000, 'opened at line 2');
+      await ev(`(() => { for (const t of [...__t.ws.tabs]) if (__t.ws.panesOf(t).some((p) => p.kind === 'files' || p.cwd === ${js(root)})) __t.ws.removeTab(t); return true; })()`);
+    } finally {
+      // The terminal that was in the folder may still be closing; a leftover temp folder isn't a failure.
+      try {
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      } catch (e) {
+        console.log(`       (could not remove ${root}: ${e.code})`);
+      }
+    }
+  });
+
+  await step('Markdown preview: rendered, safe, links and images from the folder', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-md-'));
+    const files = `[...__t.ws.panes.values()].find((p) => p.kind === 'files')`;
+    try {
+      fs.mkdirSync(path.join(root, 'docs'));
+      fs.writeFileSync(path.join(root, 'logo.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
+      fs.writeFileSync(path.join(root, 'docs', 'setup.md'), '# Setup\n\nRun it.\n');
+      fs.writeFileSync(
+        path.join(root, 'README.md'),
+        [
+          '# Shop',
+          '',
+          '- [x] done',
+          '- [ ] todo',
+          '',
+          '| Name | Size |',
+          '|------|-----:|',
+          '| a | 1 |',
+          '',
+          '```ts',
+          'const a = 1;',
+          '```',
+          '',
+          '![logo](logo.png) See [setup](docs/setup.md) and ![remote](https://example.com/x.png).',
+          '',
+          '<img src="nope.png" onerror="window.__pwned = 1"><script>window.__pwned = 2</script>',
+          '<a href="javascript:window.__pwned = 3" onclick="window.__pwned = 4">click</a> <div onmouseover="window.__pwned = 5" style="color:red">x</div>',
+          '',
+        ].join('\n'),
+      );
+      await ev(`void __t.ws.openFiles(${js(root)}, { path: 'README.md' })`);
+      await waitFor(`document.querySelector('.files-pane .md h1')?.textContent === 'Shop'`, 8000, 'preview drawn');
+      assert((await ev(`document.querySelectorAll('.files-pane .md li.md-task').length`)) === 2, 'task list');
+      assert((await ev(`document.querySelectorAll('.files-pane .md th').length`)) === 2, 'table');
+      assert(await ev(`!!document.querySelector('.files-pane .md pre .sy-kw')`), 'code block colours');
+      await waitFor(`document.querySelector('.files-pane .md img[alt="logo"]')?.src.startsWith('data:image/png')`, 5000, 'image from the folder');
+      assert(await ev(`[...document.querySelectorAll('.files-pane .md a.md-link')].some((a) => a.title.includes('not loaded'))`), 'remote image as a link');
+      // Nothing from the file runs: no scripts, no handlers, no styles, no links that navigate.
+      await ev(`(() => { const d = document.querySelector('.files-pane .md div[align], .files-pane .md div:last-child'); d?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); [...document.querySelectorAll('.files-pane .md a')].find((a) => a.textContent === 'click')?.click(); return true; })()`);
+      await sleep(300);
+      assert((await ev(`window.__pwned === undefined`)) === true, 'HTML in the file ran');
+      // (Table cells get their alignment from Shellman as a style; nothing else has one.)
+      const unsafe = await ev(`[...document.querySelectorAll('.files-pane .md *')].filter((e) => e.tagName === 'SCRIPT' || (e.hasAttribute('style') && !/^T[HD]$/.test(e.tagName)) || e.hasAttribute('href') || [...e.attributes].some((a) => a.name.startsWith('on'))).map((e) => e.outerHTML.slice(0, 120))`);
+      assert(!unsafe.length, 'unsafe markup kept: ' + unsafe.join(' | '));
+      // A relative link opens the other file, and Source shows the text.
+      await ev(`[...document.querySelectorAll('.files-pane .md a.md-link')].find((a) => a.textContent === 'setup').click()`);
+      await waitFor(`${files}.path === 'docs/setup.md' && document.querySelector('.files-pane .md h1')?.textContent === 'Setup'`, 5000, 'linked file');
+      await ev(`[...document.querySelectorAll('.files-pane .fp-seg .btn')].find((b) => b.textContent === 'Source').click()`);
+      await waitFor(`!document.querySelector('.files-pane .md') && document.querySelectorAll('.files-pane .lv-row').length === 3`, 5000, 'source view');
+      await ev(`[...document.querySelectorAll('.files-pane .fp-seg .btn')].find((b) => b.textContent === 'Preview').click()`);
+      await waitFor(`!!document.querySelector('.files-pane .md')`, 5000, 'back to the preview');
+      await ev(`__t.ws.closePane(${files}.id)`);
+    } finally {
+      try {
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      } catch (e) {
+        console.log(`       (could not remove ${root}: ${e.code})`);
+      }
+    }
+  });
+
+  await step('git worktrees: a session in its own worktree, its Files, removal, and turning them off', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-wt-'));
+    const repo = path.join(base, 'shop');
+    const tree = path.join(base, 'shop.worktrees', 'shop-1');
+    const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const row = `[...document.querySelectorAll('.session-row')].find((r) => r.querySelector('.session-name')?.textContent === 'Shop')`;
+    const menuItem = (label) => `[...document.querySelectorAll('.menu-item')].find((e) => e.textContent.includes(${js(label)}))`;
+    try {
+      fs.mkdirSync(repo);
+      fs.writeFileSync(path.join(repo, 'app.ts'), 'export const a = 1;\n');
+      fs.writeFileSync(path.join(repo, '.gitignore'), '.env.local\n');
+      git(repo, 'init', '-q', '-b', 'main');
+      for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.autocrlf', 'false']]) git(repo, 'config', k, v);
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-q', '-m', 'init');
+      fs.writeFileSync(path.join(repo, '.env.local'), 'TOKEN=x\n');
+      await ev(`__shellmanStore.update((c) => {
+        c.settings.worktreeCopy = '.env.local';
+        c.sessions.push({ id: 's-wt', name: 'Shop', groupId: null, connection: null, cwd: ${js(repo)}, command: '', shellId: 'powershell', color: '', env: {}, collapsed: false, newWorktree: true });
+      })`);
+      await waitFor(`!!${row}`, 3000, 'session row');
+
+      // Its menu offers worktrees.
+      await ev(`${row}.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`!!${menuItem('Open in new worktree')} && !!${menuItem('Worktrees')}`, 2000, 'worktree menu entries');
+      await ev(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+
+      // A click asks for the worktree's name (the session opens each terminal in one), then opens there.
+      await ev(`${row}.click()`);
+      await waitFor(`document.querySelector('.dialog h2')?.textContent === 'New worktree for Shop'`, 5000, 'new worktree dialog');
+      assert((await ev(`document.querySelector('.dialog input').value`)) === 'shop-1', 'default name');
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find((b) => b.textContent === 'Create').click()`);
+      await waitFor(`!document.querySelector('.dialog') && __t.active()?.spec?.worktree?.branch === 'claude/shop-1'`, 20000, 'terminal in the worktree');
+      assert((await ev(`__t.active().cwd.toLowerCase()`)) === tree.toLowerCase(), 'cwd: ' + (await ev(`__t.active().cwd`)));
+      assert(fs.readFileSync(path.join(tree, '.env.local'), 'utf8') === 'TOKEN=x\n', '.env.local copied');
+      await waitFor(`__t.text().includes(${prompt(tree)})`, 15000, 'prompt in the worktree');
+      assert(await ev(`[...document.querySelectorAll('.term-row')].some((r) => r.textContent.includes('claude/shop-1'))`), 'branch in the sidebar');
+
+      // Its Files pane compares with where the worktree started: committed work counts too.
+      fs.writeFileSync(path.join(tree, 'app.ts'), 'export const a = 2;\n');
+      git(tree, 'commit', '-q', '-am', 'work');
+      fs.writeFileSync(path.join(tree, 'notes.md'), 'x\n');
+      await ev(`__t.app.showFiles(__t.active())`);
+      const files = `[...__t.ws.panes.values()].find((p) => p.kind === 'files')`;
+      await waitFor(`${files}?.changeCount === 2 && ${files}.root.toLowerCase() === ${js(tree.toLowerCase())}`, 10000, 'worktree changes');
+
+      // Removing says the commit is only on that branch; with the branch deleted, both are gone.
+      await ev(`void __t.app.removeWorktree({ path: ${js(tree)}, branch: 'claude/shop-1' }, ${js(repo)})`);
+      await waitFor(`[...document.querySelectorAll('.dialog .wt-warn')].some((p) => p.textContent.includes('only on claude/shop-1'))`, 5000, 'remove dialog');
+      await ev(`(() => { const c = document.querySelector('.dialog input[type=checkbox]'); c.checked = true; [...document.querySelectorAll('.dialog .btn')].find((b) => b.textContent === 'Remove').click(); return true; })()`);
+      const gone = async () => !fs.existsSync(tree) && !git(repo, 'branch', '--list', 'claude/shop-1').trim();
+      const end = Date.now() + 15000;
+      while (!(await gone()) && Date.now() < end) await sleep(250);
+      assert(await gone(), 'worktree or branch still there');
+      assert(!(await ev(`!!${files}`)), 'Files pane of the worktree still open');
+
+      // Turned off in Settings: no worktree entries, and the session opens in its folder as usual.
+      await ev(`__shellmanStore.update((c) => { c.settings.worktrees = false; })`);
+      await ev(`${row}.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`document.querySelectorAll('.menu-item').length > 3`, 2000, 'session menu');
+      assert(!(await ev(`!!${menuItem('worktree')}`)), 'worktree entries shown while off');
+      await ev(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+      await ev(`${row}.click()`);
+      await waitFor(`!document.querySelector('.dialog') && __t.active()?.cwd?.toLowerCase() === ${js(repo.toLowerCase())} && !__t.active().spec.worktree`, 8000, 'plain session terminal');
+    } finally {
+      await ev(`(() => {
+        for (const t of [...__t.ws.tabs]) if (__t.ws.panesOf(t).some((p) => (p.cwd ?? p.root ?? '').toLowerCase().startsWith(${js(base.toLowerCase())}))) __t.ws.removeTab(t);
+        __shellmanStore.update((c) => { c.sessions = c.sessions.filter((s) => s.id !== 's-wt'); c.settings.worktrees = true; c.settings.worktreeCopy = ''; });
+        return true;
+      })()`).catch(() => undefined);
+      // The shells that were in the folders take a moment to exit.
+      await sleep(1500);
+      try {
+        fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      } catch (e) {
+        console.log(`       (could not remove ${base}: ${e.code})`);
+      }
+    }
+  });
+
   await step('open terminals are saved for the next start', async () => {
     // A known layout: the session with a cmd split beside it (cmd focused), and a renamed PowerShell tab.
     await ev(`(() => { for (const t of [...__t.ws.tabs]) __t.ws.removeTab(t); return true; })()`);

@@ -14,7 +14,7 @@ export type HeaderAction = 'zoom' | 'tab' | 'close';
 
 export interface WorkspacePane {
   readonly id: string;
-  readonly kind: 'terminal' | 'request';
+  readonly kind: 'terminal' | 'request' | 'files';
   /** The `.pane` element, with `data-pane` set to the id (drag and drop finds panes by it). */
   readonly el: HTMLElement;
   /** Shown in its header, and in dialogs about it. */

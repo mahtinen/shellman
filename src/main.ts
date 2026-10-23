@@ -3,9 +3,12 @@ import './styles.css';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { api } from './api';
 import { collections } from './collections';
-import { baseName, deleteGroup, groupColor, groupPath, newGroup, sessionColor, uid } from './config';
+import { baseName, deleteGroup, groupColor, groupPath, newGroup, ownerSession, sessionColor, uid } from './config';
 import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, newSshConnection, parseQuickConnect } from './connection';
 import { confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
+import { FilesPane } from './filesPane';
+import { askNewWorktree, askRemoveWorktree } from './worktreeDialog';
+import { folderInWorktree, isInside } from './worktrees';
 import { clamp, h, isEditableTarget, setChildren } from './dom';
 import { icons, type IconName } from './icons';
 import { importSessions } from './importDialog';
@@ -96,6 +99,9 @@ class App {
       editGroup: (g) => void this.editGroup(g),
       removeGroup: (g) => void this.removeGroup(g),
       openFolder: (s) => void api.openDir(s.cwd).catch((e) => toast(String(e), 'error')),
+      showFiles: (s) => void this.workspace.openFiles(s.cwd),
+      newWorktree: (s) => void this.openInNewWorktree(s, 'tab'),
+      worktreesMenu: (s, x, y) => void this.worktreesMenu(s, x, y),
       copyCommand: (s) => s.connection && void this.copyConnectionCommand(s.connection),
       terminals: () => this.openTerminals(),
       focusTerminal: (id) => this.workspace.setActivePane(id, true),
@@ -239,6 +245,7 @@ class App {
 
   private updateStatus(pane: WorkspacePane | null): void {
     if (pane instanceof RequestPane) return this.updateRequestStatus(pane);
+    if (pane instanceof FilesPane) return this.updateFilesStatus(pane);
     if (!isTerminal(pane)) {
       this.statusLeft.replaceChildren(h('span', { class: 'muted' }, `${store.config.sessions.length} saved sessions`));
       this.statusRight.replaceChildren(h('span', { class: 'muted' }, `${shortcutFor('palette')} quick open`));
@@ -304,6 +311,50 @@ class App {
         void getCurrentWindow().setTitle(title).catch(() => undefined);
       }
     }
+  }
+
+  /** A Files pane's folder, branch and changes. */
+  private updateFilesStatus(pane: FilesPane): void {
+    const n = pane.changeCount;
+    setChildren(
+      this.statusLeft,
+      h('span', { class: 'status-shell static' }, 'Files'),
+      h('button', { class: 'status-link', title: 'Open in Explorer', onclick: () => void api.openDir(pane.root).catch((e) => toast(String(e), 'error')) }, pane.root),
+      pane.branch ? h('span', { class: 'muted mono' }, pane.branch) : null,
+    );
+    setChildren(this.statusRight, n === null ? null : h('span', { class: 'muted' }, n === 1 ? '1 change' : `${n} changes`), h('span', { class: 'muted' }, 'read-only'));
+    if (this.workspace.activeTab) {
+      const title = `${this.workspace.tabLabel(this.workspace.activeTab)} — Shellman`;
+      if (document.title !== title) {
+        document.title = title;
+        void getCurrentWindow().setTitle(title).catch(() => undefined);
+      }
+    }
+  }
+
+  /**
+   * The folder a Files pane shows for `pane`: a terminal's session folder (or its own folder outside
+   * every session), or a request group's linked folder.
+   */
+  private filesRoot(pane: WorkspacePane | null): string | null {
+    // A worktree terminal: the worktree's folder, not the session's own.
+    if (isTerminal(pane) && pane.spec.worktree && isInside(pane.cwd, pane.spec.worktree.path)) return pane.spec.cwd;
+    if (isTerminal(pane)) return pane.connection ? null : (this.workspace.ownerOf(pane)?.cwd ?? pane.cwd);
+    if (pane instanceof RequestPane) return (pane.group && collections.get(pane.group.id)?.folder) || null;
+    if (pane instanceof FilesPane) return pane.root;
+    return null;
+  }
+
+  private showFiles(pane = this.workspace.activePane()): boolean {
+    const root = this.filesRoot(pane);
+    if (!root) {
+      toast('Open a terminal in a folder first: the Files pane shows its files.');
+      return false;
+    }
+    // In a worktree, what changed is everything since it started (committed or not).
+    const wt = isTerminal(pane) ? pane.spec.worktree : undefined;
+    this.workspace.openFiles(root, wt?.base ? { base: wt.base, baseLabel: wt.base.startsWith('merge-base:') ? wt.base.slice(11) : `${wt.base.slice(0, 7)} (where ${wt.branch} started)` } : {});
+    return true;
   }
 
   /** A request pane's group, environment (a menu to change it) and file. */
@@ -591,11 +642,105 @@ class App {
 
   /** `plain`: the session's folder, shell and environment, without its startup command. */
   openSession(s: SavedSession, placement: SplitPlacement, shellId?: string, plain = false): void {
+    if (s.newWorktree && !plain && !s.connection && store.settings.worktrees) return void this.openInNewWorktree(s, placement, shellId);
     const pane = this.workspace.activePane();
     const spec = this.sessionSpec(s);
     if (shellId !== undefined && !s.connection) spec.shellId = shellId;
     if (plain) spec.command = '';
     this.workspace.open(spec, pane ? placement : 'tab', pane?.id);
+  }
+
+  // ---- worktrees --------------------------------------------------------
+
+  /** Asks for a name, makes a worktree of the session's repository, and opens the session there. */
+  private async openInNewWorktree(s: SavedSession, placement: SplitPlacement, shellId?: string): Promise<void> {
+    try {
+      const wt = await askNewWorktree(s.cwd, s.name);
+      if (!wt) return;
+      this.openInWorktree(s, wt.ref, wt.cwd, placement, false, shellId);
+      if (wt.copied) toast(`Copied ${wt.copied} ignored ${wt.copied === 1 ? 'file' : 'files'} into the worktree.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error', 8000);
+    }
+  }
+
+  private openInWorktree(s: SavedSession, ref: { path: string; branch: string; base: string }, cwd: string, placement: SplitPlacement, plain: boolean, shellId?: string): void {
+    const pane = this.workspace.activePane();
+    const spec = this.sessionSpec(s);
+    spec.cwd = cwd;
+    spec.worktree = { ...ref };
+    if (shellId !== undefined) spec.shellId = shellId;
+    if (plain) spec.command = '';
+    this.workspace.open(spec, pane ? placement : 'tab', pane?.id);
+  }
+
+  /** The worktrees of a session's repository: open a terminal or the files in one, or remove it. */
+  private async worktreesMenu(s: SavedSession, x: number, y: number): Promise<void> {
+    const info = await api.worktreeInfo(s.cwd).catch((e) => (toast(String(e), 'error'), undefined));
+    if (info === undefined) return;
+    if (!info) return toast(`${s.name} isn't in a git repository.`);
+    const main = info.worktrees.find((w) => w.main);
+    // A worktree found here (not made in this run) is compared with where it left the main branch.
+    const base = main?.branch ? `merge-base:${main.branch}` : 'HEAD';
+    const linked = info.worktrees.filter((w) => !w.main);
+    const entries: MenuEntry[] = [
+      { label: 'New worktree…', icon: 'plus', action: () => void this.openInNewWorktree(s, 'tab') },
+      'separator',
+      ...(linked.length
+        ? linked.map((w): MenuEntry => {
+            const branch = w.branch ?? `(${w.head.slice(0, 7)})`;
+            const cwd = folderInWorktree(w.path, info.prefix);
+            const ref = { path: w.path, branch: w.branch ?? '', base };
+            return {
+              label: `${branch}${w.prunable ? ' (folder gone)' : ''}`,
+              icon: 'folder',
+              submenu: [
+                ...(w.prunable
+                  ? []
+                  : [
+                      s.command
+                        ? { label: `Run ${s.command.length > 20 ? `${s.command.slice(0, 19)}…` : s.command} here`, icon: 'play' as const, action: () => this.openInWorktree(s, ref, cwd, 'tab', false) }
+                        : null,
+                      { label: 'Open a terminal here', icon: 'terminal' as const, action: () => this.openInWorktree(s, ref, cwd, 'tab', true) },
+                      { label: 'Show files', icon: 'files' as const, action: () => void this.workspace.openFiles(cwd, { base, baseLabel: main?.branch ?? '' }) },
+                    ].filter((e): e is NonNullable<typeof e> => !!e)),
+                'separator',
+                { label: 'Remove worktree…', icon: 'trash', danger: true, action: () => void this.removeWorktree({ path: w.path, branch: w.branch }, s.cwd) },
+              ],
+            };
+          })
+        : [{ label: 'No worktrees yet', disabled: true }]),
+    ];
+    showMenu(x, y, entries);
+  }
+
+  /** Removes a worktree after asking, closing the terminals and Files panes that are in it first. */
+  private async removeWorktree(ref: { path: string; branch: string | null }, repoFolder: string): Promise<void> {
+    const inIt = [...this.workspace.panes.values()].filter((p) => (isTerminal(p) && !p.connection && isInside(p.cwd, ref.path)) || (p instanceof FilesPane && isInside(p.root, ref.path)));
+    const terminals = inIt.filter(isTerminal).length;
+    const answer = await askRemoveWorktree(ref, terminals);
+    if (!answer) return;
+    for (const p of inIt) this.workspace.closePane(p.id);
+    // The shells that were in the folder take a moment to exit, and Windows can't delete a folder in use.
+    const attempt = () => api.worktreeRemove(repoFolder, ref.path, answer.deleteBranch, answer.force);
+    try {
+      await new Promise((r) => setTimeout(r, inIt.length ? 600 : 0));
+      await attempt().catch(async () => {
+        await new Promise((r) => setTimeout(r, 1500));
+        return attempt();
+      });
+      toast(`Removed the worktree${answer.deleteBranch && ref.branch ? ` and the branch ${ref.branch}` : ''}.`);
+    } catch (e) {
+      toast(String(e), 'error', 10000);
+    }
+  }
+
+  /** The worktree entries of a terminal's menu, when it is in one. */
+  private worktreeEntries(pane: Pane): MenuEntry[] {
+    const wt = pane.spec.worktree;
+    if (!wt || !isInside(pane.cwd, wt.path)) return [];
+    const repo = store.session(pane.spec.sessionId)?.cwd ?? wt.path;
+    return [{ label: `Remove worktree ${wt.branch}…`, icon: 'trash', danger: true, action: () => void this.removeWorktree({ path: wt.path, branch: wt.branch || null }, repo) }];
   }
 
   /** New plain terminal in `pane`'s directory with the given shell. */
@@ -633,10 +778,27 @@ class App {
       const panes = this.workspace.panesOf(tab);
       const inactive = tab.id !== this.workspace.activeTabId;
       for (const p of panes) {
+        if (p instanceof FilesPane) {
+          // Listed under the session whose folder it shows.
+          const owner = ownerSession(store.config.sessions, p.root, null)?.id ?? null;
+          const list = out.get(owner) ?? [];
+          list.push({
+            paneId: p.id,
+            tab: i + 1,
+            label: p.name,
+            shell: '',
+            tooltip: [`Tab ${i + 1}: ${this.workspace.tabLabel(tab)}`, p.location, '', 'Click: focus · Middle-click: close'].join('\n'),
+            active: p === active,
+            status: '',
+          });
+          out.set(owner, list);
+          continue;
+        }
         if (!isTerminal(p)) continue;
         // Opened from a session, or (for ad-hoc terminals) sitting in a session's directory.
         const owner = this.workspace.ownerOf(p)?.id ?? null;
-        const shell = p.connection ? connectionKindName(p.connection.kind) : (p.shell?.name ?? '');
+        const inWorktree = p.spec.worktree && isInside(p.cwd, p.spec.worktree.path) ? p.spec.worktree.branch : '';
+        const shell = p.connection ? connectionKindName(p.connection.kind) : inWorktree || (p.shell?.name ?? '');
         // Same name as the tab (a renamed tab's name applies when it is the only pane).
         const label = (panes.length === 1 ? tab.customTitle : null) || this.workspace.paneLabel(p);
         const status: OpenTerminal['status'] =
@@ -713,6 +875,8 @@ class App {
         run: (placement) => this.newTerminal(placement, sh.id),
       });
     }
+    const filesRoot = this.filesRoot(this.workspace.activePane());
+    if (filesRoot) items.push({ label: `Show files of ${baseName(filesRoot)}`, detail: filesRoot, icon: 'files', run: () => void this.workspace.openFiles(filesRoot) });
     items.push({ label: 'Open directory…', icon: 'folder', run: (placement) => void this.openDirectory(placement) });
     items.push({ label: 'New connection…', icon: 'globe', detail: 'SSH or Telnet', run: () => this.newConnection() });
     items.push({ label: 'Import sessions…', icon: 'globe', detail: 'SSH and Telnet sessions from XShell', run: () => importSessions() });
@@ -839,6 +1003,7 @@ class App {
 
   private paneMenu(pane: WorkspacePane, e: MouseEvent): void {
     if (pane instanceof RequestPane) return this.requestPaneMenu(pane, e);
+    if (pane instanceof FilesPane) return this.filesPaneMenu(pane, e);
     if (!isTerminal(pane)) return;
     const hasSel = pane.term.hasSelection();
     const conn = pane.connection;
@@ -872,11 +1037,33 @@ class App {
       'separator',
       { label: 'Find…', icon: 'search', shortcut: shortcutFor('find'), action: () => pane.openSearch() },
       { label: 'Save as session…', icon: 'save', shortcut: shortcutFor('saveSession'), action: () => this.saveAsSession(pane) },
+      ...localOnly([{ label: 'Show files', icon: 'files', shortcut: shortcutFor('showFiles'), action: () => void this.showFiles(pane) }]),
+      ...this.worktreeEntries(pane),
       conn
         ? { label: `Copy ${connectionKindName(conn.kind)} command`, icon: 'copy', action: () => void this.copyConnectionCommand(conn) }
         : { label: 'Open folder in Explorer', icon: 'openExternal', action: () => void api.openDir(pane.cwd).catch((err) => toast(String(err), 'error')) },
       { label: 'Clear', action: () => pane.term.clear() },
       { label: conn ? 'Reconnect' : 'Restart', action: () => pane.restart() },
+      'separator',
+      { label: 'Close pane', icon: 'x', danger: true, shortcut: shortcutFor('closePane'), action: () => void this.workspace.requestClosePane(pane.id) },
+    ]);
+  }
+
+  private filesPaneMenu(pane: FilesPane, e: MouseEvent): void {
+    const tab = this.workspace.tabOf(pane);
+    const split = !!tab && this.workspace.panesOf(tab).length > 1;
+    const terminal = (placement: SplitPlacement) =>
+      this.workspace.open({ name: baseName(pane.root), cwd: pane.root, command: '', shellId: '', env: {}, color: '', sessionId: null }, placement, pane.id);
+    const path = pane.path ? `${pane.root}\\${pane.path.replace(/\//g, '\\')}` : pane.root;
+    showMenu(e.clientX, e.clientY, [
+      { label: 'Open folder in VS Code', icon: 'openExternal', action: () => pane.openInEditor(true) },
+      { label: 'Open folder in Explorer', icon: 'openExternal', action: () => void api.openDir(pane.root).catch((err) => toast(String(err), 'error')) },
+      { label: 'Copy path', icon: 'copy', action: () => void api.clipboardWrite(path).then(() => toast('Path copied')) },
+      { label: 'Refresh', icon: 'refresh', action: () => void pane.refresh() },
+      'separator',
+      { label: 'Terminal in split right', icon: 'splitRight', shortcut: shortcutFor('splitRight'), action: () => terminal('right') },
+      { label: 'Terminal in split down', icon: 'splitDown', shortcut: shortcutFor('splitDown'), action: () => terminal('down') },
+      { label: 'Move to new tab', icon: 'popOut', shortcut: shortcutFor('movePaneToTab'), disabled: !split, action: () => this.workspace.moveToNewTab(pane.id) },
       'separator',
       { label: 'Close pane', icon: 'x', danger: true, shortcut: shortcutFor('closePane'), action: () => void this.workspace.requestClosePane(pane.id) },
     ]);
@@ -1059,6 +1246,8 @@ class App {
       { label: 'Split down here', icon: 'splitDown', action: () => this.openHere(pane, pane.spec.shellId, 'down') },
       { label: 'New tab here with', icon: 'terminal', submenu: this.newHereEntries(pane) },
       { label: 'Switch shell', icon: 'terminal', submenu: this.changeShellEntries(pane) },
+      { label: 'Show files', icon: 'files', action: () => void this.showFiles(pane) },
+      ...this.worktreeEntries(pane),
       moveToTab,
       moveInto,
       'separator',
@@ -1164,6 +1353,8 @@ class App {
       case 'palette':
         this.palette();
         return true;
+      case 'showFiles':
+        return this.showFiles();
       case 'newConnection':
         this.newConnection();
         return true;
@@ -1279,6 +1470,8 @@ async function main(): Promise<void> {
   applyUiTheme(getTheme(store.settings.theme));
   const app = new App();
   (window as any).__shellman = app;
+  // For the end-to-end tests, which set up sessions and settings directly.
+  (window as any).__shellmanStore = store;
   await app.restoreWorkspace();
   updater.start();
 }

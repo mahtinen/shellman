@@ -496,7 +496,7 @@ export function editSession(
           (/port/i.test(problem) ? port : /user/i.test(problem) ? user : /jump/i.test(problem) ? jump : /key file/i.test(problem) ? identity : /key/i.test(problem) ? keySelect : host).focus();
           return null;
         }
-        return { ...base, name: name.value.trim() || connectionTarget(c), connection: c, cwd: '', command: '', shellId: '' };
+        return { ...base, name: name.value.trim() || connectionTarget(c), connection: c, cwd: '', command: '', shellId: '', newWorktree: false };
       }
       let dir = cwd.value.trim().replace(/^"(.*)"$/, '$1');
       if (!dir) {
@@ -517,7 +517,7 @@ export function editSession(
         cwd.focus();
         return null;
       }
-      return { ...base, name: name.value.trim() || baseName(dir), connection: null, cwd: dir, command: command.value.trim(), shellId: shell.value };
+      return { ...base, name: name.value.trim() || baseName(dir), connection: null, cwd: dir, command: command.value.trim(), shellId: shell.value, newWorktree: worktree.checked && store.settings.worktrees };
     };
 
     const finish = async (save: boolean) => {
@@ -527,6 +527,19 @@ export function editSession(
       return true;
     };
 
+    // A worktree per terminal: for several Claudes in one repository (Settings can turn worktrees off).
+    const worktree = h('input', { type: 'checkbox', checked: !!initial.newWorktree });
+    const worktreeEl = h(
+      'label',
+      { class: 'check', hidden: !store.settings.worktrees },
+      worktree,
+      h(
+        'span',
+        null,
+        'Open each terminal in a new git worktree',
+        h('small', { class: 'hint' }, 'Its own folder and branch, so several Claudes can work in one repository without touching each other\'s files. Shift+click opens the folder itself.'),
+      ),
+    );
     const advanced = h(
       'details',
       { class: 'advanced', open: Object.keys(initial.env ?? {}).length > 0 },
@@ -567,6 +580,7 @@ export function editSession(
         h('small', { class: 'hint' }, 'Runs when the terminal opens; you get the shell back when it exits.'),
       ),
       h('label', { class: 'field' }, h('span', null, 'Shell'), shell),
+      worktreeEl,
     );
     const connectionHint = h('small', { class: 'hint' });
     const connectionFields = h(
