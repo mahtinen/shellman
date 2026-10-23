@@ -1131,7 +1131,19 @@ if (phase === 'main') {
       const tenantAt = await ev(`(() => { const s = [...${active}.el.querySelectorAll('.rq-kv .vf-view [data-var]')].find(s => s.dataset.var === 'TENANT'); const r = s.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
       await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tenantAt.x, y: tenantAt.y });
       await waitFor(`[...${active}.el.querySelectorAll('.rq-kv input')].some(i => i.title.startsWith('{{TENANT}} = acme-test'))`, 2000, 'hover title');
+      // The coloured copy must lay out as the field's own text, or the caret seems elsewhere than it is.
+      const unlike = await ev(`[...${active}.el.querySelectorAll('.vf.has-vars')].map(f => {
+        const a = getComputedStyle(f.querySelector('input')), b = getComputedStyle(f.querySelector('.vf-view'));
+        return ['fontFamily', 'fontSize', 'fontWeight', 'letterSpacing', 'paddingLeft', 'borderLeftWidth'].filter(k => a[k] !== b[k]).map(k => k + ': ' + a[k] + ' / ' + b[k]).join(', ');
+      }).filter(Boolean).join('; ')`);
+      assert(unlike === '', 'field and its coloured copy differ: ' + unlike);
+      // Ctrl held over a variable makes it a link (hand cursor), also without moving the mouse.
+      const linked = `${active}.el.querySelector('.rq-kv input.vf-link') && ${active}.el.querySelector('.rq-kv .vf-hot')?.dataset.var === 'TENANT'`;
+      await c.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, modifiers: 2 });
+      await waitFor(`!!(${linked})`, 2000, 'Ctrl makes a link');
       await shot(path.join(OUT, '23-header-variables.png'));
+      await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17 });
+      await waitFor(`!(${linked})`, 2000, 'letting go of Ctrl ends the link');
       await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: tenantAt.x, y: tenantAt.y, button: 'left', clickCount: 1, modifiers: 2 });
       await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tenantAt.x, y: tenantAt.y, button: 'left', clickCount: 1, modifiers: 2 });
       await waitFor(`document.querySelector('.variables-dialog .var-row.focus input.mono')?.value === 'TENANT'`, 3000, 'Ctrl+click edits TENANT');

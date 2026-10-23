@@ -38,25 +38,43 @@ export function varSpan(text: string, vars: Map<string, Variable>, name = usedVa
   return h('span', { class: `seg-${d.kind}`, dataset: { var: name, tip: d.title } }, text);
 }
 
+/** The field under the mouse: Ctrl pressed or let go there turns its variable into a link or back. */
+let hovered: ((ctrl: boolean) => void) | null = null;
+window.addEventListener('keydown', (e) => e.key === 'Control' && hovered?.(true));
+window.addEventListener('keyup', (e) => e.key === 'Control' && hovered?.(false));
+window.addEventListener('blur', () => hovered?.(false));
+
 /**
- * Hover over a variable shows its value; Ctrl+click edits it. The coloured copy lies over the
- * field without taking the pointer, so the field's own events are used and matched to its spans.
+ * Hover over a variable shows its value; with Ctrl held it is a link that edits it. The coloured
+ * copy lies over the field without taking the pointer, so the field's own events are used and
+ * matched to its spans.
  */
 export function varPointer(field: HTMLElement, view: HTMLElement, ctx: VarContext): void {
   const title = field.title;
-  const at = (e: MouseEvent) =>
-    [...view.querySelectorAll<HTMLElement>('[data-var]')].find((s) =>
-      [...s.getClientRects()].some((r) => e.clientX >= r.left && e.clientX < r.right && e.clientY >= r.top && e.clientY < r.bottom),
-    );
-  field.addEventListener('mousemove', (e) => {
-    const s = at(e);
+  let mouse: { x: number; y: number } | null = null;
+  const at = (x: number, y: number) =>
+    [...view.querySelectorAll<HTMLElement>('[data-var]')].find((s) => [...s.getClientRects()].some((r) => x >= r.left && x < r.right && y >= r.top && y < r.bottom));
+  const update = (ctrl: boolean) => {
+    const s = mouse ? at(mouse.x, mouse.y) : undefined;
     field.title = s?.dataset.tip ?? title;
-    field.classList.toggle('vf-link', !!s && e.ctrlKey);
+    const link = !!s && ctrl;
+    field.classList.toggle('vf-link', link);
+    for (const o of view.querySelectorAll('.vf-hot')) if (o !== s || !link) o.classList.remove('vf-hot');
+    if (link) s.classList.add('vf-hot');
+  };
+  field.addEventListener('mousemove', (e) => {
+    mouse = { x: e.clientX, y: e.clientY };
+    hovered = update;
+    update(e.ctrlKey);
   });
-  field.addEventListener('mouseleave', () => field.classList.remove('vf-link'));
+  field.addEventListener('mouseleave', () => {
+    mouse = null;
+    if (hovered === update) hovered = null;
+    update(false);
+  });
   field.addEventListener('mousedown', (e) => {
     if (!e.ctrlKey || e.button !== 0) return;
-    const s = at(e);
+    const s = at(e.clientX, e.clientY);
     if (!s) return;
     e.preventDefault();
     ctx.edit(s.dataset.var!, s.classList.contains('seg-missing'));

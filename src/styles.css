@@ -2123,7 +2123,8 @@ select.input {
   border: 1px solid transparent;
   overflow: hidden;
   color: var(--text);
-  font-family: var(--font-mono);
+  /* As .input.small: its font is inherited (.input's `font: inherit` wins over .mono). */
+  font: inherit;
   font-size: 12px;
   white-space: pre;
   pointer-events: none;
@@ -2140,6 +2141,7 @@ select.input {
 
 .rq-url-field .vf-view {
   padding: 0 10px;
+  font-family: var(--font-mono);
   font-size: 12.5px;
 }
 
@@ -2149,6 +2151,11 @@ select.input {
 
 .vf-link {
   cursor: pointer;
+}
+
+/* The variable under the mouse while Ctrl is held: a link. */
+.vf-hot {
+  text-decoration: underline;
 }
 
 .seg-missing {
