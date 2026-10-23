@@ -36,6 +36,10 @@ export function defaultSettings(): Settings {
     diffLayout: 'split',
     showIgnoredFiles: true,
     markdownPreview: true,
+    worktrees: true,
+    worktreeDir: '',
+    worktreeBranchPrefix: 'claude/',
+    worktreeCopy: '',
     requestTimeout: 30,
     requestFollowRedirects: true,
     responseMaxMb: 10,
@@ -136,6 +140,10 @@ export function normalizeConfig(raw: unknown): Config {
     diffLayout: oneOf(s.diffLayout, ['split', 'inline'] as const, d.diffLayout),
     showIgnoredFiles: bool(s.showIgnoredFiles, d.showIgnoredFiles),
     markdownPreview: bool(s.markdownPreview, d.markdownPreview),
+    worktrees: bool(s.worktrees, d.worktrees),
+    worktreeDir: str(s.worktreeDir, d.worktreeDir).trim(),
+    worktreeBranchPrefix: str(s.worktreeBranchPrefix, d.worktreeBranchPrefix).trim(),
+    worktreeCopy: str(s.worktreeCopy, d.worktreeCopy).trim(),
     requestTimeout: Math.round(num(s.requestTimeout, d.requestTimeout, 1, 3600)),
     requestFollowRedirects: bool(s.requestFollowRedirects, d.requestFollowRedirects),
     responseMaxMb: Math.round(num(s.responseMaxMb, d.responseMaxMb, 1, 500)),
@@ -200,6 +208,7 @@ export function normalizeConfig(raw: unknown): Config {
         color: hexColor(x.color),
         env: strRecord(x.env),
         collapsed: bool(x.collapsed, false),
+        newWorktree: !connection && bool(x.newWorktree, false),
       });
     }
   }

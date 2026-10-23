@@ -107,6 +107,16 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   clipboard (`src/app.ts:42-48` for the selected lines), to paste for Claude. The pane follows along while Claude (or anything else)
   edits files, commits or switches branches. Nothing is ever written: the VS Code button opens the whole folder
   there, at the file and line you are looking at. Files git ignores are dimmed (or hidden, from the pane's menu).
+- **Git worktrees, one per Claude.** Several Claudes can work in one repository without changing each other's
+  files: right-click a session → Open in new worktree (or tick "Open each terminal in a new git worktree" for the
+  session) gives the terminal a folder and branch of its own (`claude/<name>`, in `<repository>.worktrees` next to
+  the repository), started from the branch you choose. It runs the session's startup command there and stays under
+  its session in the sidebar, with its branch; Show files in it compares with where the worktree started, so it
+  shows exactly that terminal's work, committed or not. Worktrees… in the session's menu lists the repository's
+  worktrees, to open a terminal or the files in one or remove it; removing says first what would be lost
+  (uncommitted changes, commits that are only on its branch) and can delete the branch too. Settings → Worktrees
+  sets the folder, the branch prefix and the ignored files to copy into new worktrees (like `.env.local`), or turns
+  worktrees off altogether.
 - **Open terminals tree.** Each session lists its open terminals underneath it: the ones opened from it, plus
   any other terminal sitting in its directory. Click one to jump to its tab, middle-click to close it,
   right-click for more. The chevron next to a session collapses its list, like a group, and the state is
@@ -274,6 +284,7 @@ backup: if it's lost, installed copies can't verify new versions and everyone ha
 | `src/filesPane.ts`, `lineView.ts`, `src-tauri/src/files.rs` | The Files pane: folder tree, read-only file and diff views (only the visible lines are drawn), reading files inside the folder only |
 | `src/diff.ts`, `syntax.ts`, `navigate.ts` | Diff layout from git's hunks (inline, side by side, folding, changed words), syntax colours, and finding declarations for code navigation (unit tested) |
 | `src/markdown.ts`, `markdownView.ts` | Markdown preview: the parser (unit tested), and drawing it element by element with an allowlist for HTML |
+| `src/worktrees.ts`, `worktreeDialog.ts`, `src-tauri/src/worktree.rs` | Git worktrees for sessions: names and folders (unit tested), the new and remove dialogs, git worktree add/list/remove |
 | `src/filesSearch.ts` | The Files pane's Search view (`git grep`) and its lists of definitions and references |
 | `src/requestFile.ts`, `variables.ts`, `dotenv.ts`, `curl.ts`, `postman.ts`, `jsonView.ts`, `codeEdit.ts` | Request files, variables, curl copy/paste, Postman import, JSON colours and editing keys (unit tested) |
 | `src/sidebar.ts`, `sessionEditor.ts`, `settingsDialog.ts`, `palette.ts` | UI |

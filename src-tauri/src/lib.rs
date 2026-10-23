@@ -7,6 +7,7 @@ mod http;
 mod proc;
 mod pty;
 mod shell;
+mod worktree;
 mod xshell;
 
 use http::HttpManager;
@@ -249,6 +250,29 @@ async fn git_file_at(root: String, path: String, base: String) -> Result<Option<
 #[tauri::command]
 async fn files_search(root: String, query: git::SearchQuery) -> Result<git::SearchResult, String> {
     blocking(move || git::search(std::path::Path::new(&root), &query)).await
+}
+
+/// The repository a folder is in and its worktrees; null outside a repository.
+#[tauri::command]
+async fn worktree_info(folder: String) -> Result<Option<worktree::RepoInfo>, String> {
+    blocking(move || worktree::info(std::path::Path::new(&folder))).await
+}
+
+/// A new worktree at `path` on a new branch from `from`, with the ignored files matching `copy`.
+#[tauri::command]
+async fn worktree_add(folder: String, path: String, branch: String, from: String, copy: String) -> Result<worktree::Added, String> {
+    blocking(move || worktree::add(std::path::Path::new(&folder), &path, &branch, &from, &copy)).await
+}
+
+/// What removing a worktree would lose.
+#[tauri::command]
+async fn worktree_status(path: String) -> Result<worktree::Status, String> {
+    blocking(move || worktree::status(std::path::Path::new(&path))).await
+}
+
+#[tauri::command]
+async fn worktree_remove(folder: String, path: String, delete_branch: bool, force: bool) -> Result<(), String> {
+    blocking(move || worktree::remove(std::path::Path::new(&folder), &path, delete_branch, force)).await
 }
 
 /// Recent commits and other branches, for "Compare with"; null outside a repository.
@@ -529,6 +553,10 @@ pub fn run() {
             files_search,
             files_exist,
             git_compare_targets,
+            worktree_info,
+            worktree_add,
+            worktree_status,
+            worktree_remove,
             files_watch,
             open_in_editor,
             read_json_file,

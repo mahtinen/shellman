@@ -10,7 +10,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 /// Local commands.
-const QUICK: Duration = Duration::from_secs(20);
+pub(crate) const QUICK: Duration = Duration::from_secs(20);
 /// A commit (the repository's hooks may take a while).
 const COMMIT: Duration = Duration::from_secs(120);
 /// Commands that talk to the remote.
@@ -79,14 +79,14 @@ pub enum Outcome {
     Failed { message: String },
 }
 
-struct Git {
+pub(crate) struct Git {
     exe: PathBuf,
     folder: PathBuf,
     interactive: bool,
 }
 
 impl Git {
-    fn new(folder: &Path, interactive: bool) -> Result<Git, String> {
+    pub(crate) fn new(folder: &Path, interactive: bool) -> Result<Git, String> {
         if !folder.is_dir() {
             return Err(format!("Folder not found: {}", folder.display()));
         }
@@ -108,12 +108,12 @@ impl Git {
         cmd
     }
 
-    fn run(&self, args: &[&str], limit: Duration) -> Result<Output, String> {
+    pub(crate) fn run(&self, args: &[&str], limit: Duration) -> Result<Output, String> {
         output_within(self.command(args), limit)?.ok_or_else(|| format!("git {} took too long and was stopped", name(args)))
     }
 
     /// stdout of a command that must succeed.
-    fn ok(&self, args: &[&str], limit: Duration) -> Result<String, String> {
+    pub(crate) fn ok(&self, args: &[&str], limit: Duration) -> Result<String, String> {
         let out = self.run(args, limit)?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -152,6 +152,11 @@ fn message(stderr: &str, command: &str) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+/// git's error output of a failed command, for a message.
+pub(crate) fn stderr_message(stderr: &[u8], command: &str) -> String {
+    message(&String::from_utf8_lossy(stderr), command)
 }
 
 /// Turns a failed pull or push into what the sidebar shows.
@@ -551,7 +556,7 @@ const DIFF: &[&str] = &["diff", "--no-ext-diff", "--no-textconv", "--no-color", 
 
 impl Git {
     /// The folder's place in its repository (`api/`), or None outside one.
-    fn prefix(&self) -> Result<Option<String>, String> {
+    pub(crate) fn prefix(&self) -> Result<Option<String>, String> {
         let out = self.run(&["rev-parse", "--show-prefix"], QUICK)?;
         Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
     }
@@ -561,7 +566,7 @@ impl Git {
     /// `merge-base:<branch>` is where this branch left `<branch>` (so the diff is everything done on
     /// this branch, like a pull request), worked out again each time. `<commit>^` is the commit before
     /// one ("from this commit on"); before the first commit that is the empty tree.
-    fn base(&self, base: &str) -> Result<String, String> {
+    pub(crate) fn base(&self, base: &str) -> Result<String, String> {
         if let Some(branch) = base.strip_prefix("merge-base:") {
             if branch.is_empty() || branch.starts_with('-') || branch.contains(['\0', ' ', ':']) {
                 return Err(format!("Invalid branch: {branch}"));

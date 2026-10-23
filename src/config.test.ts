@@ -33,7 +33,7 @@ describe('normalizeConfig', () => {
   it('keeps valid sessions and fills in missing fields', () => {
     const c = normalizeConfig({ sessions: [{ id: 's1', name: 'My API', cwd: 'C:\\Projects\\my-api', command: 'claude' }] });
     expect(c.sessions).toEqual([
-      { id: 's1', name: 'My API', groupId: null, connection: null, cwd: 'C:\\Projects\\my-api', command: 'claude', shellId: '', color: '', env: {}, collapsed: false },
+      { id: 's1', name: 'My API', groupId: null, connection: null, cwd: 'C:\\Projects\\my-api', command: 'claude', shellId: '', color: '', env: {}, collapsed: false, newWorktree: false },
     ]);
   });
 
@@ -83,6 +83,20 @@ describe('normalizeConfig', () => {
     expect([b.sync, b.syncPush, b.syncCheck, b.syncBranch, b.commitTemplate]).toEqual(['auto', 'commit', -1, 'main', 'API: {request}']);
     const c = normalizeConfig({ groups: [{ id: 'c', name: 'C', sync: 'always', syncPush: 7, syncCheck: 45, syncDelay: 1, commitTemplate: '' }] }).groups[0];
     expect([c.sync, c.syncPush, c.syncCheck, c.syncDelay, c.commitTemplate]).toEqual(['manual', 'push', 180, 60, 'Update {request}']);
+  });
+
+  it('defaults worktree settings and the per-session choice', () => {
+    expect(normalizeConfig({}).settings).toMatchObject({ worktrees: true, worktreeDir: '', worktreeBranchPrefix: 'claude/', worktreeCopy: '' });
+    const c = normalizeConfig({
+      settings: { worktrees: false, worktreeDir: ' D:\\trees ', worktreeBranchPrefix: '', worktreeCopy: '.env.local' } as never,
+      sessions: [
+        { id: 'a', name: 'A', cwd: 'C:\\x', newWorktree: true },
+        { id: 'b', name: 'B', cwd: 'C:\\y' },
+        { id: 'c', name: 'C', connection: { kind: 'ssh', host: 'example.com' }, newWorktree: true },
+      ],
+    });
+    expect(c.settings).toMatchObject({ worktrees: false, worktreeDir: 'D:\\trees', worktreeBranchPrefix: '', worktreeCopy: '.env.local' });
+    expect(c.sessions.map((s) => s.newWorktree)).toEqual([true, false, false]);
   });
 
   it('defaults Files pane settings and corrects bad ones', () => {

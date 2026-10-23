@@ -173,6 +173,17 @@ export interface SearchMatch {
   text: string;
 }
 
+export interface Worktree {
+  path: string;
+  branch: string | null;
+  head: string;
+  /** The repository's own folder. */
+  main: boolean;
+  locked: boolean;
+  /** Its folder is gone. */
+  prunable: boolean;
+}
+
 export interface Commit {
   sha: string;
   subject: string;
@@ -263,6 +274,15 @@ export const api = {
   /** Null when the file wasn't there at `base`. */
   gitFileAt: (root: string, path: string, base: string) => invoke<FileContent | null>('git_file_at', { root, path, base }),
   /** Recent commits and other branches, for "Compare with"; null outside a repository. */
+  /** The repository a folder is in and its worktrees; null outside a repository. */
+  worktreeInfo: (folder: string) =>
+    invoke<{ top: string; prefix: string; branch: string | null; worktrees: Worktree[] } | null>('worktree_info', { folder }),
+  /** A new worktree at `path` on a new `branch` from `from`; `copy` lists ignored files to copy in. */
+  worktreeAdd: (folder: string, path: string, branch: string, from: string, copy: string) =>
+    invoke<{ path: string; branch: string; base: string; copied: number }>('worktree_add', { folder, path, branch, from, copy }),
+  /** What removing a worktree would lose. */
+  worktreeStatus: (path: string) => invoke<{ branch: string | null; changes: number; onlyHere: number }>('worktree_status', { path }),
+  worktreeRemove: (folder: string, path: string, deleteBranch: boolean, force: boolean) => invoke<void>('worktree_remove', { folder, path, deleteBranch, force }),
   gitCompareTargets: (root: string) => invoke<{ branch: string | null; branches: string[]; commits: Commit[] } | null>('git_compare_targets', { root }),
   gitHunks: (root: string, path: string, oldPath: string | null, base: string) => invoke<Hunk[]>('git_hunks', { root, path, oldPath, base }),
   filesList: (root: string, dir: string) => invoke<{ entries: FileEntry[]; truncated: boolean }>('files_list', { root, dir }),

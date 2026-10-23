@@ -3893,3 +3893,15 @@ select.input {
   color: var(--muted);
   font-style: italic;
 }
+
+/* ---- worktree dialogs ---- */
+
+.wt-where {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.wt-warn {
+  margin: 6px 0;
+  color: var(--ansi-yellow);
+}

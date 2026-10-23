@@ -2,6 +2,7 @@ import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
 import { baseName, ownerSession, pathKey, sessionColor, uid } from './config';
 import { choiceDialog, confirmDialog, toast } from './dialogs';
 import { FilesPane } from './filesPane';
+import { isInside } from './worktrees';
 import { h } from './dom';
 import { icons } from './icons';
 import type { Match } from './keys';
@@ -230,6 +231,9 @@ export class Workspace implements PaneHost, RequestHost {
   ownerOf(pane: WorkspacePane): SavedSession | undefined {
     if (!isTerminal(pane)) return undefined;
     if (pane.connection) return store.session(pane.spec.sessionId);
+    // A worktree of a session's repository is outside the session's folder, but it is still the session's.
+    const wt = pane.spec.worktree;
+    if (wt && isInside(pane.cwd, wt.path)) return store.session(pane.spec.sessionId) ?? ownerSession(store.config.sessions, pane.cwd, pane.spec.sessionId);
     return ownerSession(store.config.sessions, pane.cwd, pane.spec.sessionId);
   }
 
@@ -264,6 +268,8 @@ export class Workspace implements PaneHost, RequestHost {
   specFrom(pane: Pane, rerunCommand: boolean): LaunchSpec {
     // A duplicate gets its own Claude conversation rather than sharing this one.
     if (rerunCommand) return { ...pane.spec, cwd: pane.cwd, claudeId: undefined, claudeStarted: undefined };
+    // Next to a worktree terminal: still in that worktree, and still the session's.
+    const wt = pane.spec.worktree && isInside(pane.cwd, pane.spec.worktree.path) ? pane.spec.worktree : undefined;
     if (pane.connection) {
       const cwd = store.defaultCwd();
       return { name: baseName(cwd), cwd, command: '', shellId: '', env: {}, color: '', sessionId: null };
@@ -274,8 +280,9 @@ export class Workspace implements PaneHost, RequestHost {
       command: '',
       shellId: pane.spec.shellId,
       env: {},
-      color: '',
-      sessionId: null,
+      color: wt ? pane.spec.color : '',
+      sessionId: wt ? pane.spec.sessionId : null,
+      ...(wt ? { worktree: { ...wt } } : {}),
     };
   }
 
@@ -445,11 +452,14 @@ export class Workspace implements PaneHost, RequestHost {
    * Shows a folder in a Files pane, and `path` (relative to it) in that pane. A pane already open
    * for the folder is reused.
    */
-  openFiles(root: string, how: { path?: string; line?: number; mode?: FilesRef['mode']; placement?: SplitPlacement; targetPaneId?: string } = {}): FilesPane {
+  openFiles(
+    root: string,
+    how: { path?: string; line?: number; mode?: FilesRef['mode']; base?: string; baseLabel?: string; placement?: SplitPlacement; targetPaneId?: string } = {},
+  ): FilesPane {
     let pane = [...this.panes.values()].find((p): p is FilesPane => p instanceof FilesPane && p.isFor(root));
     if (pane) this.setActivePane(pane.id, true);
     else {
-      pane = new FilesPane({ root, path: '', view: 'all', mode: how.mode ?? 'file', base: 'HEAD', baseLabel: '' }, this);
+      pane = new FilesPane({ root, path: '', view: 'all', mode: how.mode ?? 'file', base: how.base ?? 'HEAD', baseLabel: how.base ? (how.baseLabel ?? '') : '' }, this);
       this.add(pane, how.placement ?? 'tab', how.targetPaneId);
     }
     if (how.path) pane.open(how.path, how.mode, how.line);

@@ -82,6 +82,7 @@ export function importInto(chosen: ImportCandidate[], groups: Group[], groupId: 
       color: '',
       env: {},
       collapsed: false,
+      newWorktree: false,
     }));
   return { groups: added, sessions };
 }

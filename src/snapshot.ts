@@ -129,6 +129,9 @@ function normalizeSpec(v: unknown): LaunchSpec | null {
   };
   const connection = normalizeConnection(v.connection);
   if (connection) spec.connection = connection;
+  if (isObj(v.worktree) && str(v.worktree.path) && str(v.worktree.branch)) {
+    spec.worktree = { path: str(v.worktree.path), branch: str(v.worktree.branch), base: str(v.worktree.base) };
+  }
   if (isUuid(v.claudeId)) {
     spec.claudeId = v.claudeId;
     spec.claudeStarted = v.claudeStarted === true;

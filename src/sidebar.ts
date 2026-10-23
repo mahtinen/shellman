@@ -43,6 +43,10 @@ export interface SidebarActions {
   openFolder(session: SavedSession): void;
   /** The session's folder in a Files pane (files and what changed). */
   showFiles(session: SavedSession): void;
+  /** Opens the session in a new git worktree (asks for its name). */
+  newWorktree(session: SavedSession): void;
+  /** The worktrees of the session's repository, as a menu at x, y. */
+  worktreesMenu(session: SavedSession, x: number, y: number): void;
   /** Copies the ssh/telnet command for a connection. */
   copyCommand(session: SavedSession): void;
   /** Open terminals by saved session id; `null` holds the ones that belong to no session. */
@@ -674,6 +678,12 @@ export class Sidebar {
           ? []
           : [
               { label: 'Show files', icon: 'files' as const, action: () => this.actions.showFiles(s) },
+              ...(store.settings.worktrees
+                ? [
+                    { label: 'Open in new worktree…', icon: 'plus' as const, action: () => this.actions.newWorktree(s) },
+                    { label: 'Worktrees…', icon: 'folder' as const, action: () => this.actions.worktreesMenu(s, e.clientX, e.clientY) },
+                  ]
+                : []),
               { label: 'Open folder in Explorer', icon: 'openExternal' as const, action: () => this.actions.openFolder(s) },
             ]),
         'separator',
@@ -714,12 +724,14 @@ export class Sidebar {
   /** Plain terminals (folder and shell, no startup command) and other shells for a session. */
   private openEntries(s: SavedSession): MenuEntry[] {
     const withShell = shellEntries((id) => this.actions.open(s, 'tab', id));
-    if (!s.command) return [{ label: 'Open with shell', icon: 'terminal', submenu: withShell }];
+    const worktree: MenuEntry[] = store.settings.worktrees ? [{ label: 'Open in new worktree…', icon: 'plus', action: () => this.actions.newWorktree(s) }] : [];
+    if (!s.command) return [{ label: 'Open with shell', icon: 'terminal', submenu: withShell }, ...worktree];
     const cmd = s.command.length > 24 ? `${s.command.slice(0, 23)}…` : s.command;
     return [
       { label: 'Open plain terminal', icon: 'terminal', shortcut: 'Shift+Click', action: () => this.actions.open(s, 'tab', undefined, true) },
       { label: 'Plain terminal with', icon: 'terminal', submenu: shellEntries((id) => this.actions.open(s, 'tab', id, true)) },
       { label: `Run ${cmd} with`, icon: 'play', submenu: withShell },
+      ...worktree,
     ];
   }
 

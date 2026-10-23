@@ -1597,6 +1597,87 @@ if (phase === 'main') {
     }
   });
 
+  await step('git worktrees: a session in its own worktree, its Files, removal, and turning them off', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-wt-'));
+    const repo = path.join(base, 'shop');
+    const tree = path.join(base, 'shop.worktrees', 'shop-1');
+    const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const row = `[...document.querySelectorAll('.session-row')].find((r) => r.querySelector('.session-name')?.textContent === 'Shop')`;
+    const menuItem = (label) => `[...document.querySelectorAll('.menu-item')].find((e) => e.textContent.includes(${js(label)}))`;
+    try {
+      fs.mkdirSync(repo);
+      fs.writeFileSync(path.join(repo, 'app.ts'), 'export const a = 1;\n');
+      fs.writeFileSync(path.join(repo, '.gitignore'), '.env.local\n');
+      git(repo, 'init', '-q', '-b', 'main');
+      for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.autocrlf', 'false']]) git(repo, 'config', k, v);
+      git(repo, 'add', '.');
+      git(repo, 'commit', '-q', '-m', 'init');
+      fs.writeFileSync(path.join(repo, '.env.local'), 'TOKEN=x\n');
+      await ev(`__shellmanStore.update((c) => {
+        c.settings.worktreeCopy = '.env.local';
+        c.sessions.push({ id: 's-wt', name: 'Shop', groupId: null, connection: null, cwd: ${js(repo)}, command: '', shellId: 'powershell', color: '', env: {}, collapsed: false, newWorktree: true });
+      })`);
+      await waitFor(`!!${row}`, 3000, 'session row');
+
+      // Its menu offers worktrees.
+      await ev(`${row}.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`!!${menuItem('Open in new worktree')} && !!${menuItem('Worktrees')}`, 2000, 'worktree menu entries');
+      await ev(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+
+      // A click asks for the worktree's name (the session opens each terminal in one), then opens there.
+      await ev(`${row}.click()`);
+      await waitFor(`document.querySelector('.dialog h2')?.textContent === 'New worktree for Shop'`, 5000, 'new worktree dialog');
+      assert((await ev(`document.querySelector('.dialog input').value`)) === 'shop-1', 'default name');
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find((b) => b.textContent === 'Create').click()`);
+      await waitFor(`!document.querySelector('.dialog') && __t.active()?.spec?.worktree?.branch === 'claude/shop-1'`, 20000, 'terminal in the worktree');
+      assert((await ev(`__t.active().cwd.toLowerCase()`)) === tree.toLowerCase(), 'cwd: ' + (await ev(`__t.active().cwd`)));
+      assert(fs.readFileSync(path.join(tree, '.env.local'), 'utf8') === 'TOKEN=x\n', '.env.local copied');
+      await waitFor(`__t.text().includes(${prompt(tree)})`, 15000, 'prompt in the worktree');
+      assert(await ev(`[...document.querySelectorAll('.term-row')].some((r) => r.textContent.includes('claude/shop-1'))`), 'branch in the sidebar');
+
+      // Its Files pane compares with where the worktree started: committed work counts too.
+      fs.writeFileSync(path.join(tree, 'app.ts'), 'export const a = 2;\n');
+      git(tree, 'commit', '-q', '-am', 'work');
+      fs.writeFileSync(path.join(tree, 'notes.md'), 'x\n');
+      await ev(`__t.app.showFiles(__t.active())`);
+      const files = `[...__t.ws.panes.values()].find((p) => p.kind === 'files')`;
+      await waitFor(`${files}?.changeCount === 2 && ${files}.root.toLowerCase() === ${js(tree.toLowerCase())}`, 10000, 'worktree changes');
+
+      // Removing says the commit is only on that branch; with the branch deleted, both are gone.
+      await ev(`void __t.app.removeWorktree({ path: ${js(tree)}, branch: 'claude/shop-1' }, ${js(repo)})`);
+      await waitFor(`[...document.querySelectorAll('.dialog .wt-warn')].some((p) => p.textContent.includes('only on claude/shop-1'))`, 5000, 'remove dialog');
+      await ev(`(() => { const c = document.querySelector('.dialog input[type=checkbox]'); c.checked = true; [...document.querySelectorAll('.dialog .btn')].find((b) => b.textContent === 'Remove').click(); return true; })()`);
+      const gone = async () => !fs.existsSync(tree) && !git(repo, 'branch', '--list', 'claude/shop-1').trim();
+      const end = Date.now() + 15000;
+      while (!(await gone()) && Date.now() < end) await sleep(250);
+      assert(await gone(), 'worktree or branch still there');
+      assert(!(await ev(`!!${files}`)), 'Files pane of the worktree still open');
+
+      // Turned off in Settings: no worktree entries, and the session opens in its folder as usual.
+      await ev(`__shellmanStore.update((c) => { c.settings.worktrees = false; })`);
+      await ev(`${row}.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`document.querySelectorAll('.menu-item').length > 3`, 2000, 'session menu');
+      assert(!(await ev(`!!${menuItem('worktree')}`)), 'worktree entries shown while off');
+      await ev(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+      await ev(`${row}.click()`);
+      await waitFor(`!document.querySelector('.dialog') && __t.active()?.cwd?.toLowerCase() === ${js(repo.toLowerCase())} && !__t.active().spec.worktree`, 8000, 'plain session terminal');
+    } finally {
+      await ev(`(() => {
+        for (const t of [...__t.ws.tabs]) if (__t.ws.panesOf(t).some((p) => (p.cwd ?? p.root ?? '').toLowerCase().startsWith(${js(base.toLowerCase())}))) __t.ws.removeTab(t);
+        __shellmanStore.update((c) => { c.sessions = c.sessions.filter((s) => s.id !== 's-wt'); c.settings.worktrees = true; c.settings.worktreeCopy = ''; });
+        return true;
+      })()`).catch(() => undefined);
+      // The shells that were in the folders take a moment to exit.
+      await sleep(1500);
+      try {
+        fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      } catch (e) {
+        console.log(`       (could not remove ${base}: ${e.code})`);
+      }
+    }
+  });
+
   await step('open terminals are saved for the next start', async () => {
     // A known layout: the session with a cmd split beside it (cmd focused), and a renamed PowerShell tab.
     await ev(`(() => { for (const t of [...__t.ws.tabs]) __t.ws.removeTab(t); return true; })()`);

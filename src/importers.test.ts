@@ -16,6 +16,7 @@ const saved = (connection: Connection): SavedSession => ({
   color: '',
   env: {},
   collapsed: false,
+  newWorktree: false,
 });
 
 describe('candidateName', () => {
@@ -101,6 +102,7 @@ describe('importInto', () => {
         color: '',
         env: {},
         collapsed: false,
+        newWorktree: false,
       },
     ]);
     // A copy: editing the session later doesn't change the candidate.
