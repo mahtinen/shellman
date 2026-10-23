@@ -215,6 +215,12 @@ async fn files_all(root: String) -> Result<files::AllFiles, String> {
     blocking(move || files::all(std::path::Path::new(&root))).await
 }
 
+/// Which of `paths` are files, so paths printed in a terminal can become links to them.
+#[tauri::command]
+async fn files_exist(paths: Vec<String>) -> Result<Vec<bool>, String> {
+    blocking(move || Ok(paths.iter().take(50).map(|p| std::path::Path::new(p).is_file()).collect())).await
+}
+
 /// Reports (debounced) when something in the folder changes, including commits and checkouts.
 #[tauri::command]
 fn files_watch(state: State<'_, collection::Watches>, root: String, on_change: Channel<()>) -> Result<u32, String> {
@@ -243,6 +249,12 @@ async fn git_file_at(root: String, path: String, base: String) -> Result<Option<
 #[tauri::command]
 async fn files_search(root: String, query: git::SearchQuery) -> Result<git::SearchResult, String> {
     blocking(move || git::search(std::path::Path::new(&root), &query)).await
+}
+
+/// Recent commits and other branches, for "Compare with"; null outside a repository.
+#[tauri::command]
+async fn git_compare_targets(root: String) -> Result<Option<git::CompareTargets>, String> {
+    blocking(move || git::compare_targets(std::path::Path::new(&root))).await
 }
 
 #[tauri::command]
@@ -515,6 +527,8 @@ pub fn run() {
             files_read,
             files_all,
             files_search,
+            files_exist,
+            git_compare_targets,
             files_watch,
             open_in_editor,
             read_json_file,

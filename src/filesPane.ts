@@ -1,12 +1,13 @@
 /**
  * The Files pane: a read-only look at a folder (usually a session's project) without leaving
- * Shellman. The tree lists every file and marks what changed since the last commit; a file opens
+ * Shellman. The tree lists every file and marks what changed (since the last commit, or compared with
+ * a branch or an earlier commit); a file opens
  * with syntax colours, and a changed one also as a diff, side by side or inline. Search finds text in
  * the files, and names in the code lead to their definitions, references and implementations
  * (found by searching, see navigate.ts). Nothing in the folder is ever written: for editing,
  * "VS Code" opens the whole folder there.
  */
-import { api, type FileChange, type FileContent, type FileEntry, type FileState, type GitChanges, type Hunk, type SearchMatch } from './api';
+import { api, type Commit, type FileChange, type FileContent, type FileEntry, type FileState, type GitChanges, type Hunk, type SearchMatch } from './api';
 import { baseName, ownerSession, pathKey, sessionColor, uid } from './config';
 import {
   changeStarts,
@@ -50,8 +51,18 @@ const STATE_NAME: Record<FileState, string> = {
   untracked: 'New, not in git yet',
   conflict: 'Conflict',
 };
-/** What git compares with. Later: the commit a worktree started from. */
-const BASE = 'HEAD';
+/** Commits offered in "Compare with". */
+const MAX_COMMITS = 20;
+
+/** "3 h ago", for commits in "Compare with". */
+function ago(unix: number): string {
+  const s = Date.now() / 1000 - unix;
+  if (s < 90) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 36 * 3600) return `${Math.round(s / 3600)} h ago`;
+  if (s < 14 * 86400) return `${Math.round(s / 86400)} days ago`;
+  return new Date(unix * 1000).toLocaleDateString();
+}
 /** Unchanged lines kept around each change in a diff. */
 const CONTEXT = 3;
 /** At most this often while files keep changing (a build, Claude editing). */
@@ -117,6 +128,9 @@ export class FilesPane implements WorkspacePane {
 
   private view: View;
   private mode: Mode;
+  /** What git compares with (see FilesRef.base), and how that is shown. */
+  private base: string;
+  private baseLabel: string;
   private changes: GitChanges | null = null;
   /** Not a git repository (or git isn't installed): no Changes view. */
   private noGit = false;
@@ -137,6 +151,8 @@ export class FilesPane implements WorkspacePane {
   private refreshTimer: number | undefined;
   private lastRefresh = 0;
   private refreshing: Promise<void> | null = null;
+  /** Something to show changed while a refresh was under way (another base, new files). */
+  private refreshAgain = false;
   /** Something changed while the pane wasn't visible: refresh when it is. */
   private stale = false;
   private started = false;
@@ -182,6 +198,8 @@ export class FilesPane implements WorkspacePane {
     this.root = ref.root.replace(/[\\/]+$/, '') || ref.root;
     this.view = ref.view;
     this.mode = ref.mode;
+    this.base = ref.base;
+    this.baseLabel = ref.baseLabel;
     this.pending = ref.path ? { path: ref.path } : null;
     this.header = paneHeader((action) => host.onHeaderAction(this, action));
 
@@ -334,6 +352,8 @@ export class FilesPane implements WorkspacePane {
 
   /** Opens `path` now, or once the pane has read the folder. */
   open(path: string, mode: Mode = this.mode, line?: number): void {
+    // A line asked for (a path Ctrl+clicked in a terminal) is marked, like a search result.
+    if (line) this.target = { path, line, ranges: [] };
     if (this.started) void this.show(path, mode, line);
     else {
       this.pending = { path, line };
@@ -376,7 +396,7 @@ export class FilesPane implements WorkspacePane {
   }
 
   snapshot(): SnapshotLeaf {
-    return { files: { root: this.root, path: this.opened?.path ?? this.pending?.path ?? '', view: this.view, mode: this.mode } };
+    return { files: { root: this.root, path: this.opened?.path ?? this.pending?.path ?? '', view: this.view, mode: this.mode, base: this.base, baseLabel: this.baseLabel } };
   }
 
   openSearch(): void {
@@ -413,10 +433,17 @@ export class FilesPane implements WorkspacePane {
 
   private async loadChanges(): Promise<void> {
     try {
-      this.changes = await api.gitChanges(this.root, BASE);
+      this.changes = await api.gitChanges(this.root, this.base);
       this.noGit = !this.changes;
       this.gitError = null;
     } catch (e) {
+      // The branch or commit compared with is gone: back to the last commit.
+      if (this.base !== 'HEAD') {
+        toast(`Comparing with the last commit again: ${String(e).split('\n')[0]}`);
+        this.base = 'HEAD';
+        this.baseLabel = '';
+        return this.loadChanges();
+      }
       // git isn't installed, or refuses the folder (e.g. one inside WSL owned by another user).
       this.changes = null;
       this.noGit = true;
@@ -451,7 +478,11 @@ export class FilesPane implements WorkspacePane {
 
   /** Reads again what is shown: the changes, the open folders and the open file. */
   async refresh(): Promise<void> {
-    if (this.refreshing) return this.refreshing;
+    // One is under way with what was there when it began: run once more after it.
+    if (this.refreshing) {
+      this.refreshAgain = true;
+      return this.refreshing;
+    }
     this.refreshing = (async () => {
       this.lastRefresh = performance.now();
       const dirs = [...this.listings.keys()].filter((d) => d === '' || this.expanded.has(d));
@@ -469,6 +500,10 @@ export class FilesPane implements WorkspacePane {
       await this.refreshing;
     } finally {
       this.refreshing = null;
+    }
+    if (this.refreshAgain && !this.disposed) {
+      this.refreshAgain = false;
+      await this.refresh();
     }
   }
 
@@ -698,10 +733,10 @@ export class FilesPane implements WorkspacePane {
       (c) => ({ content: c, error: null }),
       (e) => ({ content: null, error: String(e) }),
     );
-    const base = change && change.state !== 'untracked' ? api.gitFileAt(this.root, change.oldPath ?? path, BASE).catch(() => null) : Promise.resolve(null);
+    const base = change && change.state !== 'untracked' ? api.gitFileAt(this.root, change.oldPath ?? path, this.base).catch(() => null) : Promise.resolve(null);
     const gitHunks =
       change && (change.state === 'modified' || change.state === 'renamed' || change.state === 'conflict')
-        ? api.gitHunks(this.root, path, change.oldPath, BASE).catch(() => null)
+        ? api.gitHunks(this.root, path, change.oldPath, this.base).catch(() => null)
         : Promise.resolve(null);
     const [now, old, hunks] = await Promise.all([read, base, gitHunks]);
     if (seq !== this.loadSeq || this.disposed) return;
@@ -764,7 +799,7 @@ export class FilesPane implements WorkspacePane {
     setChildren(
       this.viewTabs,
       tab('all', 'Files', null, 'Every file in the folder'),
-      this.noGit ? null : tab('changes', 'Changes', String(n), 'Files changed since the last commit'),
+      this.noGit ? null : tab('changes', 'Changes', String(n), `Files changed ${this.baseText}`),
       tab('search', 'Search', null, 'Find text in the files (Ctrl+Shift+F)'),
       h('span', { class: 'spacer' }),
       h('button', { class: 'icon-btn small', title: 'Refresh', html: icons.refresh, onclick: () => void this.refresh() }),
@@ -805,7 +840,7 @@ export class FilesPane implements WorkspacePane {
           ? this.changeRowsFor(this.changes?.files ?? [])
           : this.treeRows();
     if (!q && this.view === 'changes' && !rows.length) {
-      this.listEl.replaceChildren(h('div', { class: 'fp-empty muted' }, this.gitError ? 'git could not read this folder.' : 'Nothing changed since the last commit.'));
+      this.listEl.replaceChildren(h('div', { class: 'fp-empty muted' }, this.gitError ? 'git could not read this folder.' : `Nothing changed ${this.baseText}.`));
     } else if (q && !rows.length) {
       this.listEl.replaceChildren(h('div', { class: 'fp-empty muted' }, q.startsWith('@') ? (this.opened?.lines ? 'No matching symbols in this file.' : 'Open a file to see its symbols.') : this.view === 'all' && !this.allFiles ? 'Reading the file list…' : 'No matching files.'));
     } else {
@@ -832,12 +867,65 @@ export class FilesPane implements WorkspacePane {
       added += f.added ?? 0;
       removed += f.removed ?? 0;
     }
+    const short = this.base === 'HEAD' ? 'last commit' : this.base.startsWith('merge-base:') ? this.baseLabel : `from ${this.baseLabel.split(' ')[0]}`;
     setChildren(
       this.footEl,
-      h('span', { class: 'fp-branch', title: c.base ? `Compared with ${c.base.slice(0, 10)} (the last commit)` : 'No commits yet' }, c.branch ?? 'detached HEAD'),
+      h('span', { class: 'fp-branch', title: 'The current branch' }, c.branch ?? 'detached HEAD'),
+      h(
+        'button',
+        {
+          class: `fp-base${this.base === 'HEAD' ? '' : ' on'}`,
+          title: `Changes ${this.baseText}${c.base ? ` (${c.base.slice(0, 10)})` : ''}. Click to compare with a branch or an earlier commit.`,
+          onclick: (e: MouseEvent) => void this.compareMenu(e.currentTarget as HTMLElement),
+        },
+        `vs ${short}`,
+        h('span', { html: icons.chevronDown }),
+      ),
       h('span', { class: 'spacer' }),
       c.files.length ? h('span', { class: 'fp-counts' }, h('span', { class: 'fp-plus' }, `+${added}`), ' ', h('span', { class: 'fp-minus' }, `−${removed}`)) : null,
     );
+  }
+
+  /** "since the last commit", "compared with main", "from abc1234 on", for titles and messages. */
+  private get baseText(): string {
+    if (this.base === 'HEAD') return 'since the last commit';
+    if (this.base.startsWith('merge-base:')) return `on this branch, compared with ${this.baseLabel}`;
+    return `from ${this.baseLabel.split(' ')[0]} on`;
+  }
+
+  /** Compares with something else from now on (and keeps that for the next start). */
+  private setBase(base: string, label: string): void {
+    if (base === this.base) return;
+    this.base = base;
+    this.baseLabel = base === 'HEAD' ? '' : label;
+    this.openFolds.clear();
+    void this.refresh();
+  }
+
+  /** "Compare with": the last commit, another branch, or an earlier commit of this one. */
+  private async compareMenu(anchor: HTMLElement): Promise<void> {
+    const t = await api.gitCompareTargets(this.root).catch((e) => (toast(String(e), 'error'), null));
+    if (!t) return;
+    const pick = (base: string, label: string, title: string, shortcut?: string): MenuEntry => ({
+      label: title,
+      icon: this.base === base ? 'check' : undefined,
+      shortcut,
+      action: () => this.setBase(base, label),
+    });
+    const commit = (c: Commit) => {
+      const subject = c.subject.length > 48 ? `${c.subject.slice(0, 47)}…` : c.subject;
+      return pick(`${c.sha}^`, `${c.sha.slice(0, 7)} ${subject}`, `${c.sha.slice(0, 7)} ${subject}`, ago(c.time));
+    };
+    const entries: MenuEntry[] = [
+      pick('HEAD', '', 'Last commit: what isn\'t committed yet'),
+      ...t.branches.slice(0, 6).map((b) => pick(`merge-base:${b}`, b, `Branch ${b}: everything on ${t.branch ?? 'this branch'}`)),
+      'separator',
+      t.commits.length
+        ? { label: 'From a commit on', icon: 'diff', submenu: t.commits.slice(0, MAX_COMMITS).map(commit) }
+        : { label: 'From a commit on', icon: 'diff', disabled: true },
+    ];
+    const r = anchor.getBoundingClientRect();
+    showMenu(r.left, r.top, entries);
   }
 
   private isIgnored(path: string, dir: boolean): boolean {
@@ -1079,7 +1167,7 @@ export class FilesPane implements WorkspacePane {
       crumbs,
       h('span', { class: 'spacer' }),
       diffable
-        ? seg(this.mode, [['file', 'File', 'The file as it is now'], ['diff', 'Diff', 'What changed since the last commit']], (m) => {
+        ? seg(this.mode, [['file', 'File', 'The file as it is now'], ['diff', 'Diff', `What changed ${this.baseText}`]], (m) => {
             this.mode = m;
             this.renderBar();
             this.renderBody();

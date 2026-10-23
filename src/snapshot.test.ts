@@ -67,11 +67,11 @@ describe('snapshot', () => {
   });
 
   it('keeps Files panes, with defaults for what is missing', () => {
-    const files: SnapshotLeaf = { files: { root: 'C:\\Projects\\app', path: 'src/main.ts', view: 'changes', mode: 'diff' } };
+    const files: SnapshotLeaf = { files: { root: 'C:\\Projects\\app', path: 'src/main.ts', view: 'changes', mode: 'diff', base: 'merge-base:main', baseLabel: 'main' } };
     const snap = normalizeSnapshot({ tabs: [{ root: { split: 'row', sizes: [1, 1], children: [files, { pane: spec('C:\\a') }] } }] })!;
     expect(snapshotLeaves(snap.tabs[0].root)).toEqual([files, { pane: spec('C:\\a') }]);
     expect(normalizeSnapshot({ tabs: [{ root: { files: { root: 'C:\\x', view: 'odd' } } }] })!.tabs[0].root).toEqual({
-      files: { root: 'C:\\x', path: '', view: 'all', mode: 'file' },
+      files: { root: 'C:\\x', path: '', view: 'all', mode: 'file', base: 'HEAD', baseLabel: '' },
     });
     expect(normalizeSnapshot({ tabs: [{ root: { files: { path: 'a.ts' } } }] })).toBeNull();
   });

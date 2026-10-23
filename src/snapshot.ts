@@ -21,6 +21,13 @@ export interface FilesRef {
   path: string;
   view: 'all' | 'changes' | 'search';
   mode: 'file' | 'diff';
+  /**
+   * What the changes are compared with, for git: `HEAD` (what isn't committed), `merge-base:<branch>`
+   * (everything on this branch) or `<commit>^` (from that commit on).
+   */
+  base: string;
+  /** How the base is shown ('' for HEAD). */
+  baseLabel: string;
 }
 
 /** One saved pane: a terminal, a request or a Files pane. */
@@ -142,7 +149,7 @@ function normalizeNode(v: unknown, depth: number): SnapshotNode | null {
   if ('files' in v) {
     const f = isObj(v.files) ? v.files : {};
     if (!str(f.root)) return null;
-    return { files: { root: str(f.root), path: str(f.path), view: f.view === 'changes' || f.view === 'search' ? f.view : 'all', mode: f.mode === 'diff' ? 'diff' : 'file' } };
+    return { files: { root: str(f.root), path: str(f.path), view: f.view === 'changes' || f.view === 'search' ? f.view : 'all', mode: f.mode === 'diff' ? 'diff' : 'file', base: str(f.base) || 'HEAD', baseLabel: str(f.base) ? str(f.baseLabel) : '' } };
   }
   if ((v.split !== 'row' && v.split !== 'column') || !Array.isArray(v.children)) return null;
   const rawSizes = Array.isArray(v.sizes) ? v.sizes : [];

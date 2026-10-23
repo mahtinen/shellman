@@ -173,6 +173,14 @@ export interface SearchMatch {
   text: string;
 }
 
+export interface Commit {
+  sha: string;
+  subject: string;
+  author: string;
+  /** Unix time. */
+  time: number;
+}
+
 export interface GitChanges {
   branch: string | null;
   /** The commit compared with ('' before the first commit). */
@@ -254,9 +262,13 @@ export const api = {
   gitChanges: (root: string, base: string) => invoke<GitChanges | null>('git_changes', { root, base }),
   /** Null when the file wasn't there at `base`. */
   gitFileAt: (root: string, path: string, base: string) => invoke<FileContent | null>('git_file_at', { root, path, base }),
+  /** Recent commits and other branches, for "Compare with"; null outside a repository. */
+  gitCompareTargets: (root: string) => invoke<{ branch: string | null; branches: string[]; commits: Commit[] } | null>('git_compare_targets', { root }),
   gitHunks: (root: string, path: string, oldPath: string | null, base: string) => invoke<Hunk[]>('git_hunks', { root, path, oldPath, base }),
   filesList: (root: string, dir: string) => invoke<{ entries: FileEntry[]; truncated: boolean }>('files_list', { root, dir }),
   filesRead: (root: string, path: string) => invoke<FileContent>('files_read', { root, path }),
+  /** Which of `paths` (absolute) are files. */
+  filesExist: (paths: string[]) => invoke<boolean[]>('files_exist', { paths }),
   filesAll: (root: string) => invoke<{ files: string[]; truncated: boolean }>('files_all', { root }),
   /** Calls `onChange` (debounced) when something in `root` changes; stop with `collectionUnwatch`. */
   filesWatch(root: string, onChange: () => void): Promise<number> {

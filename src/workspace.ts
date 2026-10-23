@@ -1,5 +1,5 @@
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
-import { baseName, ownerSession, sessionColor, uid } from './config';
+import { baseName, ownerSession, pathKey, sessionColor, uid } from './config';
 import { choiceDialog, confirmDialog, toast } from './dialogs';
 import { FilesPane } from './filesPane';
 import { h } from './dom';
@@ -158,6 +158,19 @@ export class Workspace implements PaneHost, RequestHost {
       if (s?.connection) s.connection.legacyAlgorithms = conn.legacyAlgorithms;
     });
     if (conn.legacyAlgorithms && !session.connection.legacyAlgorithms) toast(`"${session.name}" now allows old algorithms (Edit → SSH options).`);
+  }
+
+  /**
+   * A path in a terminal was Ctrl+clicked. It opens in the Files pane of a folder it is in: one that is
+   * open already, the terminal's session folder, the terminal's own folder, or else the file's folder.
+   */
+  onOpenFile(pane: Pane, path: string, line: number | null): void {
+    const key = pathKey(path);
+    const inside = (root: string) => key.startsWith(`${pathKey(root)}\\`);
+    const open = [...this.panes.values()].filter((p): p is FilesPane => p instanceof FilesPane).map((p) => p.root);
+    const root = [...open, this.ownerOf(pane)?.cwd ?? '', pane.cwd].find((r) => r && inside(r)) ?? path.slice(0, path.lastIndexOf('\\'));
+    const rel = path.slice(root.replace(/[\\/]+$/, '').length + 1).replace(/\\/g, '/');
+    this.openFiles(root, { path: rel, line: line ?? undefined, mode: 'file' });
   }
 
   onEdited(pane: WorkspacePane): void {
@@ -436,7 +449,7 @@ export class Workspace implements PaneHost, RequestHost {
     let pane = [...this.panes.values()].find((p): p is FilesPane => p instanceof FilesPane && p.isFor(root));
     if (pane) this.setActivePane(pane.id, true);
     else {
-      pane = new FilesPane({ root, path: '', view: 'all', mode: how.mode ?? 'file' }, this);
+      pane = new FilesPane({ root, path: '', view: 'all', mode: how.mode ?? 'file', base: 'HEAD', baseLabel: '' }, this);
       this.add(pane, how.placement ?? 'tab', how.targetPaneId);
     }
     if (how.path) pane.open(how.path, how.mode, how.line);

@@ -88,7 +88,11 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
 - **Files and changes, read-only.** Right-click a session → Show files (or Ctrl+Shift+G in its terminal) to look
   at its folder without opening an editor: the whole tree, every file with syntax colours, and what changed since
   the last commit marked in the tree (M, A, D, U for new files git doesn't know yet). The Changes view lists only
-  the changed files with their added and removed lines. A changed file opens as a diff, side by side or inline,
+  the changed files with their added and removed lines. "vs last commit" at the bottom changes what they are
+  compared with: another branch (everything done on this branch, committed or not, like a pull request) or an
+  earlier commit (that commit and everything after it), so work Claude has already committed shows too. Ctrl+click
+  a file path in a terminal (`src/app.ts:42`, `Program.cs(12,5)`, a `file://` link) to open it here at that line.
+  A changed file opens as a diff, side by side or inline,
   with unchanged lines folded away and the changed words marked; F7 and Shift+F7 jump between changes. Ctrl+P goes
   to a file by name (`@` lists the open file's functions and classes) and Ctrl+F finds text in the open one.
   **Search** (Ctrl+Shift+F) finds text in all the files, with match case, whole word, regular expressions and
@@ -132,7 +136,7 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
     WSL can't be seen from Windows, so there it warns when the terminal was started with a command.)
 - **Quick open** (Ctrl+Shift+P): fuzzy-search saved sessions; Enter = tab, Ctrl+Enter = split right,
   Shift+Enter = split down.
-- **Other terminal features.** Find (Ctrl+Shift+F), clickable links (Ctrl+Click), copy on select, right-click paste,
+- **Other terminal features.** Find (Ctrl+Shift+F), clickable links and file paths (Ctrl+Click; files open in the Files pane), copy on select, right-click paste,
   Ctrl+wheel zoom, six themes, custom shells.
 
 ## Install
@@ -186,6 +190,7 @@ Settings → About lists what changed in the five latest versions, with their re
 | Open a request in a split | Middle-click it in the sidebar |
 | Move a request or folder | Drag it onto another folder in the sidebar |
 | Next / previous change (in a Files pane) | F7 / Shift+F7 |
+| Open a file path printed in a terminal (in the Files pane, at its line) | Ctrl+Click |
 | Go to file (`@` for symbols) / find in the file (in a Files pane) | Ctrl+P / Ctrl+F |
 | Search in all the files (in a Files pane) | Ctrl+Shift+F |
 | Go to definition / references / implementations (in a Files pane) | F12 or Ctrl+click / Shift+F12 / Ctrl+F12 |

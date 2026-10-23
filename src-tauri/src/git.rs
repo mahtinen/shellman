@@ -557,7 +557,21 @@ impl Git {
     }
 
     /// `base` as a commit id: HEAD (or the empty tree before the first commit), or a commit given.
+    ///
+    /// `merge-base:<branch>` is where this branch left `<branch>` (so the diff is everything done on
+    /// this branch, like a pull request), worked out again each time. `<commit>^` is the commit before
+    /// one ("from this commit on"); before the first commit that is the empty tree.
     fn base(&self, base: &str) -> Result<String, String> {
+        if let Some(branch) = base.strip_prefix("merge-base:") {
+            if branch.is_empty() || branch.starts_with('-') || branch.contains(['\0', ' ', ':']) {
+                return Err(format!("Invalid branch: {branch}"));
+            }
+            let out = self.run(&["merge-base", "HEAD", branch], QUICK)?;
+            if !out.status.success() {
+                return Err(format!("This branch has nothing in common with {branch}"));
+            }
+            return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
+        }
         if base.is_empty() || base.starts_with('-') || base.contains(['\0', ' ', ':']) {
             return Err(format!("Invalid base: {base}"));
         }
@@ -567,10 +581,73 @@ impl Git {
             Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
         } else if base == "HEAD" {
             Ok(EMPTY_TREE.to_string())
+        } else if base.strip_suffix('^').is_some_and(|c| self.run(&["rev-parse", "--verify", "--quiet", &format!("{c}^{{commit}}")], QUICK).is_ok_and(|o| o.status.success())) {
+            // The parent of the first commit.
+            Ok(EMPTY_TREE.to_string())
         } else {
             Err(format!("{base} isn't a commit in this repository"))
         }
     }
+}
+
+/// A commit for "Compare with".
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Commit {
+    pub sha: String,
+    pub subject: String,
+    pub author: String,
+    /// Unix time.
+    pub time: i64,
+}
+
+/// What a folder's changes can be compared with: recent commits of this branch, and other branches.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareTargets {
+    pub branch: Option<String>,
+    /// The repository's main branch first (from origin/HEAD, or main/master), then recently used ones.
+    pub branches: Vec<String>,
+    pub commits: Vec<Commit>,
+}
+
+/// `git log --format=%H%x00%s%x00%an%x00%ct -z` → commits.
+pub fn parse_log(out: &str) -> Vec<Commit> {
+    out.split('\0')
+        .collect::<Vec<_>>()
+        .chunks(4)
+        .filter_map(|c| match c {
+            [sha, subject, author, time] if sha.trim().len() >= 7 => {
+                Some(Commit { sha: sha.trim().to_string(), subject: subject.to_string(), author: author.to_string(), time: time.trim().parse().unwrap_or(0) })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn compare_targets(folder: &Path) -> Result<Option<CompareTargets>, String> {
+    let g = Git::new(folder, false)?;
+    if g.prefix()?.is_none() {
+        return Ok(None);
+    }
+    let branch = g.ok(&["symbolic-ref", "--short", "-q", "HEAD"], QUICK).ok().map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    let exists = |name: &str| g.run(&["rev-parse", "--verify", "--quiet", &format!("{name}^{{commit}}")], QUICK).is_ok_and(|o| o.status.success());
+    let mut branches: Vec<String> = Vec::new();
+    // The main branch: what origin/HEAD points at (local if there is one), else main or master.
+    let origin_head = g.ok(&["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], QUICK).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let main = origin_head
+        .map(|o| o.strip_prefix("origin/").filter(|l| exists(l)).map_or(o.clone(), str::to_string))
+        .or_else(|| ["main", "master"].into_iter().find(|b| exists(b)).map(str::to_string));
+    branches.extend(main);
+    let recent = g.ok(&["for-each-ref", "--sort=-committerdate", "--count=12", "--format=%(refname:short)", "refs/heads"], QUICK).unwrap_or_default();
+    for b in recent.lines().map(str::trim).filter(|b| !b.is_empty()) {
+        if !branches.iter().any(|x| x == b) {
+            branches.push(b.to_string());
+        }
+    }
+    branches.retain(|b| Some(b) != branch.as_ref() && !b.starts_with('-'));
+    let commits = g.ok(&["log", "-n", "20", "-z", "--format=%H%x00%s%x00%an%x00%ct"], QUICK).map(|o| parse_log(&o)).unwrap_or_default();
+    Ok(Some(CompareTargets { branch, branches, commits }))
 }
 
 /// Every file git knows in the folder, tracked or new and not ignored; None outside a repository.
@@ -1086,6 +1163,50 @@ mod tests {
         let mut all = list_files(&app).unwrap().unwrap();
         all.sort();
         assert_eq!(all, [".gitignore", "gone.ts", "new.ts", "src/a.ts"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn real_compare_with_a_branch_or_a_commit() {
+        if git_client().is_err() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("shellman-git-test-compare-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "--quiet", "-b", "main"]);
+        for (k, v) in [("user.name", "Test"), ("user.email", "test@example.com"), ("commit.gpgsign", "false"), ("core.autocrlf", "false")] {
+            git(&root, &["config", k, v]);
+        }
+        let commit = |file: &str, text: &str, msg: &str| {
+            fs::write(root.join(file), text).unwrap();
+            git(&root, &["add", "."]);
+            git(&root, &["commit", "--quiet", "-m", msg]);
+            git(&root, &["rev-parse", "HEAD"]).trim().to_string()
+        };
+        let first = commit("a.txt", "a\n", "first");
+        git(&root, &["switch", "--quiet", "-c", "feature"]);
+        let second = commit("b.txt", "b\n", "add b");
+        commit("c.txt", "c\n", "add c");
+        fs::write(root.join("d.txt"), "d\n").unwrap();
+        let paths = |base: &str| changes(&root, base).unwrap().unwrap().files.into_iter().map(|f| f.path).collect::<Vec<_>>();
+
+        assert_eq!(paths("HEAD"), ["d.txt"]);
+        // Everything on this branch since it left main, committed or not.
+        assert_eq!(paths("merge-base:main"), ["b.txt", "c.txt", "d.txt"]);
+        assert_eq!(changes(&root, "merge-base:main").unwrap().unwrap().base, first);
+        // From a commit on: that commit and everything after it.
+        assert_eq!(paths(&format!("{second}^")), ["b.txt", "c.txt", "d.txt"]);
+        assert_eq!(paths(&format!("{first}^")), ["a.txt", "b.txt", "c.txt", "d.txt"]);
+        assert_eq!(hunks(&root, "b.txt", None, "merge-base:main").unwrap(), [Hunk { old_start: 0, old_count: 0, new_start: 1, new_count: 1 }]);
+        assert!(changes(&root, "merge-base:-x").is_err());
+        assert!(changes(&root, "merge-base:nope").is_err());
+
+        let t = compare_targets(&root).unwrap().unwrap();
+        assert_eq!(t.branch.as_deref(), Some("feature"));
+        assert_eq!(t.branches, ["main"]);
+        assert_eq!(t.commits.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["add c", "add b", "first"]);
+        assert!(t.commits[0].time > 0 && t.commits[0].author == "Test");
         let _ = fs::remove_dir_all(&root);
     }
 

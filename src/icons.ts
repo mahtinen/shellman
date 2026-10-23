@@ -38,6 +38,7 @@ export const icons = {
   arrowRight: svg('<path d="M3 8h10M9 4l4 4-4 4"/>'),
   arrowUp: svg('<path d="M8 13V3M4 7l4-4 4 4"/>'),
   arrowDown: svg('<path d="M8 3v10M4 9l4 4 4-4"/>'),
+  check: svg('<path d="M3 8.5l3 3 7-7"/>'),
   refresh: svg('<path d="M13.25 8a5.25 5.25 0 11-1.54-3.71M13.25 2.5v3.25H10"/>'),
 };
 

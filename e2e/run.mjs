@@ -1490,11 +1490,49 @@ if (phase === 'main') {
       // It follows changes on disk, and is saved for the next start.
       put('src/third.ts', 'export {};\n');
       await waitFor(`${files}.changeCount === 3`, 10000, 'refreshed after a new file');
+
+      // Compared from the first commit on, the committed files count as changes too.
+      const first = git('rev-parse', 'HEAD').trim();
+      await ev(`${files}.setBase(${js(`${first}^`)}, ${js(`${first.slice(0, 7)} init`)})`);
+      await waitFor(`${files}.changeCount === 5`, 10000, 'changes from the first commit on');
+      assert(await ev(`document.querySelector('.files-pane .fp-base').textContent.includes('from ${first.slice(0, 7)}')`), 'footer shows the base');
       const leaf = await ev(`JSON.stringify(__t.ws.snapshot().tabs.map((t) => t.root).find((r) => r.files))`);
-      assert(leaf && JSON.parse(leaf).files.path === 'src/app.ts' && JSON.parse(leaf).files.view === 'search', 'snapshot: ' + leaf);
+      const saved = JSON.parse(leaf).files;
+      assert(saved.path === 'src/app.ts' && saved.view === 'search' && saved.base === `${first}^`, 'snapshot: ' + leaf);
       await ev(`__t.ws.closePane(${files}.id)`);
+
+      // A path printed in a terminal: Ctrl+click opens it in the Files pane at its line.
+      await ev(`void __t.ws.open({ name: 'links', cwd: ${js(root)}, command: '', shellId: 'powershell', env: {}, color: '', sessionId: null }, 'tab')`);
+      await waitFor(`__t.text().includes(${prompt(root)})`, 15000, 'prompt in the temp repo');
+      await type("Write-Output ('see ' + 'src/app.ts:2 here')");
+      await key('Enter', 'Enter', 13);
+      await waitFor(`__t.text().includes('see src/app.ts:2 here')`, 5000, 'path printed');
+      const at = await ev(`(() => {
+        const t = __t.active().term;
+        const b = t.buffer.active;
+        for (let y = b.length - 1; y >= 0; y--) {
+          const text = b.getLine(y).translateToString(true);
+          const x = text.indexOf('see src/app.ts');
+          if (x < 0 || text.includes('Write-Output')) continue;
+          const cell = t._core._renderService.dimensions.css.cell;
+          const r = t.element.querySelector('.xterm-screen').getBoundingClientRect();
+          return { x: r.left + (x + 6) * cell.width + cell.width / 2, y: r.top + (y - b.viewportY) * cell.height + cell.height / 2 };
+        }
+        return null;
+      })()`);
+      assert(at, 'printed path not on screen');
+      await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y, modifiers: 2 });
+      await sleep(400);
+      for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', clickCount: 1, modifiers: 2 });
+      await waitFor(`${files}?.path === 'src/app.ts' && document.querySelector('.files-pane .lv-target .lv-ln')?.textContent === '2'`, 8000, 'opened at line 2');
+      await ev(`(() => { for (const t of [...__t.ws.tabs]) if (__t.ws.panesOf(t).some((p) => p.kind === 'files' || p.cwd === ${js(root)})) __t.ws.removeTab(t); return true; })()`);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      // The terminal that was in the folder may still be closing; a leftover temp folder isn't a failure.
+      try {
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      } catch (e) {
+        console.log(`       (could not remove ${root}: ${e.code})`);
+      }
     }
   });
 
