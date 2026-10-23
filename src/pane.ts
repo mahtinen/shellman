@@ -491,6 +491,10 @@ export class Pane implements WorkspacePane {
 
   private openLink(e: MouseEvent, uri: string): void {
     if (!e.ctrlKey) return;
+    // A program that tracks the mouse (Claude Code's fullscreen view, for one)
+    // gets this click too and opens the link itself; opening it here as well
+    // would open it twice. Shift keeps the click from the program.
+    if (this.term.modes.mouseTrackingMode !== 'none' && !e.shiftKey) return;
     void api.openUrl(uri).catch(() => undefined);
   }
 
