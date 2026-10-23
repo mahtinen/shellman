@@ -25,6 +25,8 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   group onto the middle of another); deleting a group moves what was in it up one level. "Open all in tabs"
   on a group starts your whole workspace (its own sessions, not its subgroups').
   New sessions start out in your home directory (or the default directory from Settings).
+  With the WSL shell, Browse starts in your Linux home and the directory can be typed as a Linux path
+  (`~/projects/app`); a folder in another distribution opens in that distribution.
 - **SSH and Telnet sessions.** Save remote hosts next to your folders (same groups, colours and quick open),
   or connect without saving: type `user@host`, `ssh -p 2222 host` or `telnet 10.0.0.1 2323` in quick open, or
   use Ctrl+Shift+N. Shellman runs Windows' own clients (OpenSSH's `ssh.exe` and the Telnet Client), so your

@@ -56,7 +56,7 @@
     "mainEntity": [
       { "@type": "Question", "name": "Is Shellman free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Shellman is free and open source under the MIT license." } },
       { "@type": "Question", "name": "Do I need Claude Code to use Shellman?", "acceptedAnswer": { "@type": "Answer", "text": "No. Shellman works with any shell or command. It has extra support for Claude Code: Shift+Enter newlines, pasting images, and notifications when Claude finishes or needs input." } },
-      { "@type": "Question", "name": "Which shells does Shellman support?", "acceptedAnswer": { "@type": "Answer", "text": "PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically, and you can add any other shell in Settings." } },
+      { "@type": "Question", "name": "Which shells does Shellman support?", "acceptedAnswer": { "@type": "Answer", "text": "PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically, and you can add any other shell in Settings. With WSL, a session's folder can be inside Linux: Browse starts in your Linux home, or type a path like ~/projects/app." } },
       { "@type": "Question", "name": "Can I use Shellman for SSH and Telnet?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Save hosts next to your folders, or connect without saving by typing user@host. Shellman runs Windows' own OpenSSH client, so your keys, the Windows ssh-agent or 1Password's SSH agent and ~/.ssh/config work as in any terminal. Telnet uses the Windows Telnet Client." } },
       { "@type": "Question", "name": "Can I import my XShell sessions?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Right-click the sidebar and choose Import sessions, then tick the XShell sessions you want. Shellman adds their SSH and Telnet hosts, ports and users to a new group or an existing one, with XShell's folders as subgroups. Saved passwords and XShell's own keys are not imported." } },
       { "@type": "Question", "name": "Can Shellman send API requests like Postman?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Link a group to a folder of request files, often a git repository your team shares, and its requests open in tabs and splits next to your terminals. Shellman sends them with Windows' own curl and shows the response as folding JSON with headers, timing and cookies. Variables live in .env files and environment files; secrets stay in your own .env.local or in 1Password. You can import Postman collections, environments and globals, and copy or paste curl commands." } },
@@ -142,7 +142,7 @@
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12.5 15H17"/></svg></div>
             <h3>Any shell, any time</h3>
-            <p>PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are found automatically. Open a session in another shell, or switch a running terminal from the status bar.</p>
+            <p>PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are found automatically. Open a session in another shell, or switch a running terminal from the status bar. WSL sessions can live in your Linux home, in any distribution.</p>
           </article>
           <article class="card">
             <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16M12 12h9"/></svg></div>
@@ -230,7 +230,7 @@
         </details>
         <details>
           <summary>Which shells are supported?</summary>
-          <p>PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically. You can add any other shell in Settings.</p>
+          <p>PowerShell 7, Windows PowerShell, Command Prompt, Git Bash and WSL are detected automatically. You can add any other shell in Settings. With WSL, a session's folder can be inside Linux: Browse starts in your Linux home, or type a path like <code>~/projects/app</code>.</p>
         </details>
         <details>
           <summary>Can I use it for SSH and Telnet?</summary>

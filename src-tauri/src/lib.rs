@@ -85,6 +85,12 @@ async fn list_shells() -> Vec<ShellProfile> {
     shell::detect_shells()
 }
 
+/// The Linux home folder of a WSL shell, as a Windows path.
+#[tauri::command]
+async fn wsl_home(shell: ShellProfile) -> Result<String, String> {
+    blocking(move || shell::wsl_home(&shell)).await
+}
+
 /// Sends one request pane's request with curl. Waiting for curl happens on a blocking thread, so
 /// slow requests don't hold up other commands.
 #[tauri::command]
@@ -416,6 +422,7 @@ pub fn run() {
             pty_kill_all,
             pty_has_children,
             list_shells,
+            wsl_home,
             ssh_agent_keys,
             ssh_public_key_file,
             config_load,

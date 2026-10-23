@@ -10,6 +10,8 @@ import {
   groupPath,
   groupTree,
   guessShellKind,
+  isLinuxPath,
+  isWslPath,
   moveFolded,
   moveGroup,
   normalizeConfig,
@@ -17,6 +19,7 @@ import {
   parseEnv,
   pathKey,
   sessionColor,
+  wslWindowsPath,
 } from './config';
 import type { Group } from './types';
 
@@ -309,6 +312,32 @@ describe('helpers', () => {
     const env = parseEnv('# comment\nA=1\n\n B = two=2 \nbad\n=x');
     expect(env).toEqual({ A: '1', B: ' two=2' });
     expect(parseEnv(formatEnv({ X: 'y', Z: 'a=b' }))).toEqual({ X: 'y', Z: 'a=b' });
+  });
+
+  it('isWslPath / isLinuxPath', () => {
+    expect(isWslPath('\\\\wsl.localhost\\Ubuntu\\home\\me')).toBe(true);
+    expect(isWslPath('\\\\WSL$\\Ubuntu')).toBe(true);
+    expect(isWslPath('//wsl.localhost/Ubuntu/home')).toBe(true);
+    expect(isWslPath('\\\\wsl.localhost\\')).toBe(false);
+    expect(isWslPath('\\\\server\\share')).toBe(false);
+    expect(isWslPath('C:\\Projects')).toBe(false);
+    expect(isLinuxPath('/home/me/app')).toBe(true);
+    expect(isLinuxPath('~')).toBe(true);
+    expect(isLinuxPath(' ~/app ')).toBe(true);
+    expect(isLinuxPath('~me')).toBe(false);
+    expect(isLinuxPath('//server/share')).toBe(false);
+    expect(isLinuxPath('C:\\Projects')).toBe(false);
+  });
+
+  it('wslWindowsPath', () => {
+    const home = '\\\\wsl.localhost\\Ubuntu\\home\\me';
+    expect(wslWindowsPath('~', home)).toBe(home);
+    expect(wslWindowsPath('~/projects/app/', home)).toBe(`${home}\\projects\\app`);
+    expect(wslWindowsPath('/srv//www', home)).toBe('\\\\wsl.localhost\\Ubuntu\\srv\\www');
+    expect(wslWindowsPath('/', `${home}\\`)).toBe('\\\\wsl.localhost\\Ubuntu');
+    expect(wslWindowsPath('/mnt/c/Projects/app', home)).toBe('C:\\Projects\\app');
+    expect(wslWindowsPath('/mnt/d', home)).toBe('D:\\');
+    expect(wslWindowsPath('/mnt/wsl/x', home)).toBe('\\\\wsl.localhost\\Ubuntu\\mnt\\wsl\\x');
   });
 
   it('guessShellKind', () => {

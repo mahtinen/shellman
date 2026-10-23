@@ -1,13 +1,13 @@
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { api, type AgentKey } from './api';
-import { baseName, formatEnv, groupColor, groupOptions, newGroup, parseEnv, uid } from './config';
+import { baseName, formatEnv, groupColor, groupOptions, isLinuxPath, isWslPath, newGroup, parseEnv, uid, wslWindowsPath } from './config';
 import { connectionError, connectionTarget, DEFAULT_SSH_ARGS, keyLabel, newSshConnection, parseDestination, parsePort, sameKey } from './connection';
 import { dialog, promptDialog } from './dialogs';
 import { h } from './dom';
 import type { MenuEntry } from './menu';
 import { store } from './store';
 import { SESSION_COLORS } from './themes';
-import type { Connection, ConnectionKind, Group, SavedSession } from './types';
+import type { Connection, ConnectionKind, Group, SavedSession, ShellProfile } from './types';
 
 export const COMMAND_SUGGESTIONS = [
   'claude',
@@ -23,6 +23,20 @@ export const COMMAND_SUGGESTIONS = [
 export async function pickDirectory(current: string): Promise<string | null> {
   const picked = await openDialog({ directory: true, multiple: false, defaultPath: current || store.defaultCwd() });
   return typeof picked === 'string' ? picked : null;
+}
+
+const wslHomes = new Map<string, Promise<string>>();
+
+/** The WSL home folder as a Windows path. Asked once per shell, since asking may start WSL. */
+function wslHome(shell: ShellProfile): Promise<string> {
+  const key = [shell.path, ...shell.args].join('\0');
+  let home = wslHomes.get(key);
+  if (!home) {
+    home = api.wslHome(shell);
+    home.catch(() => wslHomes.delete(key));
+    wslHomes.set(key, home);
+  }
+  return home;
 }
 
 export function shellOptions(selected: string): HTMLSelectElement {
@@ -327,12 +341,51 @@ export function editSession(
     const colors = colorPicker(initial.color ?? '', () => groupColor(store.config.groups, selectedGroup()), 'Same as its group');
     group.addEventListener('change', () => colors.refresh());
 
+    // WSL folders: Browse starts in the Linux home, Linux paths can be typed, and a WSL folder with
+    // the default shell opens in WSL.
+    const wslShell = (): ShellProfile | null => {
+      const s = store.resolveShell(shell.value);
+      return s?.kind === 'wsl' ? s : null;
+    };
+    const cwdHint = h('small', { class: 'hint' }, 'A Windows folder, or a Linux one such as ~/projects/app.');
+    const showCwdHint = () => (cwdHint.hidden = !wslShell());
+    shell.addEventListener('change', showCwdHint);
+    showCwdHint();
+    const useWslFor = (dir: string) => {
+      if (shell.value || wslShell() || !(isWslPath(dir) || isLinuxPath(dir))) return;
+      const wsl = store.shells.find((s) => s.kind === 'wsl');
+      if (wsl) shell.value = wsl.id;
+      showCwdHint();
+    };
+    const toWindowsPath = async (dir: string): Promise<string> => {
+      if (!isLinuxPath(dir)) return dir;
+      const wsl = wslShell();
+      if (!wsl) throw new Error('A Linux path needs the WSL shell.');
+      return wslWindowsPath(dir, await wslHome(wsl));
+    };
+
     const browse = h('button', { class: 'btn', type: 'button' }, 'Browse…');
     browse.addEventListener('click', async () => {
-      const dir = await pickDirectory(cwd.value);
+      let start = cwd.value.trim();
+      useWslFor(start);
+      if (wslShell() && (!start || start === store.defaultCwd() || isLinuxPath(start))) {
+        browse.disabled = true;
+        browse.textContent = 'Starting WSL…';
+        try {
+          start = await toWindowsPath(start && start !== store.defaultCwd() ? start : '~');
+        } catch (e) {
+          error.textContent = `Could not find the WSL home folder: ${e}`;
+          if (isLinuxPath(start)) start = '';
+        } finally {
+          browse.disabled = false;
+          browse.textContent = 'Browse…';
+        }
+      }
+      const dir = await pickDirectory(start);
       if (!dir) return;
       cwd.value = dir;
       if (!name.value.trim()) name.value = baseName(dir);
+      useWslFor(dir);
     });
     const browseKey = h('button', { class: 'btn', type: 'button' }, 'Browse…');
     browseKey.addEventListener('click', async () => {
@@ -445,10 +498,18 @@ export function editSession(
         }
         return { ...base, name: name.value.trim() || connectionTarget(c), connection: c, cwd: '', command: '', shellId: '' };
       }
-      const dir = cwd.value.trim().replace(/^"(.*)"$/, '$1');
+      let dir = cwd.value.trim().replace(/^"(.*)"$/, '$1');
       if (!dir) {
         error.textContent = 'Choose a directory.';
         cwd.focus();
+        return null;
+      }
+      useWslFor(dir);
+      try {
+        dir = await toWindowsPath(dir);
+      } catch (e) {
+        error.textContent = e instanceof Error ? e.message : `Could not reach WSL: ${e}`;
+        (wslShell() ? cwd : shell).focus();
         return null;
       }
       if (!(await api.dirExists(dir))) {
@@ -496,7 +557,7 @@ export function editSession(
     const localFields = h(
       'div',
       { class: 'type-fields' },
-      h('label', { class: 'field' }, h('span', null, 'Directory'), h('div', { class: 'row' }, cwd, browse)),
+      h('label', { class: 'field' }, h('span', null, 'Directory'), h('div', { class: 'row' }, cwd, browse), cwdHint),
       h(
         'label',
         { class: 'field' },

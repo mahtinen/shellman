@@ -153,6 +153,8 @@ export const api = {
   killAll: () => invoke<void>('pty_kill_all'),
   hasChildren: (id: number) => invoke<boolean>('pty_has_children', { id }),
   listShells: () => invoke<ShellProfile[]>('list_shells'),
+  /** The WSL home folder as a Windows path (\\wsl.localhost\Ubuntu\home\me). May start WSL. */
+  wslHome: (shell: ShellProfile) => invoke<string>('wsl_home', { shell }),
   sshAgentKeys: (sshPath: string) => invoke<AgentKeys>('ssh_agent_keys', { sshPath }),
   sshPublicKeyFile: (key: string) => invoke<string>('ssh_public_key_file', { key }),
   loadConfig: () => invoke<Loaded<Partial<Config>>>('config_load'),
