@@ -64,6 +64,24 @@ fn windows(path: &str) -> String {
     path.trim().replace('/', "\\")
 }
 
+/// A folder's full, real path (no 8.3 short names like RUNNER~1, no `\\?\`), as git and shells write it.
+fn full_path(path: &Path) -> Option<String> {
+    let real = fs::canonicalize(path).ok()?.to_string_lossy().into_owned();
+    Some(match real.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => real.strip_prefix(r"\\?\").unwrap_or(&real).to_string(),
+    })
+}
+
+/// The same folder, however it is written (case, / or \, a short name); a folder that is gone by its text.
+fn same_folder(a: &str, b: &str) -> bool {
+    let key = |p: &str| windows(p).trim_end_matches('\\').to_lowercase();
+    match (full_path(Path::new(a)), full_path(Path::new(b))) {
+        (Some(x), Some(y)) => key(&x) == key(&y),
+        _ => key(a) == key(b),
+    }
+}
+
 /// `git worktree list --porcelain` → worktrees (the first is the main one).
 pub fn parse_worktrees(out: &str) -> Vec<Worktree> {
     let mut list = Vec::new();
@@ -137,7 +155,9 @@ pub fn add(folder: &Path, path: &str, branch: &str, from: &str, copy: &str) -> R
         return Err(crate::git::stderr_message(&out.stderr, "worktree add"));
     }
     let copied = copy_ignored(&top, &target, copy);
-    Ok(Added { path: path_arg, branch: branch.to_string(), base, copied })
+    // As git and the shell will report it, so terminals in it are known to be in it.
+    let path = full_path(&target).unwrap_or(path_arg);
+    Ok(Added { path, branch: branch.to_string(), base, copied })
 }
 
 /// Copies the ignored files matching `globs` from the repository at `top` into the worktree at `to`.
@@ -186,8 +206,7 @@ pub fn status(path: &Path) -> Result<Status, String> {
 pub fn remove(folder: &Path, path: &str, delete_branch: bool, force: bool) -> Result<(), String> {
     let g = Git::new(folder, false)?;
     let list = parse_worktrees(&g.ok(&["worktree", "list", "--porcelain"], QUICK)?);
-    let key = |p: &str| windows(p).trim_end_matches('\\').to_lowercase();
-    let Some(wt) = list.iter().find(|w| key(&w.path) == key(path)) else {
+    let Some(wt) = list.iter().find(|w| same_folder(&w.path, path)) else {
         return Err(format!("{path} isn't a worktree of this repository"));
     };
     if wt.main {
@@ -244,6 +263,15 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
+    /// The 8.3 short form of a folder's path (the path itself when the disk has none).
+    fn short_name(dir: &Path) -> String {
+        use std::os::windows::process::CommandExt;
+        // Raw: cmd reads its own quotes, which Rust's argument quoting would escape.
+        let out = Command::new("cmd").raw_arg(format!("/C for %I in (\"{}\") do @echo %~sI", dir.display())).output().unwrap();
+        let short = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if short.is_empty() { dir.to_string_lossy().into_owned() } else { short }
+    }
+
     #[test]
     fn real_worktree_add_status_remove() {
         if crate::git::git_client().is_err() {
@@ -269,13 +297,17 @@ mod tests {
         assert_eq!((i.prefix.as_str(), i.branch.as_deref(), i.worktrees.len()), ("api/", Some("main"), 1));
 
         let path = root.join("shop.worktrees").join("fix");
-        let path_s = path.to_string_lossy().into_owned();
+        // Written with the 8.3 short name of the temp folder where there is one (C:\Users\RUNNER~1 on
+        // CI): git reports the long name, and both must be known as the same worktree.
+        let path_s = format!(r"{}\shop.worktrees\fix", short_name(&root));
         assert!(add(&repo, &path_s, "bad name", "main", "").is_err());
         assert!(add(&repo, &path_s, "-x", "main", "").is_err());
         assert!(add(&repo, &path_s, "main", "main", "").is_err(), "an existing branch");
         assert!(add(&repo, &path_s, "claude/fix", "--output=x", "").is_err());
         let added = add(&repo.join("api"), &path_s, "claude/fix", "main", ".env.local").unwrap();
         assert_eq!((added.branch.as_str(), added.base.len(), added.copied), ("claude/fix", 40, 1));
+        assert_eq!(added.path.to_lowercase(), full_path(&path).unwrap().to_lowercase(), "the full path, not a short name");
+        assert!(!added.path.contains('~'));
         assert_eq!(fs::read_to_string(path.join(".env.local")).unwrap(), "TOKEN=x\n");
         assert!(!path.join("dist").exists());
         assert!(path.join("api/app.ts").is_file());
