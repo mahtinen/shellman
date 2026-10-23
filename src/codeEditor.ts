@@ -1,9 +1,11 @@
 /**
- * The request body editor: a textarea over a (for JSON, coloured) copy of its text. The textarea's text
- * is transparent, so the caret, selection, undo and IME stay the browser's.
+ * The request body editor: a textarea over a coloured copy of its text (JSON, and the variables of
+ * any body). The textarea's text is transparent, so the caret, selection, undo and IME stay the browser's.
  */
 import { backspaceEdit, charEdit, enterEdit, jsonSpans, tabEdit, type TextEdit } from './codeEdit';
 import { h } from './dom';
+import { onRepaint, varPointer, varSpan, type VarContext } from './varField';
+import { splitVariables } from './variables';
 
 /** Above this the colours would cost more than they help while typing. */
 const MAX_HIGHLIGHT = 200_000;
@@ -15,7 +17,7 @@ export interface CodeEditor {
   replace(text: string): void;
 }
 
-export function codeEditor(text: string, json: boolean, placeholder: string): CodeEditor {
+export function codeEditor(text: string, json: boolean, placeholder: string, ctx: VarContext): CodeEditor {
   const input = h('textarea', { class: 'rq-code-input', spellcheck: false, placeholder, wrap: 'off', autocomplete: 'off' });
   input.value = text;
   const view = h('pre', { class: 'rq-code-view', 'aria-hidden': 'true' });
@@ -24,8 +26,13 @@ export function codeEditor(text: string, json: boolean, placeholder: string): Co
   const paint = () => {
     const value = input.value;
     const nodes: (Node | string)[] = [];
-    if (json && value.length <= MAX_HIGHLIGHT) {
-      for (const s of jsonSpans(value)) nodes.push(s.kind ? h('span', { class: `j-${s.kind}` }, s.text) : s.text);
+    if (value.length > MAX_HIGHLIGHT) nodes.push(value);
+    else if (json) {
+      const vars = ctx.vars();
+      for (const s of jsonSpans(value)) nodes.push(s.kind === 'var' ? varSpan(s.text, vars) : s.kind ? h('span', { class: `j-${s.kind}` }, s.text) : s.text);
+    } else if (value.includes('{{')) {
+      const vars = ctx.vars();
+      for (const p of splitVariables(value)) nodes.push(p.name ? varSpan(p.text, vars, p.name) : p.text);
     } else nodes.push(value);
     // A final newline needs a line after it, as in the textarea.
     nodes.push('\n');
@@ -64,6 +71,8 @@ export function codeEditor(text: string, json: boolean, placeholder: string): Co
     e.preventDefault();
     apply(edit);
   });
+  varPointer(input, view, ctx);
+  onRepaint(el, paint);
   paint();
 
   return {

@@ -57,8 +57,10 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   indents on Enter and closes brackets and quotes. Requests run through Windows' own `curl.exe`; the response shows as folding
   JSON with search, headers, timing and cookies, and a Console tab with the exact curl command, the options
   it read and curl's own log (secrets hidden). Login cookies are kept per group and environment until
-  Shellman closes. Variables are `{{name}}` (a value may use other variables), edited in the app (Variables, or click an undefined one in the
-  URL): shared values in `.env` and `environments/<env>.json` (pick the environment next to Send or on the
+  Shellman closes. Variables are `{{name}}` (a value may use other variables) and look the same in the URL, headers, params,
+  auth and body: coloured by whether they are defined, with their value on hover and Ctrl+click to edit them. The
+  URL shows filled in under it, and the body's Preview button does the same for the body. They are edited in the app
+  (Variables, or click one in the URL line or the list under each section): shared values in `.env` and `environments/<env>.json` (pick the environment next to Send or on the
   group; one marked `"protected": true` asks before anything but GET). Each variable applies to every
   environment or one, and is secret or not: normal values are shared through git (`.env`,
   `environments/<env>.json`), secret ones stay on your computer in `.env.local` / `.env.<env>.local`, which
@@ -238,7 +240,7 @@ backup: if it's lost, installed copies can't verify new versions and everyone ha
 | `src/pane.ts` | One terminal: xterm.js, input/clipboard handling, OSC parsing, search |
 | `src/layout.ts` | Pure split-tree operations (unit tested) |
 | `src/connection.ts` | Connection validation, labels and quick-open parsing (unit tested) |
-| `src/requestPane.ts`, `codeEditor.ts`, `collections.ts`, `requestActions.ts` | Request panes, the body editor, linked folders, request menus |
+| `src/requestPane.ts`, `codeEditor.ts`, `varField.ts`, `collections.ts`, `requestActions.ts` | Request panes, the body editor, `{{variables}}` in fields, linked folders, request menus |
 | `src/requestFile.ts`, `variables.ts`, `dotenv.ts`, `curl.ts`, `postman.ts`, `jsonView.ts`, `codeEdit.ts` | Request files, variables, curl copy/paste, Postman import, JSON colours and editing keys (unit tested) |
 | `src/sidebar.ts`, `sessionEditor.ts`, `settingsDialog.ts`, `palette.ts` | UI |
 | `src/updater.ts` | Background update checks, download and install-on-restart |

@@ -75,19 +75,35 @@ export interface Segment {
   name?: string;
 }
 
-/** `text` split into plain parts and variables, with their values (for the URL line under the URL). */
-export function segments(text: string, vars: Map<string, Variable>, hideSecrets: boolean): Segment[] {
-  const out: Segment[] = [];
+/** `text` cut into plain parts and `{{variables}}` as written; joined they give `text` back. */
+export function splitVariables(text: string): { text: string; name?: string }[] {
+  const out: { text: string; name?: string }[] = [];
   let last = 0;
   for (const m of text.matchAll(VAR)) {
-    if (m.index! > last) out.push({ text: text.slice(last, m.index), kind: 'text' });
-    const v = vars.get(m[1]);
-    if (!v) out.push({ text: m[0], kind: 'missing', name: m[1] });
-    else out.push({ text: displayValue(v, hideSecrets), kind: v.secret ? 'secret' : 'var', name: m[1] });
+    if (m.index! > last) out.push({ text: text.slice(last, m.index) });
+    out.push({ text: m[0], name: m[1] });
     last = m.index! + m[0].length;
   }
-  if (last < text.length) out.push({ text: text.slice(last), kind: 'text' });
+  if (last < text.length) out.push({ text: text.slice(last) });
   return out;
+}
+
+/** `text` split into plain parts and variables, with their values (for the URL line under the URL). */
+export function segments(text: string, vars: Map<string, Variable>, hideSecrets: boolean): Segment[] {
+  return splitVariables(text).map(({ text, name }): Segment => {
+    if (!name) return { text, kind: 'text' };
+    const v = vars.get(name);
+    if (!v) return { text, kind: 'missing', name };
+    return { text: displayValue(v, hideSecrets), kind: v.secret ? 'secret' : 'var', name };
+  });
+}
+
+/** How a `{{variable}}` in a field shows: its colour and what hovering it tells. */
+export function describeVariable(name: string, vars: Map<string, Variable>, hideSecrets: boolean): { kind: Segment['kind']; title: string } {
+  const v = vars.get(name);
+  if (!v) return { kind: 'missing', title: `{{${name}}} isn't defined. Ctrl+click to add it.` };
+  const note = isOpRef(v.value) ? ' (1Password, filled in when sending)' : '';
+  return { kind: v.secret ? 'secret' : 'var', title: `{{${name}}} = ${displayValue(v, hideSecrets)}${note}\nfrom ${v.source}. Ctrl+click to edit.` };
 }
 
 export interface Prepared {

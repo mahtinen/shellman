@@ -1126,6 +1126,18 @@ if (phase === 'main') {
       await ev(`[...document.querySelectorAll('.variables-dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
       await waitFor(`!document.querySelector('.variables-dialog')`, 2000, 'editor closed');
 
+      // Fields colour their variables as the body does; hovering one tells its value, Ctrl+click edits it.
+      assert(await ev(`${active}.el.querySelector('.rq-url-field.has-vars .vf-view .seg-var')?.textContent === '{{baseUrl}}'`), 'URL field colours');
+      const tenantAt = await ev(`(() => { const s = [...${active}.el.querySelectorAll('.rq-kv .vf-view [data-var]')].find(s => s.dataset.var === 'TENANT'); const r = s.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tenantAt.x, y: tenantAt.y });
+      await waitFor(`[...${active}.el.querySelectorAll('.rq-kv input')].some(i => i.title.startsWith('{{TENANT}} = acme-test'))`, 2000, 'hover title');
+      await shot(path.join(OUT, '23-header-variables.png'));
+      await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: tenantAt.x, y: tenantAt.y, button: 'left', clickCount: 1, modifiers: 2 });
+      await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tenantAt.x, y: tenantAt.y, button: 'left', clickCount: 1, modifiers: 2 });
+      await waitFor(`document.querySelector('.variables-dialog .var-row.focus input.mono')?.value === 'TENANT'`, 3000, 'Ctrl+click edits TENANT');
+      await ev(`[...document.querySelectorAll('.variables-dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
+      await waitFor(`!document.querySelector('.variables-dialog')`, 2000, 'editor closed');
+
       // Variables are edited in the app: a new one goes to the environment's file.
       await ev(`[...${active}.el.querySelectorAll('.rq-tool')].find(b => b.textContent.includes('Variables')).click()`);
       await waitFor(`!!document.querySelector('.variables-dialog .var-row:not(.var-head)')`, 3000, 'variables dialog');
@@ -1203,11 +1215,27 @@ if (phase === 'main') {
       assert(typed === '{\n  "id": "{{userId}}", "tags": ["a"]\n}', 'typed body: ' + js(typed));
       assert((await ev(`${active}.doc.body.text`)) === typed, 'body not kept in the request');
       const colours = await ev(`[...${active}.el.querySelectorAll('.rq-code-view span')].map(s => s.className + '=' + s.textContent).join(' ')`);
-      assert(colours.includes('j-key="id"') && colours.includes('j-var={{userId}}') && colours.includes('j-str="a"'), 'colours: ' + colours);
+      assert(colours.includes('j-key="id"') && colours.includes('seg-missing={{userId}}') && colours.includes('j-str="a"'), 'colours: ' + colours);
       await ev(`[...${active}.el.querySelectorAll('.rq-bodybar .btn')].find(b => b.textContent === 'Format').click()`);
       await waitFor(`${active}.el.querySelector('.rq-code-input').value.includes('"tags": [\\n    "a"\\n  ]')`, 2000, 'formatted');
       await key('KeyZ', 'z', 90, ['ctrl']);
       await waitFor(`${active}.el.querySelector('.rq-code-input').value === ${js(typed)}`, 2000, 'Ctrl+Z undoes Format');
+
+      // The variables the body uses stay in view under it; Preview fills them in.
+      await ev(`(() => { const t = ${active}.el.querySelector('.rq-code-input'); t.value = '{"tenant": "{{TENANT}}", "id": "{{userId}}"}'; t.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+      assert(
+        await ev(`(() => { const s = ${active}.el.querySelector('.rq-sources'); const sec = ${active}.el.querySelector('.rq-section').getBoundingClientRect(); const r = s?.getBoundingClientRect(); return !!r && r.height > 0 && r.bottom <= sec.bottom + 1 && s.textContent.includes('{{TENANT}}'); })()`),
+        'body variables not in view',
+      );
+      await ev(`[...${active}.el.querySelectorAll('.rq-bodybar .btn')].find(b => b.textContent === 'Preview').click()`);
+      await waitFor(`${active}.el.querySelector('.rq-code-preview')?.textContent === '{"tenant": "acme-test", "id": "{{userId}}"}'`, 2000, 'body preview');
+      await shot(path.join(OUT, '24-body-preview.png'));
+      await ev(`[...${active}.el.querySelectorAll('.rq-code-preview .seg-var')].find(s => s.textContent === 'acme-test').click()`);
+      await waitFor(`document.querySelector('.variables-dialog .var-row.focus input.mono')?.value === 'TENANT'`, 3000, 'preview click edits TENANT');
+      await ev(`[...document.querySelectorAll('.variables-dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
+      await waitFor(`!document.querySelector('.variables-dialog')`, 2000, 'editor closed');
+      await ev(`[...${active}.el.querySelectorAll('.rq-bodybar .btn')].find(b => b.textContent === 'Preview').click()`);
+      await waitFor(`!!${active}.el.querySelector('.rq-code-input')`, 2000, 'back to editing');
 
       // A request dragged onto a folder moves there; its open pane follows.
       await ev(`(() => {
