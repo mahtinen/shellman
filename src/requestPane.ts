@@ -298,6 +298,7 @@ export class RequestPane implements WorkspacePane {
     const offConfig = store.on(() => {
       this.renderHeader();
       this.renderUrlInfo();
+      this.renderSources();
       repaintVarFields(this.el);
     });
     this.unsubscribe = () => {
@@ -460,6 +461,7 @@ export class RequestPane implements WorkspacePane {
     }
     this.renderBanners();
     this.renderUrlInfo();
+    this.renderSources();
     repaintVarFields(this.el);
   }
 

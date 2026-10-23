@@ -1138,6 +1138,13 @@ if (phase === 'main') {
       await ev(`[...document.querySelectorAll('.variables-dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
       await waitFor(`!document.querySelector('.variables-dialog')`, 2000, 'editor closed');
 
+      // The list of variables used follows the files (they load after the pane opens, or a git pull changes them).
+      const sourcesShow = (value) => `[...${active}.el.querySelectorAll('.rq-source')].some(r => r.textContent.includes('{{TENANT}}') && r.textContent.includes(${js(value)}))`;
+      put('.env', 'TENANT=acme-changed\n');
+      await waitFor(sourcesShow('acme-changed'), 5000, 'variables used follow .env');
+      put('.env', 'TENANT=acme-test\n');
+      await waitFor(sourcesShow('acme-test'), 5000, 'variables used follow .env back');
+
       // Variables are edited in the app: a new one goes to the environment's file.
       await ev(`[...${active}.el.querySelectorAll('.rq-tool')].find(b => b.textContent.includes('Variables')).click()`);
       await waitFor(`!!document.querySelector('.variables-dialog .var-row:not(.var-head)')`, 3000, 'variables dialog');
