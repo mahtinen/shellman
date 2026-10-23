@@ -35,6 +35,7 @@ import { store } from './store';
 import type { Group, Settings } from './types';
 import { displayValue, filesOutside, findSecretLiterals, isOpRef, opRef, prepareRequest, segments, usedVariables, type Variable } from './variables';
 import { editVariables } from './variablesDialog';
+import { onRepaint, repaintVarFields, varField, type VarContext } from './varField';
 import { gitSync } from './gitSync';
 
 export interface RequestHost extends PaneEvents {
@@ -153,6 +154,8 @@ export class RequestPane implements WorkspacePane {
   /** The file changed on disk while this pane had unsaved changes. */
   private changedOnDisk = false;
   private section: Section;
+  /** The body shows with its variables filled in (read-only). */
+  private bodyPreview = false;
   private responseTab: ResponseTab = 'body';
   private sending: { id: number; started: number } | null = null;
   private readonly folded = new Set<number>();
@@ -162,6 +165,7 @@ export class RequestPane implements WorkspacePane {
   private readonly header: ReturnType<typeof paneHeader>;
   private readonly methodEl: HTMLSelectElement;
   private readonly urlEl: HTMLInputElement;
+  private readonly urlField: HTMLElement;
   private readonly sendBtn: HTMLButtonElement;
   private readonly envBtn: HTMLButtonElement;
   private readonly resolvedEl: HTMLElement;
@@ -170,6 +174,14 @@ export class RequestPane implements WorkspacePane {
   private readonly sectionEl: HTMLElement;
   /** The variables the current section uses, under it. */
   private readonly sourcesEl = h('div', { class: 'rq-sources-wrap' });
+  /** How the fields show their variables and open them for editing. */
+  private readonly varCtx: VarContext = {
+    vars: () => {
+      const group = this.group;
+      return group ? collections.variables(group) : new Map<string, Variable>();
+    },
+    edit: (name, missing) => this.editVariables(missing ? [name] : [], name),
+  };
   private readonly mainEl: HTMLElement;
   private readonly statusEl: HTMLElement;
   private readonly responseTabs: HTMLElement;
@@ -196,6 +208,8 @@ export class RequestPane implements WorkspacePane {
     this.urlEl = h('input', { class: 'rq-url', spellcheck: false, placeholder: '{{baseUrl}}/path', autocomplete: 'off' });
     this.urlEl.addEventListener('input', () => this.edit(() => (this.doc.url = this.urlEl.value), false));
     this.urlEl.addEventListener('change', () => this.renderSection());
+    this.urlField = varField(this.urlEl, this.varCtx);
+    this.urlField.classList.add('rq-url-field');
     this.sendBtn = h('button', { class: 'btn primary rq-send', title: 'Send (Ctrl+Enter)', onclick: () => void this.send() }, 'Send');
     this.envBtn = h('button', {
       class: 'rq-env',
@@ -247,7 +261,7 @@ export class RequestPane implements WorkspacePane {
       h(
         'div',
         { class: 'rq' },
-        h('div', { class: 'rq-urlbar' }, this.methodEl, this.urlEl, this.envBtn, this.sendBtn),
+        h('div', { class: 'rq-urlbar' }, this.methodEl, this.urlField, this.envBtn, this.sendBtn),
         h(
           'div',
           { class: 'rq-urlinfo' },
@@ -284,6 +298,8 @@ export class RequestPane implements WorkspacePane {
     const offConfig = store.on(() => {
       this.renderHeader();
       this.renderUrlInfo();
+      this.renderSources();
+      repaintVarFields(this.el);
     });
     this.unsubscribe = () => {
       offFolder();
@@ -445,6 +461,8 @@ export class RequestPane implements WorkspacePane {
     }
     this.renderBanners();
     this.renderUrlInfo();
+    this.renderSources();
+    repaintVarFields(this.el);
   }
 
   /** Writes the request file. A typed-in token or password may first move to `.env.local`. */
@@ -608,7 +626,10 @@ export class RequestPane implements WorkspacePane {
 
   private renderAll(): void {
     this.methodEl.value = METHODS.includes(this.doc.method as (typeof METHODS)[number]) ? this.doc.method : 'GET';
-    if (this.urlEl.value !== this.doc.url) this.urlEl.value = this.doc.url;
+    if (this.urlEl.value !== this.doc.url) {
+      this.urlEl.value = this.doc.url;
+      repaintVarFields(this.urlField);
+    }
     this.renderHeader();
     this.renderUrlInfo();
     this.renderBanners();
@@ -631,21 +652,20 @@ export class RequestPane implements WorkspacePane {
   }
 
   private renderUrlInfo(): void {
-    const group = this.group;
-    const vars = group ? collections.variables(group) : new Map<string, Variable>();
-    const parts = segments(this.doc.url, vars, store.settings.hideSecrets);
-    this.resolvedEl.replaceChildren(
-      h('span', { class: 'muted' }, '→ '),
-      ...parts.map((p) =>
-        h(
-          'span',
-          {
-            class: `seg-${p.kind}`,
-            title: p.name ? (p.kind === 'missing' ? `{{${p.name}}} isn't defined: click to add it` : `{{${p.name}}}: click to edit`) : undefined,
-            onclick: p.name ? () => this.editVariables(p.kind === 'missing' ? [p.name!] : [], p.name) : undefined,
-          },
-          p.text,
-        ),
+    this.resolvedEl.replaceChildren(h('span', { class: 'muted' }, '→ '), ...this.filledIn(this.doc.url));
+  }
+
+  /** `text` with its variables' values, each one a click away from editing it. */
+  private filledIn(text: string): HTMLElement[] {
+    return segments(text, this.varCtx.vars(), store.settings.hideSecrets).map((p) =>
+      h(
+        'span',
+        {
+          class: `seg-${p.kind}`,
+          title: p.name ? (p.kind === 'missing' ? `{{${p.name}}} isn't defined: click to add it` : `{{${p.name}}}: click to edit`) : undefined,
+          onclick: p.name ? () => this.varCtx.edit(p.name!, p.kind === 'missing') : undefined,
+        },
+        p.text,
       ),
     );
   }
@@ -781,6 +801,7 @@ export class RequestPane implements WorkspacePane {
           this.kvTable(u.params, () => {
             d.url = joinUrl(u.base, u.params, u.hash);
             this.urlEl.value = d.url;
+            repaintVarFields(this.urlField);
           }, { names: ['Parameter', 'Value'], toggle: false }),
           h('p', { class: 'hint' }, 'The query of the URL; editing either one changes the other.'),
         );
@@ -853,7 +874,7 @@ export class RequestPane implements WorkspacePane {
               this.renderSection();
             },
           });
-          return h('div', { class: 'rq-kv-row' }, on ?? h('span'), name, value, file, remove);
+          return h('div', { class: 'rq-kv-row' }, on ?? h('span'), varField(name, this.varCtx), varField(value, this.varCtx), file, remove);
         }),
         h(
           'button',
@@ -898,7 +919,25 @@ export class RequestPane implements WorkspacePane {
     const bar = h('div', { class: 'rq-bodybar' }, type);
     if (b.type === 'none') return h('div', null, bar, h('p', { class: 'hint' }, 'This request has no body.'));
     if (b.type === 'json' || b.type === 'text' || b.type === 'xml') {
-      const editor = codeEditor(b.text, b.type === 'json', b.type === 'json' ? '{ "name": "{{userName}}" }' : '');
+      const preview = h('button', {
+        class: `btn small${this.bodyPreview ? ' on' : ''}`,
+        title: this.bodyPreview ? 'Back to editing the body' : 'Show the body with its variables filled in',
+        'aria-pressed': String(this.bodyPreview),
+        onclick: () => {
+          this.bodyPreview = !this.bodyPreview;
+          this.renderSection();
+        },
+      }, 'Preview');
+      if (this.bodyPreview) {
+        const view = h('pre', { class: 'rq-code-preview mono' });
+        const paint = () => view.replaceChildren(...this.filledIn(b.text));
+        const box = h('div', { class: 'rq-code' }, view);
+        onRepaint(box, paint);
+        paint();
+        bar.append(preview, h('span', { class: 'hint' }, 'Read-only: click a value to edit its variable.'));
+        return h('div', { class: 'rq-bodywrap' }, bar, box);
+      }
+      const editor = codeEditor(b.text, b.type === 'json', b.type === 'json' ? '{ "name": "{{userName}}" }' : '', this.varCtx);
       const check = h('span', { class: 'hint' });
       const validate = () => {
         check.textContent = b.type === 'json' && b.text.trim() && !isJsonish(b.text) ? 'Not valid JSON' : '';
@@ -917,7 +956,7 @@ export class RequestPane implements WorkspacePane {
             },
           }, 'Format'),
         );
-      bar.append(check);
+      bar.append(preview, check);
       return h('div', { class: 'rq-bodywrap' }, bar, editor.el);
     }
     if (b.type === 'form' || b.type === 'multipart') {
@@ -932,7 +971,7 @@ export class RequestPane implements WorkspacePane {
       h(
         'div',
         { class: 'row' },
-        path,
+        varField(path, this.varCtx),
         h('button', {
           class: 'btn small',
           onclick: async () => {
@@ -975,7 +1014,7 @@ export class RequestPane implements WorkspacePane {
       const input = h('input', { class: 'input small mono', value, spellcheck: false });
       input.addEventListener('input', () => this.edit(() => set(input.value)));
       input.addEventListener('change', () => this.renderSection());
-      return h('label', { class: 'field' }, h('span', null, label), input);
+      return h('label', { class: 'field' }, h('span', null, label), varField(input, this.varCtx));
     };
     const a = d.auth;
     const fields: HTMLElement[] = [];

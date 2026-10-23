@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { newRequest, type RequestDoc } from './requestFile';
 import { localEnvFile } from './dotenv';
-import { checkRows, collectVariables, displayValue, editRow, filesOutside, findSecretLiterals, opRef, overriddenRows, prepareRequest, rowScope, scopeFile, SCOPES, segments, variableRows, variableWrites } from './variables';
+import { checkRows, collectVariables, describeVariable, displayValue, editRow, filesOutside, findSecretLiterals, opRef, overriddenRows, prepareRequest, rowScope, scopeFile, SCOPES, segments, splitVariables, variableRows, variableWrites } from './variables';
 
 const files = (env = 'staging') => ({
   env,
@@ -39,6 +39,29 @@ describe('variables', () => {
       { text: '?k=', kind: 'text' },
       { text: '{{nope}}', kind: 'missing', name: 'nope' },
     ]);
+  });
+
+  it('splits text into plain parts and variables as written', () => {
+    expect(splitVariables('{"id": {{ userId }}, "x": "{{a.b-c}}"}')).toEqual([
+      { text: '{"id": ' },
+      { text: '{{ userId }}', name: 'userId' },
+      { text: ', "x": "' },
+      { text: '{{a.b-c}}', name: 'a.b-c' },
+      { text: '"}' },
+    ]);
+    // Not a valid name: plain text.
+    expect(splitVariables('{{1x}} {{}}')).toEqual([{ text: '{{1x}} {{}}' }]);
+    expect(splitVariables('')).toEqual([]);
+  });
+
+  it('describes a variable for hovering it', () => {
+    const vars = collectVariables(files());
+    expect(describeVariable('baseUrl', vars, true)).toEqual({ kind: 'var', title: '{{baseUrl}} = https://staging.example.com\nfrom environments/staging.json. Ctrl+click to edit.' });
+    // Secret values stay hidden; a 1Password reference is only an address.
+    expect(describeVariable('PASSWORD', vars, true).title).not.toContain('hunter2');
+    expect(describeVariable('PASSWORD', vars, true).kind).toBe('secret');
+    expect(describeVariable('API_TOKEN', vars, true).title).toContain('op://Example Vault/Example API/credential (1Password, filled in when sending)');
+    expect(describeVariable('nope', vars, true)).toEqual({ kind: 'missing', title: "{{nope}} isn't defined. Ctrl+click to add it." });
   });
 
   it('fills in plain values and leaves secrets to curl', () => {

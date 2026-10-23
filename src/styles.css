@@ -2045,9 +2045,12 @@ select.input {
   color: var(--text);
 }
 
-.rq-url {
+.rq-url-field {
   flex: 1;
-  min-width: 0;
+}
+
+.rq-url {
+  width: 100%;
   height: 32px;
   padding: 0 10px;
   border: 1px solid var(--border);
@@ -2094,6 +2097,65 @@ select.input {
 
 .seg-secret {
   color: #bb9af7;
+}
+
+/* A tint (no padding: the coloured copy must lay out as the field's text) sets variables apart
+   from JSON keys and strings. */
+.seg-var,
+.seg-secret {
+  border-radius: 3px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* A text field with {{variables}} (varField.ts): its text turns transparent over a coloured copy
+   that must lay out exactly as the field does. */
+.vf {
+  position: relative;
+  min-width: 0;
+}
+
+.vf-view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  overflow: hidden;
+  color: var(--text);
+  /* As .input.small: its font is inherited (.input's `font: inherit` wins over .mono). */
+  font: inherit;
+  font-size: 12px;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.vf:not(.has-vars) .vf-view {
+  display: none;
+}
+
+.vf.has-vars > input {
+  color: transparent;
+  caret-color: var(--text);
+}
+
+.rq-url-field .vf-view {
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.row > .vf {
+  flex: 1;
+}
+
+.vf-link {
+  cursor: pointer;
+}
+
+/* The variable under the mouse while Ctrl is held: a link. */
+.vf-hot {
+  text-decoration: underline;
 }
 
 .seg-missing {
@@ -2271,8 +2333,45 @@ select.input {
 
 .rq-bodywrap {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  height: 100%;
+  min-height: 0;
+}
+
+/* The body fills the section and the variables it uses stay in view under it. */
+.rq-section:has(> .rq-bodywrap) {
+  display: flex;
+  flex-direction: column;
+}
+
+.rq-section:has(> .rq-bodywrap) > .rq-sources-wrap {
+  flex: none;
+  max-height: 40%;
+  overflow: auto;
+}
+
+.rq-code-preview {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  user-select: text;
+}
+
+.rq-code-preview .seg-var,
+.rq-code-preview .seg-secret,
+.rq-code-preview .seg-missing {
+  cursor: pointer;
+}
+
+.rq-code-preview .seg-var:hover,
+.rq-code-preview .seg-secret:hover {
+  text-decoration: underline;
 }
 
 .rq-bodybar {
@@ -2352,10 +2451,6 @@ select.input {
 
 .rq-code-input::selection {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-
-.j-var {
-  color: #e0af68;
 }
 
 .rq-auth,
