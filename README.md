@@ -92,6 +92,9 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   compared with: another branch (everything done on this branch, committed or not, like a pull request) or an
   earlier commit (that commit and everything after it), so work Claude has already committed shows too. Ctrl+click
   a file path in a terminal (`src/app.ts:42`, `Program.cs(12,5)`, a `file://` link) to open it here at that line.
+  Markdown files open as a preview (headings, lists, tables, code with colours, images from the folder; links
+  to other files open them here), with Source a click away. HTML in a Markdown file is shown only as far as it
+  is safe: scripts, styles and event handlers are left out, and images from the internet aren't loaded.
   A changed file opens as a diff, side by side or inline,
   with unchanged lines folded away and the changed words marked; F7 and Shift+F7 jump between changes. Ctrl+P goes
   to a file by name (`@` lists the open file's functions and classes) and Ctrl+F finds text in the open one.
@@ -270,6 +273,7 @@ backup: if it's lost, installed copies can't verify new versions and everyone ha
 | `src/requestPane.ts`, `codeEditor.ts`, `varField.ts`, `collections.ts`, `requestActions.ts` | Request panes, the body editor, `{{variables}}` in fields, linked folders, request menus |
 | `src/filesPane.ts`, `lineView.ts`, `src-tauri/src/files.rs` | The Files pane: folder tree, read-only file and diff views (only the visible lines are drawn), reading files inside the folder only |
 | `src/diff.ts`, `syntax.ts`, `navigate.ts` | Diff layout from git's hunks (inline, side by side, folding, changed words), syntax colours, and finding declarations for code navigation (unit tested) |
+| `src/markdown.ts`, `markdownView.ts` | Markdown preview: the parser (unit tested), and drawing it element by element with an allowlist for HTML |
 | `src/filesSearch.ts` | The Files pane's Search view (`git grep`) and its lists of definitions and references |
 | `src/requestFile.ts`, `variables.ts`, `dotenv.ts`, `curl.ts`, `postman.ts`, `jsonView.ts`, `codeEdit.ts` | Request files, variables, curl copy/paste, Postman import, JSON colours and editing keys (unit tested) |
 | `src/sidebar.ts`, `sessionEditor.ts`, `settingsDialog.ts`, `palette.ts` | UI |

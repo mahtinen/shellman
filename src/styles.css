@@ -3675,3 +3675,221 @@ select.input {
   width: 10px;
   height: 10px;
 }
+
+/* ---- Files pane: Markdown preview ---- */
+
+.fp-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  outline: none;
+  background: var(--bg);
+  user-select: text;
+}
+
+.md {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 32px 48px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  margin: 24px 0 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  scroll-margin-top: 12px;
+}
+
+.md h1 {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 1.9em;
+}
+
+.md h2 {
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--border);
+  font-size: 1.45em;
+}
+
+.md h3 {
+  font-size: 1.2em;
+}
+
+.md h4 {
+  font-size: 1em;
+}
+
+.md h5,
+.md h6 {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md .md-table,
+.md .md-pre,
+.md details {
+  margin: 0 0 14px;
+}
+
+.md ul,
+.md ol {
+  padding-left: 2em;
+}
+
+.md li + li {
+  margin-top: 3px;
+}
+
+.md li > ul,
+.md li > ol,
+.md li > p {
+  margin-bottom: 0;
+}
+
+.md li.md-task {
+  list-style: none;
+}
+
+.md li.md-task > input {
+  margin: 0 6px 0 -1.4em;
+  vertical-align: middle;
+}
+
+.md a.md-link {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.md a.md-link:hover {
+  text-decoration: underline;
+}
+
+.md code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface2);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+
+.md .md-pre {
+  position: relative;
+}
+
+.md pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: var(--term-bg);
+  color: var(--ansi-fg, var(--text));
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.md pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+  white-space: pre;
+}
+
+.md .md-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  opacity: 0;
+}
+
+.md .md-pre:hover .md-copy {
+  opacity: 1;
+}
+
+.md blockquote {
+  padding: 0 14px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.md hr {
+  height: 2px;
+  margin: 22px 0;
+  border: 0;
+  background: var(--border);
+}
+
+.md .md-table {
+  overflow-x: auto;
+}
+
+.md table {
+  border-collapse: collapse;
+}
+
+.md th,
+.md td {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+}
+
+.md th {
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.md tbody tr:nth-child(2n) {
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
+.md img {
+  max-width: 100%;
+}
+
+.md kbd {
+  font-size: 0.82em;
+}
+
+.md mark {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ansi-yellow) 35%, transparent);
+  color: inherit;
+}
+
+.md details > summary {
+  cursor: pointer;
+}
+
+.md .md-noimg {
+  display: inline-flex;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+
+.md .md-noimg svg {
+  width: 13px;
+  height: 13px;
+}
+
+.md .md-noimg-text {
+  color: var(--muted);
+  font-style: italic;
+}

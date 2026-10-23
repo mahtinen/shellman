@@ -36,7 +36,12 @@ pub struct Listing {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Content {
     Text { text: String, size: u64 },
-    Image { data_url: String, size: u64 },
+    // rename_all names the variants only; the field needs its own.
+    Image {
+        #[serde(rename = "dataUrl")]
+        data_url: String,
+        size: u64,
+    },
     Binary { size: u64 },
     TooLarge { size: u64 },
 }
@@ -314,6 +319,10 @@ mod tests {
         assert_eq!(read(&d, "c.png").unwrap(), Content::Image { data_url: "data:image/png;base64,iVBORw==".into(), size: 4 });
         assert_eq!(read(&d, "u16.txt").unwrap(), Content::Text { text: "ab".into(), size: 4 });
         assert!(read(&d, "").is_err());
+        // The names the frontend reads (api.ts FileContent).
+        let json = serde_json::to_value(read(&d, "c.png").unwrap()).unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "image", "dataUrl": "data:image/png;base64,iVBORw==", "size": 4 }));
+        assert_eq!(serde_json::to_value(Content::TooLarge { size: 1 }).unwrap(), serde_json::json!({ "kind": "tooLarge", "size": 1 }));
     }
 
     #[test]

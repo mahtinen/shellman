@@ -31,6 +31,8 @@ import { fuzzyScore } from './fuzzy';
 import { icons } from './icons';
 import { codeNodes, LineView, widestLine } from './lineView';
 import { showMenu, type MenuEntry } from './menu';
+import { parseMarkdown, slug, plainText } from './markdown';
+import { ANCHOR_PREFIX, renderMarkdown } from './markdownView';
 import { definitions, fileSymbols, implementations, wordAt } from './navigate';
 import { ProjectSearch } from './filesSearch';
 import { paneHeader, type PaneEvents, type WorkspacePane } from './panes';
@@ -113,6 +115,26 @@ let findOwner: FilesPane | null = null;
 
 const dirOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
 const nameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+/** Names of code block languages, as the file extensions the highlighter knows. */
+const FENCE_LANGS: Record<string, string> = {
+  typescript: 'ts', javascript: 'js', csharp: 'cs', 'c#': 'cs', cs: 'cs', bash: 'sh', shell: 'sh', console: 'sh', zsh: 'sh',
+  powershell: 'ps1', pwsh: 'ps1', ps: 'ps1', python: 'py', rust: 'rs', golang: 'go', kotlin: 'kt', ruby: 'rb', yml: 'yaml',
+  jsonc: 'json', html: 'html', xml: 'xml', dockerfile: 'dockerfile', docker: 'dockerfile', cmd: 'bat', batch: 'bat',
+};
+
+/** `rel` (a link in a file at `from`) as a path in the folder; null when it leads out of it. */
+function joinPath(from: string, rel: string): string | null {
+  const parts = rel.startsWith('/') ? [] : dirOf(from).split('/').filter(Boolean);
+  for (const p of rel.replace(/^\/+/, '').split('/')) {
+    if (!p || p === '.') continue;
+    if (p === '..') {
+      if (!parts.length) return null;
+      parts.pop();
+    } else parts.push(p);
+  }
+  return parts.join('/');
+}
+
 const sameText = (a: string[] | null, b: string[] | null) => a === b || (!!a && !!b && a.length === b.length && a.every((l, i) => l === b[i]));
 
 export class FilesPane implements WorkspacePane {
@@ -188,6 +210,12 @@ export class FilesPane implements WorkspacePane {
   private changeRows: number[] = [];
   /** Rows in the views drawn now. */
   private rowsTotal = 0;
+  /** The Markdown preview drawn now (instead of views). */
+  private previewEl: HTMLElement | null = null;
+  /** A Markdown file shows its source, not the preview: it was opened at a line that isn't a heading. */
+  private mdSource = false;
+  private readonly images = new Map<string, Promise<string | null>>();
+  private previewMatches: Range[] = [];
   private readonly resizeObserver: ResizeObserver;
   private readonly unsubscribe: () => void;
 
@@ -522,7 +550,16 @@ export class FilesPane implements WorkspacePane {
     this.mode = mode;
     this.cursor = path;
     if (this.view === 'all') await this.revealInTree(path);
+    // A line in a Markdown file (a search result) shows in its source; a heading also in the preview.
+    if (line || this.opened?.path !== path) this.mdSource = false;
+    if (line && langFor(path)?.id === 'markdown') this.mdSource = true;
     await this.load(path, false);
+    if (this.mdSource && line && this.opened?.lines && /^\s{0,3}#{1,6}\s/.test(this.opened.lines[line - 1] ?? '')) {
+      this.mdSource = false;
+      this.renderBar();
+      this.renderBody();
+      this.revealHeading(line);
+    }
     if (opts.top !== undefined) for (const v of this.views) v.scrollTop = opts.top * v.rowHeight;
     else if (line && this.mode === 'file') this.views[0]?.reveal(line - 1);
     this.renderBar();
@@ -1155,6 +1192,7 @@ export class FilesPane implements WorkspacePane {
         )
       : h('span', { class: 'fp-crumbs muted' }, this.root);
     const diffable = !!o?.change;
+    const markdown = !!o && this.isMarkdown(o) && this.mode === 'file';
     const nav = h(
       'div',
       { class: 'fp-seg' },
@@ -1172,6 +1210,12 @@ export class FilesPane implements WorkspacePane {
             this.renderBar();
             this.renderBody();
             this.host.onInfoChange(this);
+          })
+        : null,
+      markdown
+        ? seg(this.showPreview ? 'preview' : 'source', [['preview', 'Preview', 'The Markdown as it reads'], ['source', 'Source', 'The Markdown as it is written']], (v) => {
+            this.mdSource = false;
+            store.update((c) => (c.settings.markdownPreview = v === 'preview'));
           })
         : null,
       diffable && this.mode === 'diff'
@@ -1196,11 +1240,12 @@ export class FilesPane implements WorkspacePane {
   /** Draws the open file: its text, its diff, an image, or why it can't be shown. */
   private renderBody(keepScroll = false): void {
     const o = this.opened;
-    const top = keepScroll ? (this.views[this.views.length - 1]?.scrollTop ?? 0) : 0;
+    const top = keepScroll ? (this.previewEl?.scrollTop ?? this.views[this.views.length - 1]?.scrollTop ?? 0) : 0;
     this.views = [];
     this.changeRows = [];
     this.rowsTotal = 0;
     this.rowLine = () => null;
+    this.previewEl = null;
     if (!o) {
       this.bodyEl.replaceChildren(h('div', { class: 'fp-placeholder muted' }, h('span', { html: icons.files }), h('div', null, 'Pick a file on the left.'), h('div', { class: 'fp-hint' }, 'Read-only. VS Code opens the whole folder for editing.')));
       this.findRows = [];
@@ -1208,10 +1253,107 @@ export class FilesPane implements WorkspacePane {
       return;
     }
     if (this.mode === 'diff' && o.change) this.renderDiff(o);
+    else if (this.isMarkdown(o) && this.showPreview) this.renderPreview(o, top);
     else this.renderFile(o);
     for (const v of this.views) v.scrollTop = top;
     for (const v of this.views) v.draw(true);
     if (this.findInput.value) this.find(0, true);
+  }
+
+  private isMarkdown(o: Opened): boolean {
+    return o.content?.kind === 'text' && langFor(o.path)?.id === 'markdown';
+  }
+
+  private get showPreview(): boolean {
+    return store.settings.markdownPreview && !this.mdSource;
+  }
+
+  /** A Markdown file as it reads: headings, lists, tables, code with colours, images from the folder. */
+  private renderPreview(o: Opened, top: number): void {
+    const md = renderMarkdown(parseMarkdown(o.lines!.join('\n')), {
+      openLink: (href) => void this.openMarkdownLink(o.path, href),
+      image: (src) => this.markdownImage(o.path, src),
+      code: (text, lang) => {
+        const lines = text.split('\n');
+        const hl = new Highlighter(lines, lang ? langFor(`x.${FENCE_LANGS[lang] ?? lang}`) : null);
+        return lines.flatMap((_, i) => [...codeNodes(hl.tokens(i), null), ...(i < lines.length - 1 ? ['\n'] : [])]).map((n) => (typeof n === 'string' ? document.createTextNode(n) : n));
+      },
+      copy: (text) => void api.clipboardWrite(text).then(() => toast('Copied')),
+    });
+    const el = h('div', { class: 'fp-preview', tabindex: 0 }, md);
+    this.previewEl = el;
+    this.bodyEl.replaceChildren(el);
+    el.scrollTop = top;
+  }
+
+  /** A link in a Markdown file: a heading in it, another file or folder here, or a web page. */
+  private async openMarkdownLink(from: string, href: string): Promise<void> {
+    if (href.startsWith('#')) return void this.scrollToAnchor(href.slice(1));
+    if (/^https?:\/\//i.test(href)) return void api.openUrl(href).catch((e) => toast(String(e), 'error'));
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return toast(`Shellman doesn't open ${href.split(':')[0]}: links.`);
+    const [raw, anchor] = href.split('#', 2);
+    let rel: string | null = null;
+    try {
+      rel = joinPath(from, decodeURIComponent(raw.split('?')[0]));
+    } catch {
+      rel = null;
+    }
+    if (rel === null) return toast(`${href} is outside this folder.`);
+    if (!rel) return;
+    // A folder: show it in the tree (and its README, if it has one).
+    const listing = await api.filesList(this.root, rel).catch(() => null);
+    if (listing) {
+      const readme = listing.entries.find((e) => !e.dir && /^readme\.md$/i.test(e.name));
+      if (readme) return this.show(`${rel}/${readme.name}`, 'file');
+      this.view = 'all';
+      this.renderTabs();
+      this.expanded.add(rel);
+      await this.revealInTree(`${rel}/x`);
+      return;
+    }
+    await this.show(rel, 'file');
+    if (anchor) this.scrollToAnchor(anchor);
+  }
+
+  private scrollToAnchor(anchor: string): void {
+    let id = anchor;
+    try {
+      id = decodeURIComponent(anchor);
+    } catch {
+      // As written.
+    }
+    const el = this.previewEl?.querySelector(`#${CSS.escape(`${ANCHOR_PREFIX}${id.toLowerCase()}`)}`);
+    if (el) el.scrollIntoView({ block: 'start' });
+  }
+
+  /** Scrolls the preview to the heading on line `line` (1-based) of the source. */
+  private revealHeading(line: number): void {
+    const lines = this.opened?.lines ?? [];
+    const text = (s: string) => slug(plainText(s.replace(/^\s{0,3}#{1,6}\s+/, '').replace(/\s+#+\s*$/, '')));
+    const id = text(lines[line - 1] ?? '');
+    // Headings with the same text get -1, -2 … in the order they come.
+    let n = 0;
+    for (let i = 0; i < line - 1; i++) if (/^\s{0,3}#{1,6}\s/.test(lines[i]) && text(lines[i]) === id) n++;
+    this.scrollToAnchor(n ? `${id}-${n}` : id);
+  }
+
+  /** An image a Markdown file shows, from the folder, as a data URL. */
+  private markdownImage(from: string, src: string): Promise<string | null> {
+    let rel: string | null = null;
+    try {
+      rel = joinPath(from, decodeURIComponent(src.split(/[?#]/)[0]));
+    } catch {
+      rel = null;
+    }
+    if (!rel) return Promise.resolve(null);
+    const cached = this.images.get(rel);
+    if (cached) return cached;
+    const url = api.filesRead(this.root, rel).then(
+      (c) => (c.kind === 'image' ? c.dataUrl : null),
+      () => null,
+    );
+    this.images.set(rel, url);
+    return url;
   }
 
   private message(text: string, extra?: HTMLElement): void {
@@ -1406,6 +1548,7 @@ export class FilesPane implements WorkspacePane {
 
   /** Finds the text in the find box: `step` 1/-1 moves to the next/previous line with it, 0 stays. */
   private find(step: 0 | 1 | -1, keep = false): void {
+    if (this.previewEl) return this.findInPreview(step, keep);
     const q = this.findInput.value.toLowerCase();
     this.findRows = [];
     if (q) for (let i = 0; i < this.rowsTotal; i++) if (this.rowText(i).toLowerCase().includes(q)) this.findRows.push(i);
@@ -1425,7 +1568,40 @@ export class FilesPane implements WorkspacePane {
 
   private updateFindCount(): void {
     const q = this.findInput.value;
-    this.findCount.textContent = !q ? '' : this.findRows.length ? `${this.findIndex + 1}/${this.findRows.length}` : 'none';
+    const n = this.previewEl ? this.previewMatches.length : this.findRows.length;
+    this.findCount.textContent = !q ? '' : n ? `${this.findIndex + 1}/${n}` : 'none';
+  }
+
+  /** Find in the Markdown preview: every match in its text, the current one scrolled to. */
+  private findInPreview(step: 0 | 1 | -1, keep: boolean): void {
+    const q = this.findInput.value.toLowerCase();
+    const el = this.previewEl!;
+    this.previewMatches = [];
+    if (q) {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const text = (n.textContent ?? '').toLowerCase();
+        for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + q.length)) {
+          const r = new Range();
+          r.setStart(n, i);
+          r.setEnd(n, i + q.length);
+          this.previewMatches.push(r);
+        }
+      }
+    }
+    const n = this.previewMatches.length;
+    if (!n) this.findIndex = -1;
+    else if (keep || step === 0) this.findIndex = Math.max(0, Math.min(keep ? this.findIndex : 0, n - 1));
+    else this.findIndex = this.findIndex < 0 ? (step > 0 ? 0 : n - 1) : (this.findIndex + step + n) % n;
+    this.updateFindCount();
+    const reg = CSS.highlights;
+    if (!reg) return;
+    if (!q) return this.clearFind();
+    findOwner = this;
+    const current = this.previewMatches[this.findIndex];
+    reg.set('fp-find', new Highlight(...this.previewMatches.filter((r) => r !== current)));
+    reg.set('fp-find-current', current ? new Highlight(current) : new Highlight());
+    if (current && !keep) current.startContainer.parentElement?.scrollIntoView({ block: 'center' });
   }
 
   private clearFind(): void {
@@ -1437,6 +1613,7 @@ export class FilesPane implements WorkspacePane {
 
   /** Marks the matches in the rows drawn now. */
   private highlightFind(): void {
+    if (this.previewEl) return;
     const q = this.findInput.value.toLowerCase();
     const reg = CSS.highlights;
     if (!reg) return;

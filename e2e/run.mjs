@@ -1536,6 +1536,67 @@ if (phase === 'main') {
     }
   });
 
+  await step('Markdown preview: rendered, safe, links and images from the folder', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-md-'));
+    const files = `[...__t.ws.panes.values()].find((p) => p.kind === 'files')`;
+    try {
+      fs.mkdirSync(path.join(root, 'docs'));
+      fs.writeFileSync(path.join(root, 'logo.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
+      fs.writeFileSync(path.join(root, 'docs', 'setup.md'), '# Setup\n\nRun it.\n');
+      fs.writeFileSync(
+        path.join(root, 'README.md'),
+        [
+          '# Shop',
+          '',
+          '- [x] done',
+          '- [ ] todo',
+          '',
+          '| Name | Size |',
+          '|------|-----:|',
+          '| a | 1 |',
+          '',
+          '```ts',
+          'const a = 1;',
+          '```',
+          '',
+          '![logo](logo.png) See [setup](docs/setup.md) and ![remote](https://example.com/x.png).',
+          '',
+          '<img src="nope.png" onerror="window.__pwned = 1"><script>window.__pwned = 2</script>',
+          '<a href="javascript:window.__pwned = 3" onclick="window.__pwned = 4">click</a> <div onmouseover="window.__pwned = 5" style="color:red">x</div>',
+          '',
+        ].join('\n'),
+      );
+      await ev(`void __t.ws.openFiles(${js(root)}, { path: 'README.md' })`);
+      await waitFor(`document.querySelector('.files-pane .md h1')?.textContent === 'Shop'`, 8000, 'preview drawn');
+      assert((await ev(`document.querySelectorAll('.files-pane .md li.md-task').length`)) === 2, 'task list');
+      assert((await ev(`document.querySelectorAll('.files-pane .md th').length`)) === 2, 'table');
+      assert(await ev(`!!document.querySelector('.files-pane .md pre .sy-kw')`), 'code block colours');
+      await waitFor(`document.querySelector('.files-pane .md img[alt="logo"]')?.src.startsWith('data:image/png')`, 5000, 'image from the folder');
+      assert(await ev(`[...document.querySelectorAll('.files-pane .md a.md-link')].some((a) => a.title.includes('not loaded'))`), 'remote image as a link');
+      // Nothing from the file runs: no scripts, no handlers, no styles, no links that navigate.
+      await ev(`(() => { const d = document.querySelector('.files-pane .md div[align], .files-pane .md div:last-child'); d?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); [...document.querySelectorAll('.files-pane .md a')].find((a) => a.textContent === 'click')?.click(); return true; })()`);
+      await sleep(300);
+      assert((await ev(`window.__pwned === undefined`)) === true, 'HTML in the file ran');
+      // (Table cells get their alignment from Shellman as a style; nothing else has one.)
+      const unsafe = await ev(`[...document.querySelectorAll('.files-pane .md *')].filter((e) => e.tagName === 'SCRIPT' || (e.hasAttribute('style') && !/^T[HD]$/.test(e.tagName)) || e.hasAttribute('href') || [...e.attributes].some((a) => a.name.startsWith('on'))).map((e) => e.outerHTML.slice(0, 120))`);
+      assert(!unsafe.length, 'unsafe markup kept: ' + unsafe.join(' | '));
+      // A relative link opens the other file, and Source shows the text.
+      await ev(`[...document.querySelectorAll('.files-pane .md a.md-link')].find((a) => a.textContent === 'setup').click()`);
+      await waitFor(`${files}.path === 'docs/setup.md' && document.querySelector('.files-pane .md h1')?.textContent === 'Setup'`, 5000, 'linked file');
+      await ev(`[...document.querySelectorAll('.files-pane .fp-seg .btn')].find((b) => b.textContent === 'Source').click()`);
+      await waitFor(`!document.querySelector('.files-pane .md') && document.querySelectorAll('.files-pane .lv-row').length === 3`, 5000, 'source view');
+      await ev(`[...document.querySelectorAll('.files-pane .fp-seg .btn')].find((b) => b.textContent === 'Preview').click()`);
+      await waitFor(`!!document.querySelector('.files-pane .md')`, 5000, 'back to the preview');
+      await ev(`__t.ws.closePane(${files}.id)`);
+    } finally {
+      try {
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      } catch (e) {
+        console.log(`       (could not remove ${root}: ${e.code})`);
+      }
+    }
+  });
+
   await step('open terminals are saved for the next start', async () => {
     // A known layout: the session with a cmd split beside it (cmd focused), and a renamed PowerShell tab.
     await ev(`(() => { for (const t of [...__t.ws.tabs]) __t.ws.removeTab(t); return true; })()`);

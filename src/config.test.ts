@@ -86,8 +86,8 @@ describe('normalizeConfig', () => {
   });
 
   it('defaults Files pane settings and corrects bad ones', () => {
-    expect(normalizeConfig({}).settings).toMatchObject({ diffLayout: 'split', showIgnoredFiles: true });
-    expect(normalizeConfig({ settings: { diffLayout: 'inline', showIgnoredFiles: false } as never }).settings).toMatchObject({ diffLayout: 'inline', showIgnoredFiles: false });
+    expect(normalizeConfig({}).settings).toMatchObject({ diffLayout: 'split', showIgnoredFiles: true, markdownPreview: true });
+    expect(normalizeConfig({ settings: { diffLayout: 'inline', showIgnoredFiles: false, markdownPreview: false } as never }).settings).toMatchObject({ diffLayout: 'inline', showIgnoredFiles: false, markdownPreview: false });
     expect(normalizeConfig({ settings: { diffLayout: 'sideways', showIgnoredFiles: 'yes' } as never }).settings).toMatchObject({ diffLayout: 'split', showIgnoredFiles: true });
   });
 

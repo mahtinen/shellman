@@ -146,6 +146,8 @@ export interface Settings {
   diffLayout: 'split' | 'inline';
   /** Files pane: files git ignores are listed (dimmed). */
   showIgnoredFiles: boolean;
+  /** Files pane: Markdown files open as a preview (or as their source). */
+  markdownPreview: boolean;
   /** Seconds; a request's own timeout wins. */
   requestTimeout: number;
   requestFollowRedirects: boolean;
