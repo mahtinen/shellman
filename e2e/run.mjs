@@ -1426,6 +1426,78 @@ if (phase === 'main') {
     }
   });
 
+  await step('Files pane: tree, changes, diff, search, navigation and live refresh (read-only)', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-files-'));
+    const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const put = (rel, text) => {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), text);
+    };
+    const invoke = (cmd, args) => ev(`window.__TAURI_INTERNALS__.invoke(${js(cmd)}, ${js(args)}).then((v) => ({ v }), (e) => ({ e: String(e) }))`);
+    const files = `[...__t.ws.panes.values()].find((p) => p.kind === 'files')`;
+    try {
+      put('src/app.ts', 'const a = 1;\nconst b = 2;\nexport const sum = a + b;\n');
+      put('src/use.ts', "import { sum } from './app';\nconsole.log(sum);\n");
+      put('.gitignore', 'out/\n');
+      put('out/build.js', 'built\n');
+      git('init', '-q', '-b', 'main');
+      for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['core.autocrlf', 'false']]) git('config', k, v);
+      git('add', '.');
+      git('commit', '-q', '-m', 'init');
+      put('src/app.ts', 'const a = 1;\nconst b = 3;\nexport const sum = a + b;\n');
+      put('src/new.ts', 'export {};\n');
+
+      await ev(`void __t.ws.openFiles(${js(root)})`);
+      await waitFor(`${files}?.changeCount === 2`, 10000, 'two changes');
+      await waitFor(`[...document.querySelectorAll('.files-pane .fp-row .fp-name')].map((e) => e.textContent).join() === 'out,src,.gitignore'`, 5000, 'tree');
+      assert(await ev(`document.querySelector('.files-pane .fp-row.dir.ignored .fp-name').textContent === 'out'`), 'ignored folder not dimmed');
+      assert(await ev(`!!document.querySelector('.files-pane .fp-row.has-changes .fp-dot')`), 'folder with changes not marked');
+
+      await ev(`void ${files}.show('src/app.ts', 'diff')`);
+      await waitFor(`document.querySelectorAll('.files-pane .lv-row.d-del').length === 1 && document.querySelectorAll('.files-pane .lv-row.d-add').length === 1`, 5000, 'one line changed');
+      assert(await ev(`[...document.querySelectorAll('.files-pane .d-add .wd')].map((e) => e.textContent).join() === '3'`), 'changed word');
+      await shot(path.join(OUT, '07-files-pane.png'));
+
+      // Search, and going to a definition and its references.
+      await ev(`${files}.searchProject('sum')`);
+      await waitFor(`document.querySelectorAll('.files-pane .fp-match').length === 3`, 5000, 'three matches for sum');
+      await ev(`void ${files}.goToDefinition('sum')`);
+      await waitFor(`${files}.path === 'src/app.ts' && document.querySelector('.files-pane .lv-target .wd')?.textContent === 'sum'`, 5000, 'definition of sum');
+      await ev(`void ${files}.findReferences('sum')`);
+      await waitFor(`document.querySelector('.files-pane .fp-searchnote')?.textContent.startsWith('References to sum: 3 results in 2 files')`, 5000, 'references');
+      await ev(`void ${files}.goBack(1)`);
+      await waitFor(`${files}.path === 'src/app.ts'`, 5000, 'back');
+
+      // Right-click a line → Copy reference: path:line for Claude.
+      const clip = await invoke('clipboard_read', {});
+      try {
+        const at = await ev(`(() => { const r = document.querySelector('.files-pane .lv-row[data-row="2"] .lv-ln').getBoundingClientRect(); return { x: r.left + 4, y: r.top + r.height / 2 }; })()`);
+        for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'right', clickCount: 1 });
+        const item = `[...document.querySelectorAll('.menu-item')].find((e) => e.textContent.includes('Copy reference app.ts:3'))`;
+        await waitFor(`!!${item}`, 3000, 'Copy reference in the menu');
+        await ev(`${item}.click()`);
+        await waitFor(`window.__TAURI_INTERNALS__.invoke('clipboard_read').then((t) => t === 'src/app.ts:3')`, 3000, 'reference on the clipboard');
+      } finally {
+        await invoke('clipboard_write', { text: clip.v ?? '' });
+      }
+
+      // Only paths inside the folder can be read.
+      assert((await invoke('files_read', { root, path: '../outside.txt' })).e, 'a path outside the folder was read');
+      assert((await invoke('git_file_at', { root, path: '../x', base: 'HEAD' })).e, 'git read outside the folder');
+      assert((await invoke('git_changes', { root, base: '--output=x' })).e, 'an option was taken as the base');
+
+      // It follows changes on disk, and is saved for the next start.
+      put('src/third.ts', 'export {};\n');
+      await waitFor(`${files}.changeCount === 3`, 10000, 'refreshed after a new file');
+      const leaf = await ev(`JSON.stringify(__t.ws.snapshot().tabs.map((t) => t.root).find((r) => r.files))`);
+      assert(leaf && JSON.parse(leaf).files.path === 'src/app.ts' && JSON.parse(leaf).files.view === 'search', 'snapshot: ' + leaf);
+      await ev(`__t.ws.closePane(${files}.id)`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   await step('open terminals are saved for the next start', async () => {
     // A known layout: the session with a cmd split beside it (cmd focused), and a renamed PowerShell tab.
     await ev(`(() => { for (const t of [...__t.ws.tabs]) __t.ws.removeTab(t); return true; })()`);

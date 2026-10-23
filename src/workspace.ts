@@ -1,6 +1,7 @@
 import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
 import { baseName, ownerSession, sessionColor, uid } from './config';
 import { choiceDialog, confirmDialog, toast } from './dialogs';
+import { FilesPane } from './filesPane';
 import { h } from './dom';
 import { icons } from './icons';
 import type { Match } from './keys';
@@ -21,7 +22,7 @@ import {
 import { Pane, type PaneHost } from './pane';
 import { isTerminal, type HeaderAction, type WorkspacePane } from './panes';
 import type { RequestHost, RequestPane } from './requestPane';
-import { layoutFromSnapshot, snapshotNode, type RequestRef, type SnapshotLeaf, type TabSnapshot, type WorkspaceSnapshot } from './snapshot';
+import { layoutFromSnapshot, snapshotNode, type FilesRef, type RequestRef, type SnapshotLeaf, type TabSnapshot, type WorkspaceSnapshot } from './snapshot';
 import { store } from './store';
 import type { LaunchSpec, SavedSession, SplitPlacement } from './types';
 
@@ -423,7 +424,23 @@ export class Workspace implements PaneHost, RequestHost {
   /** A pane for a saved one; null when it can't be reopened. */
   private paneFromSnapshot(leaf: SnapshotLeaf): WorkspacePane | null {
     if ('pane' in leaf) return new Pane(leaf.pane, this);
+    if ('files' in leaf) return new FilesPane(leaf.files, this);
     return this.requestFactory?.(leaf.request, this) ?? null;
+  }
+
+  /**
+   * Shows a folder in a Files pane, and `path` (relative to it) in that pane. A pane already open
+   * for the folder is reused.
+   */
+  openFiles(root: string, how: { path?: string; line?: number; mode?: FilesRef['mode']; placement?: SplitPlacement; targetPaneId?: string } = {}): FilesPane {
+    let pane = [...this.panes.values()].find((p): p is FilesPane => p instanceof FilesPane && p.isFor(root));
+    if (pane) this.setActivePane(pane.id, true);
+    else {
+      pane = new FilesPane({ root, path: '', view: 'all', mode: how.mode ?? 'file' }, this);
+      this.add(pane, how.placement ?? 'tab', how.targetPaneId);
+    }
+    if (how.path) pane.open(how.path, how.mode, how.line);
+    return pane;
   }
 
   /** The open pane of a request file, if any. */

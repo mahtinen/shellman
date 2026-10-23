@@ -85,6 +85,21 @@ installer) and uses the WebView2 runtime that ships with Windows 11.
   take theirs. Sync stays on the branch it started on. Meant for a repository (or branch) of requests that
   takes pushes without pull requests and runs no CI; for request folders inside a code repository, use the
   Sync button.
+- **Files and changes, read-only.** Right-click a session → Show files (or Ctrl+Shift+G in its terminal) to look
+  at its folder without opening an editor: the whole tree, every file with syntax colours, and what changed since
+  the last commit marked in the tree (M, A, D, U for new files git doesn't know yet). The Changes view lists only
+  the changed files with their added and removed lines. A changed file opens as a diff, side by side or inline,
+  with unchanged lines folded away and the changed words marked; F7 and Shift+F7 jump between changes. Ctrl+P goes
+  to a file by name (`@` lists the open file's functions and classes) and Ctrl+F finds text in the open one.
+  **Search** (Ctrl+Shift+F) finds text in all the files, with match case, whole word, regular expressions and
+  globs for the files to look in (`*.cs, !tests/**`); it runs `git grep`, so files git ignores are left out.
+  Ctrl+click a name, or F12, to go to its definition; Shift+F12 lists its references and Ctrl+F12 the types that
+  implement it. These find declarations by searching (no language server), so they work in any language without
+  installing anything, and a name declared in several places gives a list to choose from. The mouse's back and
+  forward buttons go back to where you were. Right-click a line → Copy reference puts `src/app.ts:42` on the
+  clipboard (`src/app.ts:42-48` for the selected lines), to paste for Claude. The pane follows along while Claude (or anything else)
+  edits files, commits or switches branches. Nothing is ever written: the VS Code button opens the whole folder
+  there, at the file and line you are looking at. Files git ignores are dimmed (or hidden, from the pane's menu).
 - **Open terminals tree.** Each session lists its open terminals underneath it: the ones opened from it, plus
   any other terminal sitting in its directory. Click one to jump to its tab, middle-click to close it,
   right-click for more. The chevron next to a session collapses its list, like a group, and the state is
@@ -158,6 +173,7 @@ Settings → About lists what changed in the five latest versions, with their re
 | Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab |
 | Go to tab 1–9 | Alt+1…9 |
 | Find | Ctrl+Shift+F |
+| Show the files and changes of the current folder | Ctrl+Shift+G |
 | Save pane as session | Ctrl+Shift+S |
 | Rename tab | Ctrl+Shift+R (or double-click the tab) |
 | Toggle sidebar | Ctrl+Shift+B |
@@ -169,6 +185,10 @@ Settings → About lists what changed in the five latest versions, with their re
 | Send / save a request (in a request pane) | Ctrl+Enter / Ctrl+S |
 | Open a request in a split | Middle-click it in the sidebar |
 | Move a request or folder | Drag it onto another folder in the sidebar |
+| Next / previous change (in a Files pane) | F7 / Shift+F7 |
+| Go to file (`@` for symbols) / find in the file (in a Files pane) | Ctrl+P / Ctrl+F |
+| Search in all the files (in a Files pane) | Ctrl+Shift+F |
+| Go to definition / references / implementations (in a Files pane) | F12 or Ctrl+click / Shift+F12 / Ctrl+F12 |
 
 No shortcut uses Ctrl+Alt, because that's AltGr on Nordic and other European layouts (AltGr+2 = @).
 
@@ -243,6 +263,9 @@ backup: if it's lost, installed copies can't verify new versions and everyone ha
 | `src/layout.ts` | Pure split-tree operations (unit tested) |
 | `src/connection.ts` | Connection validation, labels and quick-open parsing (unit tested) |
 | `src/requestPane.ts`, `codeEditor.ts`, `varField.ts`, `collections.ts`, `requestActions.ts` | Request panes, the body editor, `{{variables}}` in fields, linked folders, request menus |
+| `src/filesPane.ts`, `lineView.ts`, `src-tauri/src/files.rs` | The Files pane: folder tree, read-only file and diff views (only the visible lines are drawn), reading files inside the folder only |
+| `src/diff.ts`, `syntax.ts`, `navigate.ts` | Diff layout from git's hunks (inline, side by side, folding, changed words), syntax colours, and finding declarations for code navigation (unit tested) |
+| `src/filesSearch.ts` | The Files pane's Search view (`git grep`) and its lists of definitions and references |
 | `src/requestFile.ts`, `variables.ts`, `dotenv.ts`, `curl.ts`, `postman.ts`, `jsonView.ts`, `codeEdit.ts` | Request files, variables, curl copy/paste, Postman import, JSON colours and editing keys (unit tested) |
 | `src/sidebar.ts`, `sessionEditor.ts`, `settingsDialog.ts`, `palette.ts` | UI |
 | `src/updater.ts` | Background update checks, download and install-on-restart |

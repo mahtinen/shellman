@@ -142,6 +142,10 @@ export interface Settings {
   requestOpenIn: 'tab' | 'split';
   responseLayout: ResponseLayout;
   responseWrap: boolean;
+  /** Files pane: diffs side by side or inline. */
+  diffLayout: 'split' | 'inline';
+  /** Files pane: files git ignores are listed (dimmed). */
+  showIgnoredFiles: boolean;
   /** Seconds; a request's own timeout wins. */
   requestTimeout: number;
   requestFollowRedirects: boolean;

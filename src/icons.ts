@@ -31,6 +31,14 @@ export const icons = {
   eye: svg('<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>'),
   eyeOff: svg('<path d="M6.3 3.7A6.8 6.8 0 018 3.5c4.1 0 6.5 4.5 6.5 4.5a11 11 0 01-1.8 2.3M4.3 4.9C2.5 6.1 1.5 8 1.5 8s2.4 4.5 6.5 4.5c1.4 0 2.6-.5 3.6-1.2M6.6 6.6a2 2 0 002.8 2.8M2 2l12 12"/>'),
   grip: svg('<path d="M6 4h.01M10 4h.01M6 8h.01M10 8h.01M6 12h.01M10 12h.01"/>'),
+  file: svg('<path d="M4 1.75h5l3.25 3.25v9.25H4z"/><path d="M9 1.75V5h3.25"/>'),
+  files: svg('<path d="M5.5 1.75h4.5l3 3v7.5H5.5z"/><path d="M10 1.75v3h3M3 4.5v9.75h7"/>'),
+  diff: svg('<path d="M5 2.5v6M2 5.5h6M2.5 12.5h6M10.5 3.5h3.5M10.5 9.5h3.5M10.5 12.5h3.5"/>'),
+  arrowLeft: svg('<path d="M13 8H3M7 4L3 8l4 4"/>'),
+  arrowRight: svg('<path d="M3 8h10M9 4l4 4-4 4"/>'),
+  arrowUp: svg('<path d="M8 13V3M4 7l4-4 4 4"/>'),
+  arrowDown: svg('<path d="M8 3v10M4 9l4 4 4-4"/>'),
+  refresh: svg('<path d="M13.25 8a5.25 5.25 0 11-1.54-3.71M13.25 2.5v3.25H10"/>'),
 };
 
 export type IconName = keyof typeof icons;

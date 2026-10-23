@@ -41,6 +41,8 @@ export interface SidebarActions {
   editGroup(group: Group): void;
   removeGroup(group: Group): void;
   openFolder(session: SavedSession): void;
+  /** The session's folder in a Files pane (files and what changed). */
+  showFiles(session: SavedSession): void;
   /** Copies the ssh/telnet command for a connection. */
   copyCommand(session: SavedSession): void;
   /** Open terminals by saved session id; `null` holds the ones that belong to no session. */
@@ -668,7 +670,12 @@ export class Sidebar {
             })),
           ],
         },
-        ...(conn ? [] : [{ label: 'Open folder in Explorer', icon: 'openExternal' as const, action: () => this.actions.openFolder(s) }]),
+        ...(conn
+          ? []
+          : [
+              { label: 'Show files', icon: 'files' as const, action: () => this.actions.showFiles(s) },
+              { label: 'Open folder in Explorer', icon: 'openExternal' as const, action: () => this.actions.openFolder(s) },
+            ]),
         'separator',
         { label: 'Delete', icon: 'trash', danger: true, action: () => this.actions.remove(s) },
       ]);

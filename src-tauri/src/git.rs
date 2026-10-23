@@ -6,7 +6,7 @@ use crate::collection::is_collection_file;
 use crate::proc::output_within;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 /// Local commands.
@@ -93,7 +93,7 @@ impl Git {
         Ok(Git { exe: git_client()?, folder: folder.to_path_buf(), interactive })
     }
 
-    fn run(&self, args: &[&str], limit: Duration) -> Result<Output, String> {
+    fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(&self.exe);
         cmd.arg("-C").arg(&self.folder).args(args);
         // Messages in English, so `classify` can read them; no terminal prompts (there is no terminal).
@@ -105,7 +105,11 @@ impl Git {
             // background ones.
             cmd.env("GCM_INTERACTIVE", "never");
         }
-        output_within(cmd, limit)?.ok_or_else(|| format!("git {} took too long and was stopped", name(args)))
+        cmd
+    }
+
+    fn run(&self, args: &[&str], limit: Duration) -> Result<Output, String> {
+        output_within(self.command(args), limit)?.ok_or_else(|| format!("git {} took too long and was stopped", name(args)))
     }
 
     /// stdout of a command that must succeed.
@@ -426,6 +430,353 @@ impl Git {
     }
 }
 
+// ---- read-only views for the Files pane ------------------------------------------------------
+
+/// What a repository with no commits yet is compared with.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// What changed in a folder since `base`, for the Files pane.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Changes {
+    pub branch: Option<String>,
+    /// The commit compared with ('' before the first commit).
+    pub base: String,
+    pub files: Vec<FileChange>,
+    /// Paths git ignores, relative to the folder; folders end with `/`.
+    pub ignored: Vec<String>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChange {
+    /// Relative to the folder, with `/`.
+    pub path: String,
+    /// Where a renamed file was.
+    pub old_path: Option<String>,
+    pub state: FileState,
+    /// Lines added and removed; None for a binary file.
+    pub added: Option<u32>,
+    pub removed: Option<u32>,
+}
+
+#[derive(Serialize, Debug, PartialEq, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum FileState {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Untracked,
+    Conflict,
+}
+
+/// A run of changed lines: `old_count` lines from `old_start` became `new_count` lines from
+/// `new_start` (1-based; a count of 0 means the run is inserted or removed after that line).
+#[derive(Serialize, Debug, PartialEq, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct Hunk {
+    pub old_start: u32,
+    pub old_count: u32,
+    pub new_start: u32,
+    pub new_count: u32,
+}
+
+/// Paths of `-z` output, split.
+fn nul_list(out: &str) -> Vec<String> {
+    out.split('\0').filter(|f| !f.is_empty()).map(str::to_string).collect()
+}
+
+/// `git diff -z --name-status` → changes (paths as git printed them).
+pub fn parse_name_status(out: &str) -> Vec<FileChange> {
+    let mut fields = out.split('\0').filter(|f| !f.is_empty());
+    let mut changes = Vec::new();
+    while let Some(code) = fields.next() {
+        let (state, old_path) = match code.as_bytes().first() {
+            Some(b'R') => (FileState::Renamed, fields.next().map(str::to_string)),
+            // A copy leaves the original where it was: the copy is a new file.
+            Some(b'C') => {
+                fields.next();
+                (FileState::Added, None)
+            }
+            Some(b'A') => (FileState::Added, None),
+            Some(b'D') => (FileState::Deleted, None),
+            Some(b'U') => (FileState::Conflict, None),
+            _ => (FileState::Modified, None),
+        };
+        let Some(path) = fields.next() else { break };
+        changes.push(FileChange { path: path.to_string(), old_path, state, added: None, removed: None });
+    }
+    changes
+}
+
+/// `git diff -z --numstat` → (path, added, removed); None counts for a binary file.
+pub fn parse_numstat(out: &str) -> Vec<(String, Option<u32>, Option<u32>)> {
+    let mut fields = out.split('\0');
+    let mut stats = Vec::new();
+    while let Some(record) = fields.next() {
+        let mut parts = record.splitn(3, '\t');
+        let (Some(a), Some(r), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        // A rename has an empty path here, then the old and the new path.
+        let path = if path.is_empty() {
+            fields.next();
+            fields.next().unwrap_or_default().to_string()
+        } else {
+            path.to_string()
+        };
+        stats.push((path, a.parse().ok(), r.parse().ok()));
+    }
+    stats
+}
+
+/// `git diff -U0` → its hunks.
+pub fn parse_hunks(out: &str) -> Vec<Hunk> {
+    let range = |s: &str| -> Option<(u32, u32)> {
+        let (start, count) = s.split_once(',').unwrap_or((s, "1"));
+        Some((start.parse().ok()?, count.parse().ok()?))
+    };
+    out.lines()
+        .filter_map(|line| {
+            let mut parts = line.strip_prefix("@@ ")?.split(' ');
+            let (old_start, old_count) = range(parts.next()?.strip_prefix('-')?)?;
+            let (new_start, new_count) = range(parts.next()?.strip_prefix('+')?)?;
+            Some(Hunk { old_start, old_count, new_start, new_count })
+        })
+        .collect()
+}
+
+/// Read-only git for the Files pane. Diffs leave out the user's external diff tools, text
+/// conversions and colours, so the output is git's own and can be read.
+const DIFF: &[&str] = &["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--relative", "-M"];
+
+impl Git {
+    /// The folder's place in its repository (`api/`), or None outside one.
+    fn prefix(&self) -> Result<Option<String>, String> {
+        let out = self.run(&["rev-parse", "--show-prefix"], QUICK)?;
+        Ok(out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    }
+
+    /// `base` as a commit id: HEAD (or the empty tree before the first commit), or a commit given.
+    fn base(&self, base: &str) -> Result<String, String> {
+        if base.is_empty() || base.starts_with('-') || base.contains(['\0', ' ', ':']) {
+            return Err(format!("Invalid base: {base}"));
+        }
+        let spec = format!("{base}^{{commit}}");
+        let out = self.run(&["rev-parse", "--verify", "--quiet", &spec], QUICK)?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else if base == "HEAD" {
+            Ok(EMPTY_TREE.to_string())
+        } else {
+            Err(format!("{base} isn't a commit in this repository"))
+        }
+    }
+}
+
+/// Every file git knows in the folder, tracked or new and not ignored; None outside a repository.
+pub fn list_files(folder: &Path) -> Result<Option<Vec<String>>, String> {
+    let g = Git::new(folder, false)?;
+    if g.prefix()?.is_none() {
+        return Ok(None);
+    }
+    let mut files = nul_list(&g.ok(&["ls-files", "-z", "--cached", "--others", "--exclude-standard"], QUICK)?);
+    // A file with a conflict is listed once per side.
+    files.dedup();
+    Ok(Some(files))
+}
+
+/// The folder's changes since `base` (HEAD: what isn't committed), new files included; None
+/// outside a repository.
+pub fn changes(folder: &Path, base: &str) -> Result<Option<Changes>, String> {
+    let g = Git::new(folder, false)?;
+    if g.prefix()?.is_none() {
+        return Ok(None);
+    }
+    let sha = g.base(base)?;
+    let mut files = parse_name_status(&g.ok(&[DIFF, &["-z", "--name-status", sha.as_str(), "--"]].concat(), QUICK)?);
+    let stats = parse_numstat(&g.ok(&[DIFF, &["-z", "--numstat", sha.as_str(), "--"]].concat(), QUICK)?);
+    for f in &mut files {
+        if let Some((_, a, r)) = stats.iter().find(|(p, ..)| *p == f.path) {
+            (f.added, f.removed) = (*a, *r);
+        }
+    }
+    for (i, path) in nul_list(&g.ok(&["ls-files", "-z", "--others", "--exclude-standard"], QUICK)?).into_iter().enumerate() {
+        // Lines of new files are counted while that stays quick.
+        let small = |p: &Path| i < 2000 && std::fs::metadata(p).is_ok_and(|m| m.len() <= 1 << 20);
+        let file = folder.join(&path);
+        let lines = small(&file).then(|| std::fs::read(&file).ok()).flatten().filter(|b| !b.contains(&0)).map(|b| String::from_utf8_lossy(&b).lines().count() as u32);
+        files.push(FileChange { path, old_path: None, state: FileState::Untracked, added: lines, removed: lines.map(|_| 0) });
+    }
+    files.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+    let ignored = nul_list(&g.ok(&["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], QUICK)?);
+    let branch = g.ok(&["symbolic-ref", "--short", "-q", "HEAD"], QUICK).ok().map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    Ok(Some(Changes { branch, base: if sha == EMPTY_TREE { String::new() } else { sha }, files, ignored }))
+}
+
+/// A file's contents at `base` (None when it wasn't there).
+pub fn file_at(folder: &Path, path: &str, base: &str) -> Result<Option<crate::files::Content>, String> {
+    crate::files::resolve(folder, "")?;
+    if path.is_empty() || path.split('/').any(|p| p.is_empty() || p == "." || p == "..") || path.contains(['\0', '\\']) {
+        return Err(format!("Invalid path: {path}"));
+    }
+    let g = Git::new(folder, false)?;
+    let sha = g.base(base)?;
+    if sha == EMPTY_TREE {
+        return Ok(None);
+    }
+    let out = g.run(&["show", "--no-textconv", &format!("{sha}:./{path}")], QUICK)?;
+    Ok(out.status.success().then(|| crate::files::text_content(&out.stdout)))
+}
+
+/// Where `path` differs from `base` (a rename compares with `old_path`).
+pub fn hunks(folder: &Path, path: &str, old_path: Option<&str>, base: &str) -> Result<Vec<Hunk>, String> {
+    let g = Git::new(folder, false)?;
+    let sha = g.base(base)?;
+    let paths: Vec<&str> = old_path.into_iter().chain([path]).collect();
+    // Literal paths: a name with `*` or `[` isn't a pattern for other files.
+    let out = g.ok(&[&["--literal-pathspecs"], DIFF, &["-U0", "--histogram", sha.as_str(), "--"], paths.as_slice()].concat(), QUICK)?;
+    Ok(parse_hunks(&out))
+}
+
+/// A search in the Files pane.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchQuery {
+    pub query: String,
+    pub case_sensitive: bool,
+    /// Whole words only.
+    pub word: bool,
+    /// The query is a regular expression (git's extended syntax).
+    pub regex: bool,
+    /// Globs separated by commas; `!` in front leaves those files out (`*.cs, !tests/**`).
+    pub include: String,
+    pub max: usize,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchMatch {
+    pub path: String,
+    /// 1-based.
+    pub line: u32,
+    pub text: String,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub matches: Vec<SearchMatch>,
+    /// Stopped at `max` matches.
+    pub truncated: bool,
+}
+
+/// Longest line kept of a match (minified code has very long ones).
+const MAX_MATCH_TEXT: usize = 400;
+const SEARCH: Duration = Duration::from_secs(30);
+
+/// `include` as git pathspecs. A glob without `/` matches in every folder, as in VS Code.
+pub fn include_pathspecs(include: &str) -> Vec<String> {
+    include
+        .split(',')
+        .map(str::trim)
+        .filter(|g| !g.is_empty() && !g.contains('\0'))
+        .map(|g| {
+            let (exclude, glob) = g.strip_prefix('!').map_or((false, g), |rest| (true, rest.trim()));
+            let glob = glob.trim_start_matches("./").replace('\\', "/");
+            let glob = if glob.contains('/') { glob } else { format!("**/{glob}") };
+            let glob = if glob.ends_with('/') { format!("{glob}**") } else { glob };
+            format!(":({}glob){glob}", if exclude { "exclude," } else { "" })
+        })
+        .collect()
+}
+
+/// One record of `git grep -n -z`: `path\0line\0text`.
+fn parse_grep_record(record: &[u8]) -> Option<SearchMatch> {
+    let mut parts = record.splitn(3, |b| *b == 0);
+    let path = String::from_utf8_lossy(parts.next()?).into_owned();
+    let line = std::str::from_utf8(parts.next()?).ok()?.parse().ok()?;
+    let raw = String::from_utf8_lossy(parts.next()?);
+    let raw = raw.strip_suffix('\r').unwrap_or(&raw);
+    let text = match raw.char_indices().nth(MAX_MATCH_TEXT) {
+        Some((cut, _)) => &raw[..cut],
+        None => raw,
+    };
+    Some(SearchMatch { path, line, text: text.to_string() })
+}
+
+/// Searches the files in a folder with git: tracked ones and new ones git doesn't ignore, or (outside
+/// a repository) every file that no `.gitignore` leaves out. Binary files are skipped. Stops at
+/// `q.max` matches.
+pub fn search(folder: &Path, q: &SearchQuery) -> Result<SearchResult, String> {
+    use std::io::{BufRead, Read};
+    if q.query.is_empty() || q.query.len() > 1000 || q.query.contains(['\0', '\n', '\r']) {
+        return Err("Type what to search for (one line).".into());
+    }
+    let g = Git::new(folder, false)?;
+    let in_repo = g.prefix()?.is_some();
+    let mut args = vec!["grep", "-n", "-z", "-I", "--no-color"];
+    args.extend(if in_repo { ["--untracked"].as_slice() } else { ["--no-index", "--exclude-standard"].as_slice() });
+    if !q.case_sensitive {
+        args.push("-i");
+    }
+    if q.word {
+        args.push("-w");
+    }
+    // Explicit, so a grep.patternType in the user's git config doesn't change what the query means.
+    args.push(if q.regex { "-E" } else { "-F" });
+    let paths = include_pathspecs(&q.include);
+    args.extend(["-e", q.query.as_str(), "--"]);
+    args.extend(paths.iter().map(String::as_str));
+
+    let mut cmd = g.command(&args);
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::proc::no_window(&mut cmd);
+    let job = std::sync::Arc::new(crate::proc::Job::new().ok_or("Could not start git")?);
+    let mut child = cmd.spawn().map_err(|e| format!("Could not run git: {e}"))?;
+    job.assign(&child);
+    // A search that runs too long is stopped (with what it found so far).
+    let (done, timeout) = std::sync::mpsc::channel::<()>();
+    let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watchdog = {
+        let (job, timed_out) = (job.clone(), timed_out.clone());
+        std::thread::spawn(move || {
+            if timeout.recv_timeout(SEARCH).is_err() {
+                timed_out.store(true, std::sync::atomic::Ordering::Relaxed);
+                job.kill();
+            }
+        })
+    };
+    let mut stderr = child.stderr.take().ok_or("git has no error output")?;
+    let errors = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+    let mut result = SearchResult { matches: Vec::new(), truncated: false };
+    let stdout = std::io::BufReader::new(child.stdout.take().ok_or("git has no output")?);
+    for record in stdout.split(b'\n') {
+        let Ok(record) = record else { break };
+        if result.matches.len() >= q.max.max(1) {
+            result.truncated = true;
+            job.kill();
+            break;
+        }
+        if let Some(m) = parse_grep_record(&record) {
+            result.matches.push(m);
+        }
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let _ = done.send(());
+    let _ = watchdog.join();
+    let stderr = errors.join().unwrap_or_default();
+    result.truncated |= timed_out.load(std::sync::atomic::Ordering::Relaxed);
+    // 1: nothing found. Anything else (a bad regular expression) is git's message.
+    if !result.truncated && !status.success() && status.code() != Some(1) {
+        return Err(message(&stderr, "grep"));
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,6 +1006,149 @@ mod tests {
         assert!(st.outside_changes && st.outside_commits);
         assert!(commit(&a, &["main.rs".into()], "x").is_err());
         assert!(commit(&a, &["users/list.request.json".into()], "x").unwrap());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- the Files pane ---------------------------------------------------------------------
+
+    #[test]
+    fn reads_name_status_numstat_and_hunks() {
+        let changes = parse_name_status("M\0src/a.ts\0R087\0old name.ts\0src/new name.ts\0A\0b.ts\0D\0c.ts\0UU\0d.ts\0C100\0e.ts\0f.ts\0");
+        let got: Vec<(&str, Option<&str>, FileState)> = changes.iter().map(|c| (c.path.as_str(), c.old_path.as_deref(), c.state)).collect();
+        assert_eq!(
+            got,
+            [
+                ("src/a.ts", None, FileState::Modified),
+                ("src/new name.ts", Some("old name.ts"), FileState::Renamed),
+                ("b.ts", None, FileState::Added),
+                ("c.ts", None, FileState::Deleted),
+                ("d.ts", None, FileState::Conflict),
+                ("f.ts", None, FileState::Added),
+            ]
+        );
+        assert_eq!(
+            parse_numstat("3\t1\tsrc/a.ts\0-\t-\tlogo.png\0\x32\t0\t\0old.ts\0new.ts\0"),
+            [("src/a.ts".into(), Some(3), Some(1)), ("logo.png".into(), None, None), ("new.ts".into(), Some(2), Some(0))]
+        );
+        let diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -3 +3 @@ fn x\n-a\n+b\n@@ -10,0 +11,2 @@\n+c\n+d\n@@ -20,3 +22,0 @@\n";
+        let h = |a, b, c, d| Hunk { old_start: a, old_count: b, new_start: c, new_count: d };
+        assert_eq!(parse_hunks(diff), [h(3, 1, 3, 1), h(10, 0, 11, 2), h(20, 3, 22, 0)]);
+    }
+
+    #[test]
+    fn real_changes_of_a_project() {
+        if git_client().is_err() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("shellman-git-test-files-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("app/src")).unwrap();
+        git(&root, &["init", "--quiet", "-b", "main"]);
+        for (k, v) in [("user.name", "Test"), ("user.email", "test@example.com"), ("commit.gpgsign", "false"), ("core.autocrlf", "false")] {
+            git(&root, &["config", k, v]);
+        }
+        let app = root.join("app");
+        fs::write(app.join("src/a.ts"), "one\ntwo\nthree\n").unwrap();
+        fs::write(app.join("gone.ts"), "x\n").unwrap();
+        fs::write(app.join(".gitignore"), "dist/\n").unwrap();
+        fs::write(root.join("outside.txt"), "x\n").unwrap();
+
+        // Before the first commit everything is new.
+        let before = changes(&app, "HEAD").unwrap().unwrap();
+        assert_eq!(before.base, "");
+        assert_eq!(before.files.len(), 3);
+        assert!(file_at(&app, "src/a.ts", "HEAD").unwrap().is_none());
+
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "--quiet", "-m", "init"]);
+        fs::write(app.join("src/a.ts"), "one\n2\nthree\nfour\n").unwrap();
+        fs::remove_file(app.join("gone.ts")).unwrap();
+        fs::write(app.join("new.ts"), "a\nb\n").unwrap();
+        fs::create_dir_all(app.join("dist")).unwrap();
+        fs::write(app.join("dist/out.js"), "x\n").unwrap();
+        fs::write(root.join("outside.txt"), "changed\n").unwrap();
+
+        let c = changes(&app, "HEAD").unwrap().unwrap();
+        assert_eq!(c.branch.as_deref(), Some("main"));
+        assert_eq!(c.base.len(), 40);
+        let got: Vec<(&str, FileState, Option<u32>, Option<u32>)> = c.files.iter().map(|f| (f.path.as_str(), f.state, f.added, f.removed)).collect();
+        assert_eq!(
+            got,
+            [("gone.ts", FileState::Deleted, Some(0), Some(1)), ("new.ts", FileState::Untracked, Some(2), Some(0)), ("src/a.ts", FileState::Modified, Some(2), Some(1))]
+        );
+        assert_eq!(c.ignored, ["dist/"]);
+        let h = |a, b, c, d| Hunk { old_start: a, old_count: b, new_start: c, new_count: d };
+        assert_eq!(hunks(&app, "src/a.ts", None, "HEAD").unwrap(), [h(2, 1, 2, 1), h(3, 0, 4, 1)]);
+        assert_eq!(file_at(&app, "src/a.ts", "HEAD").unwrap(), Some(crate::files::Content::Text { text: "one\ntwo\nthree\n".into(), size: 14 }));
+        assert!(file_at(&app, "../outside.txt", "HEAD").is_err());
+        assert!(changes(&app, "--output=x").is_err());
+
+        let mut all = list_files(&app).unwrap().unwrap();
+        all.sort();
+        assert_eq!(all, [".gitignore", "gone.ts", "new.ts", "src/a.ts"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn include_globs_become_pathspecs() {
+        assert_eq!(include_pathspecs(""), Vec::<String>::new());
+        assert_eq!(
+            include_pathspecs("*.cs, src/**/*.ts ,!tests/, ! *.min.js"),
+            [":(glob)**/*.cs", ":(glob)src/**/*.ts", ":(exclude,glob)tests/**", ":(exclude,glob)**/*.min.js"]
+        );
+        assert_eq!(include_pathspecs(r"src\api\*.ts"), [":(glob)src/api/*.ts"]);
+    }
+
+    #[test]
+    fn reads_grep_records() {
+        assert_eq!(
+            parse_grep_record(b"src/a b.ts\x0012\x00  let x = 1;\r"),
+            Some(SearchMatch { path: "src/a b.ts".into(), line: 12, text: "  let x = 1;".into() })
+        );
+        assert_eq!(parse_grep_record(b"no line number"), None);
+        let long = format!("a.js\x001\x00{}", "x".repeat(5000));
+        assert_eq!(parse_grep_record(long.as_bytes()).unwrap().text.len(), MAX_MATCH_TEXT);
+    }
+
+    #[test]
+    fn real_search() {
+        if git_client().is_err() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("shellman-git-test-search-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/user.cs"), "class UserService : IUserService {\r\n  public User GetById(int id) => null;\r\n}\r\n").unwrap();
+        fs::write(root.join("src/app.ts"), "const userService = new UserService();\nuserService.getById(1);\n").unwrap();
+        fs::write(root.join("logo.png"), b"\x89PNG\0\0UserService").unwrap();
+        let q = |query: &str, case_sensitive: bool, word: bool, regex: bool, include: &str| SearchQuery {
+            query: query.into(),
+            case_sensitive,
+            word,
+            regex,
+            include: include.into(),
+            max: 100,
+        };
+        let found = |r: SearchResult| r.matches.iter().map(|m| format!("{}:{}", m.path, m.line)).collect::<Vec<_>>();
+
+        // Outside a repository: every file, binaries skipped.
+        assert_eq!(found(search(&root, &q("UserService", true, true, false, "")).unwrap()), ["src/app.ts:1", "src/user.cs:1"]);
+
+        git(&root, &["init", "--quiet", "-b", "main"]);
+        fs::write(root.join(".gitignore"), "dist/\n").unwrap();
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("dist/out.js"), "UserService\n").unwrap();
+        // In a repository: new files too (nothing is committed yet), ignored ones not.
+        assert_eq!(found(search(&root, &q("userservice", false, false, false, "")).unwrap()), ["src/app.ts:1", "src/app.ts:2", "src/user.cs:1"]);
+        assert_eq!(found(search(&root, &q("UserService", true, true, false, "*.cs")).unwrap()), ["src/user.cs:1"]);
+        assert_eq!(found(search(&root, &q("UserService", true, true, false, "!*.cs")).unwrap()), ["src/app.ts:1"]);
+        let r = search(&root, &q("Get[A-Z]\\w*\\(", true, false, true, "")).unwrap();
+        assert_eq!(r.matches, [SearchMatch { path: "src/user.cs".into(), line: 2, text: "  public User GetById(int id) => null;".into() }]);
+        assert!(search(&root, &q("--output=x", true, false, false, "")).unwrap().matches.is_empty());
+        assert!(search(&root, &q("(unclosed", true, false, true, "")).is_err());
+        assert!(search(&root, &q("", true, false, false, "")).is_err());
+        let capped = search(&root, &SearchQuery { max: 1, ..q("user", false, false, false, "") }).unwrap();
+        assert!(capped.truncated && capped.matches.len() == 1);
         let _ = fs::remove_dir_all(&root);
     }
 }

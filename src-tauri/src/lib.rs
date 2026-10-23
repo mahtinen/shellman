@@ -1,6 +1,7 @@
 ﻿mod collection;
 mod config;
 mod connect;
+mod files;
 mod git;
 mod http;
 mod proc;
@@ -195,6 +196,58 @@ async fn git_commit(folder: String, paths: Vec<String>, message: String) -> Resu
 #[tauri::command]
 async fn git_sync(folder: String, prefer: git::Prefer, interactive: bool) -> Result<git::Outcome, String> {
     blocking(move || Ok(git::sync(std::path::Path::new(&folder), prefer, interactive))).await
+}
+
+/// One folder's entries in the Files pane (`dir` relative to `root`, '' for the root).
+#[tauri::command]
+async fn files_list(root: String, dir: String) -> Result<files::Listing, String> {
+    blocking(move || files::list(std::path::Path::new(&root), &dir)).await
+}
+
+#[tauri::command]
+async fn files_read(root: String, path: String) -> Result<files::Content, String> {
+    blocking(move || files::read(std::path::Path::new(&root), &path)).await
+}
+
+/// Every file in the folder, for "Go to file".
+#[tauri::command]
+async fn files_all(root: String) -> Result<files::AllFiles, String> {
+    blocking(move || files::all(std::path::Path::new(&root))).await
+}
+
+/// Reports (debounced) when something in the folder changes, including commits and checkouts.
+#[tauri::command]
+fn files_watch(state: State<'_, collection::Watches>, root: String, on_change: Channel<()>) -> Result<u32, String> {
+    state.watch_with(std::path::Path::new(&root), files::relevant, move || on_change.send(()).is_ok())
+}
+
+/// Opens the folder in VS Code, with `file` (relative) open at `line`.
+#[tauri::command]
+async fn open_in_editor(root: String, file: Option<String>, line: Option<u32>) -> Result<(), String> {
+    blocking(move || files::open_in_editor(std::path::Path::new(&root), file.as_deref(), line)).await
+}
+
+/// The folder's changes since `base` (`HEAD` = not committed); null outside a repository.
+#[tauri::command]
+async fn git_changes(root: String, base: String) -> Result<Option<git::Changes>, String> {
+    blocking(move || git::changes(std::path::Path::new(&root), &base)).await
+}
+
+/// A file as it was at `base`; null when it didn't exist there.
+#[tauri::command]
+async fn git_file_at(root: String, path: String, base: String) -> Result<Option<files::Content>, String> {
+    blocking(move || git::file_at(std::path::Path::new(&root), &path, &base)).await
+}
+
+/// Finds text in the folder's files (git grep).
+#[tauri::command]
+async fn files_search(root: String, query: git::SearchQuery) -> Result<git::SearchResult, String> {
+    blocking(move || git::search(std::path::Path::new(&root), &query)).await
+}
+
+#[tauri::command]
+async fn git_hunks(root: String, path: String, old_path: Option<String>, base: String) -> Result<Vec<git::Hunk>, String> {
+    blocking(move || git::hunks(std::path::Path::new(&root), &path, old_path.as_deref(), &base)).await
 }
 
 /// Where the 1Password CLI is (`custom` from Settings, else found), or null when it isn't installed.
@@ -455,6 +508,15 @@ pub fn run() {
             git_fetch,
             git_commit,
             git_sync,
+            git_changes,
+            git_file_at,
+            git_hunks,
+            files_list,
+            files_read,
+            files_all,
+            files_search,
+            files_watch,
+            open_in_editor,
             read_json_file,
             op_path,
             op_accounts,

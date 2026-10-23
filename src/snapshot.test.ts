@@ -66,6 +66,16 @@ describe('snapshot', () => {
     expect(normalizeSnapshot({ tabs: [{ root: { request: { groupId: 'g1' } } }, { root: { request: 'x' } }] })).toBeNull();
   });
 
+  it('keeps Files panes, with defaults for what is missing', () => {
+    const files: SnapshotLeaf = { files: { root: 'C:\\Projects\\app', path: 'src/main.ts', view: 'changes', mode: 'diff' } };
+    const snap = normalizeSnapshot({ tabs: [{ root: { split: 'row', sizes: [1, 1], children: [files, { pane: spec('C:\\a') }] } }] })!;
+    expect(snapshotLeaves(snap.tabs[0].root)).toEqual([files, { pane: spec('C:\\a') }]);
+    expect(normalizeSnapshot({ tabs: [{ root: { files: { root: 'C:\\x', view: 'odd' } } }] })!.tabs[0].root).toEqual({
+      files: { root: 'C:\\x', path: '', view: 'all', mode: 'file' },
+    });
+    expect(normalizeSnapshot({ tabs: [{ root: { files: { path: 'a.ts' } } }] })).toBeNull();
+  });
+
   it('leaves out panes that can no longer be opened', () => {
     const leaves: SnapshotLeaf[] = [{ request: { groupId: 'g', path: 'gone.request.json' } }, { pane: spec('C:\\a') }, { pane: spec('C:\\b') }];
     const root = { split: 'row' as const, sizes: [0.5, 0.125, 0.375], children: leaves };

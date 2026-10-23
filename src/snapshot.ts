@@ -14,12 +14,21 @@ export interface RequestRef {
   path: string;
 }
 
-/** One saved pane: a terminal, or a request. */
-export type SnapshotLeaf = { pane: LaunchSpec } | { request: RequestRef };
+/** A Files pane: the folder, the file it shows and how. */
+export interface FilesRef {
+  root: string;
+  /** Relative to the root, with `/` ('' = none). */
+  path: string;
+  view: 'all' | 'changes' | 'search';
+  mode: 'file' | 'diff';
+}
+
+/** One saved pane: a terminal, a request or a Files pane. */
+export type SnapshotLeaf = { pane: LaunchSpec } | { request: RequestRef } | { files: FilesRef };
 
 export type SnapshotNode = SnapshotLeaf | { split: Direction; sizes: number[]; children: SnapshotNode[] };
 
-const isLeaf = (n: SnapshotNode): n is SnapshotLeaf => 'pane' in n || 'request' in n;
+const isLeaf = (n: SnapshotNode): n is SnapshotLeaf => 'pane' in n || 'request' in n || 'files' in n;
 
 export interface TabSnapshot {
   /** Name the user gave the tab, if any. */
@@ -129,6 +138,11 @@ function normalizeNode(v: unknown, depth: number): SnapshotNode | null {
   if ('request' in v) {
     const r = isObj(v.request) ? v.request : {};
     return str(r.groupId) && str(r.path) ? { request: { groupId: str(r.groupId), path: str(r.path) } } : null;
+  }
+  if ('files' in v) {
+    const f = isObj(v.files) ? v.files : {};
+    if (!str(f.root)) return null;
+    return { files: { root: str(f.root), path: str(f.path), view: f.view === 'changes' || f.view === 'search' ? f.view : 'all', mode: f.mode === 'diff' ? 'diff' : 'file' } };
   }
   if ((v.split !== 'row' && v.split !== 'column') || !Array.isArray(v.children)) return null;
   const rawSizes = Array.isArray(v.sizes) ? v.sizes : [];

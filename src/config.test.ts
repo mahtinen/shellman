@@ -85,6 +85,12 @@ describe('normalizeConfig', () => {
     expect([c.sync, c.syncPush, c.syncCheck, c.syncDelay, c.commitTemplate]).toEqual(['manual', 'push', 180, 60, 'Update {request}']);
   });
 
+  it('defaults Files pane settings and corrects bad ones', () => {
+    expect(normalizeConfig({}).settings).toMatchObject({ diffLayout: 'split', showIgnoredFiles: true });
+    expect(normalizeConfig({ settings: { diffLayout: 'inline', showIgnoredFiles: false } as never }).settings).toMatchObject({ diffLayout: 'inline', showIgnoredFiles: false });
+    expect(normalizeConfig({ settings: { diffLayout: 'sideways', showIgnoredFiles: 'yes' } as never }).settings).toMatchObject({ diffLayout: 'split', showIgnoredFiles: true });
+  });
+
   it('defaults request settings and corrects bad ones', () => {
     expect(normalizeConfig({}).settings).toMatchObject({
       requestPreviewTabs: true,
