@@ -135,6 +135,12 @@ pub fn build_launch(
             }
         }
         ShellKind::Wsl => {
+            // wsl.exe starts the default distribution; a folder inside another one needs `-d`.
+            let picks_distro = args.iter().any(|a| matches!(a.as_str(), "-d" | "--distribution" | "--distribution-id"));
+            if let Some(distro) = wsl_distro(cwd).filter(|_| !picks_distro) {
+                args.push("-d".into());
+                args.push(distro);
+            }
             // `--cd` understands Windows paths and translates them.
             args.push("--cd".into());
             args.push(cwd.into());
@@ -174,6 +180,43 @@ pub fn build_launch(
         env,
         typed_input,
     }
+}
+
+/// The distribution a folder inside WSL belongs to: `Ubuntu` for `\\wsl.localhost\Ubuntu\home`
+/// (or `\\wsl$\Ubuntu\…`). None for other folders and for names that could pass as an option.
+pub fn wsl_distro(path: &str) -> Option<String> {
+    let path = path.trim().replace('/', "\\");
+    let lower = path.to_ascii_lowercase();
+    let start = [r"\\wsl.localhost\", r"\\wsl$\"].iter().find(|p| lower.starts_with(*p))?.len();
+    let name = path[start..].split('\\').next()?;
+    let valid = !name.is_empty()
+        && !name.starts_with('-')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    valid.then(|| name.to_string())
+}
+
+/// The Linux home folder of a WSL shell as a Windows path (`\\wsl.localhost\Ubuntu\home\me`),
+/// so the folder picker can start there. Starts WSL when it isn't running, which takes a while.
+pub fn wsl_home(profile: &ShellProfile) -> Result<String, String> {
+    let mut cmd = std::process::Command::new(&profile.path);
+    cmd.args(&profile.args).args(["--cd", "~", "-e", "wslpath", "-w", "."]);
+    // wsl.exe writes its own messages in UTF-16 unless asked for UTF-8.
+    cmd.env("WSL_UTF8", "1");
+    let out = crate::proc::output_within(cmd, std::time::Duration::from_secs(60))?
+        .ok_or("WSL did not start within a minute")?;
+    let text = |b: &[u8]| String::from_utf8_lossy(b).replace('\0', "").trim().to_string();
+    let home = text(&out.stdout);
+    if out.status.success() && home.starts_with(r"\\") {
+        return Ok(home);
+    }
+    let err = text(&out.stderr);
+    Err(if !err.is_empty() {
+        err
+    } else if !home.is_empty() {
+        home
+    } else {
+        "WSL did not report its home folder".into()
+    })
 }
 
 pub(crate) fn find_on_path(exe: &str) -> Option<PathBuf> {
@@ -351,6 +394,44 @@ mod tests {
         assert!(l.args.contains(&"-lic".to_string()));
         let wslenv = &l.env.iter().find(|(k, _)| k == "WSLENV").unwrap().1;
         assert!(wslenv.ends_with("PROMPT_COMMAND/u:SHELLMAN_CMD/u"));
+    }
+
+    #[test]
+    fn wsl_folder_picks_its_distribution() {
+        let l = build_launch(&p(ShellKind::Wsl), r"\\wsl.localhost\Debian\home\me", None, false);
+        assert_eq!(l.args, ["-d", "Debian", "--cd", r"\\wsl.localhost\Debian\home\me"]);
+        let l = build_launch(&p(ShellKind::Wsl), r"\\wsl$\Ubuntu-22.04", None, false);
+        assert_eq!(l.args[..2], ["-d", "Ubuntu-22.04"]);
+        // A Windows folder opens in the default distribution.
+        let l = build_launch(&p(ShellKind::Wsl), "C:\\Projects\\x", None, false);
+        assert_eq!(l.args[0], "--cd");
+        // A profile that names its distribution keeps it.
+        let mut prof = p(ShellKind::Wsl);
+        prof.args = vec!["-d".into(), "Ubuntu".into()];
+        let l = build_launch(&prof, r"\\wsl.localhost\Debian\home", None, false);
+        assert_eq!(l.args[..3], ["-d", "Ubuntu", "--cd"]);
+    }
+
+    #[test]
+    fn wsl_distro_from_path() {
+        assert_eq!(wsl_distro(r"\\WSL.localhost\Ubuntu\home\me").as_deref(), Some("Ubuntu"));
+        assert_eq!(wsl_distro("//wsl$/docker-desktop/tmp").as_deref(), Some("docker-desktop"));
+        assert_eq!(wsl_distro(r"\\wsl.localhost\Ubuntu").as_deref(), Some("Ubuntu"));
+        assert_eq!(wsl_distro(r"\\wsl.localhost\-e\x"), None);
+        assert_eq!(wsl_distro(r"\\wsl.localhost\a b\x"), None);
+        assert_eq!(wsl_distro(r"\\wsl.localhost\"), None);
+        assert_eq!(wsl_distro(r"\\server\share"), None);
+        assert_eq!(wsl_distro("C:\\Projects"), None);
+    }
+
+    #[test]
+    fn wsl_home_is_a_windows_path_or_a_readable_error() {
+        let Some(wsl) = detect_shells().into_iter().find(|s| s.kind == ShellKind::Wsl) else { return };
+        match wsl_home(&wsl) {
+            Ok(home) => assert!(wsl_distro(&home).is_some(), "{home}"),
+            // No distribution installed: wsl.exe's message, not UTF-16 noise.
+            Err(e) => assert!(!e.is_empty() && !e.contains('\0'), "{e:?}"),
+        }
     }
 
     #[test]

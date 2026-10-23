@@ -410,6 +410,41 @@ if (phase === 'main') {
     await waitFor(`__t.ws.tabs.length === ${tabs}`, 3000, 'closed');
   });
 
+  await step('a Linux path in the session dialog opens WSL in the Linux home', async () => {
+    if ((await ev(`window.__shellman.workspace.resolveShell('wsl')?.id ?? ''`)) !== 'wsl') {
+      console.log('       (WSL not installed; skipped)');
+      return;
+    }
+    const tabs = await ev(`__t.ws.tabs.length`);
+    await click('.sidebar-header .icon-btn[title="New session"]');
+    await waitFor(`!!document.querySelector('.dialog')`);
+    const hint = `[...document.querySelectorAll('.dialog .hint')].find((h) => h.textContent.includes('~/projects/app'))`;
+    await ev(`(() => {
+      const shell = [...document.querySelectorAll('.dialog select')].find((s) => [...s.options].some((o) => o.value === 'wsl'));
+      shell.value = 'wsl';
+      shell.dispatchEvent(new Event('change'));
+      const dir = document.querySelectorAll('.dialog input.input')[1];
+      dir.value = '~';
+      dir.dispatchEvent(new Event('input'));
+      return true;
+    })()`);
+    assert(await ev(`!${hint}.hidden`), 'Linux path hint hidden for the WSL shell');
+    await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Open').click()`);
+    // Finding the home folder may start WSL; without a distribution the dialog shows WSL's error.
+    await waitFor(`!document.querySelector('.dialog') || !!document.querySelector('.dialog .field-error')?.textContent`, 60000, 'dialog done');
+    if (await ev(`!!document.querySelector('.dialog')`)) {
+      console.log(`       (WSL has no distribution: ${await ev(`document.querySelector('.dialog .field-error').textContent`)}; skipped)`);
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Cancel').click()`);
+      return;
+    }
+    await waitFor(`__t.ws.tabs.length === ${tabs + 1}`, 5000, 'tab opened');
+    const cwd = await ev(`__t.active().spec.cwd`);
+    assert(/^\\\\wsl\.localhost\\[^\\]+\\/i.test(cwd), `cwd is not inside WSL: ${cwd}`);
+    await waitFor(`__t.active().state === 'running' && /[$#] *\\n/.test(__t.text())`, 30000, 'WSL prompt');
+    await ev(`__t.ws.closePane(__t.active().id)`);
+    await waitFor(`__t.ws.tabs.length === ${tabs}`, 3000, 'closed');
+  });
+
   await step('a missing directory shows an error and Enter retries', async () => {
     await ev(`void __t.ws.open({ name: 'gone', cwd: 'C:\\\\does\\\\not\\\\exist', command: '', shellId: '', env: {}, color: '', sessionId: null }, 'tab')`);
     await waitFor(`__t.text().includes('Directory not found') && __t.active().state === 'error'`, 5000, 'error shown');

@@ -327,6 +327,31 @@ export function pathKey(path: string): string {
   return path.trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
 }
 
+/** True for a folder inside WSL: \\wsl.localhost\<distro>\… or \\wsl$\<distro>\…. */
+export function isWslPath(path: string): boolean {
+  return /^[\\/]{2}wsl(\.localhost|\$)[\\/][^\\/]+/i.test(path.trim());
+}
+
+/** True for a Linux path typed for WSL: /home/me/app, ~ or ~/app. */
+export function isLinuxPath(path: string): boolean {
+  return /^(\/(?!\/)|~(\/|$))/.test(path.trim());
+}
+
+/**
+ * The Windows path of a Linux path, given the WSL home folder as a Windows path
+ * (\\wsl.localhost\Ubuntu\home\me). /mnt/c/… is the Windows drive itself.
+ */
+export function wslWindowsPath(linux: string, home: string): string {
+  const path = linux.trim();
+  const drive = /^\/mnt\/([a-z])(\/.*)?$/i.exec(path);
+  if (drive) return `${drive[1].toUpperCase()}:\\${(drive[2] ?? '').replace(/^\/+|\/+$/g, '').replace(/\/+/g, '\\')}`;
+  const base = home.replace(/[\\/]+$/, '');
+  const [prefix, rest] = path.startsWith('~')
+    ? [base, path.slice(1)]
+    : [base.split('\\').slice(0, 4).join('\\'), path]; // \\wsl.localhost\Ubuntu
+  return (prefix + rest.replace(/\/+/g, '\\')).replace(/\\+$/, '');
+}
+
 /**
  * The saved session a local terminal belongs to: the one whose directory contains the terminal's
  * current directory (the deepest one; the session it was opened from wins a tie). Outside every
