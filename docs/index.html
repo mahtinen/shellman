@@ -54,6 +54,7 @@
     "@context": "https://schema.org",
     "@type": "FAQPage",
     "mainEntity": [
+      { "@type": "Question", "name": "How is Shellman different from Windows Terminal?", "acceptedAnswer": { "@type": "Answer", "text": "Windows Terminal opens shells; Shellman opens the places you work. A saved session is a folder and the command you run there, or an SSH or Telnet host, and the sidebar lists the terminals open in each one. On top of that come git worktrees for Claude Code, a read-only view of the changes and API requests. Coming from XShell or MobaXterm? Your SSH hosts sit next to your folders, and XShell sessions can be imported." } },
       { "@type": "Question", "name": "Is Shellman free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. It is free and open source under the MIT license, with no account and no telemetry. On its own it only checks GitHub for updates, and you can turn that off." } },
       { "@type": "Question", "name": "Does Shellman store my passwords or keys?", "acceptedAnswer": { "@type": "Answer", "text": "No. ssh asks for passwords in the terminal, and private keys stay in your key files, the Windows ssh-agent or 1Password. For a key you pick from an agent, Shellman keeps only its public half. API secrets stay in .env.local, which git ignores, or in 1Password, and reach curl through its environment, never a command line. Your sessions are saved on your own machine, in %APPDATA%\\app.shellman.desktop." } },
       { "@type": "Question", "name": "Do I need Claude Code?", "acceptedAnswer": { "@type": "Answer", "text": "No. Shellman works with any shell or command. Claude Code gets a few extras: its own conversation in every terminal, git worktrees, notifications, Shift+Enter for new lines and pasting screenshots." } },
@@ -87,9 +88,9 @@
   <main id="main">
     <section class="hero">
       <div class="wrap">
-        <p class="eyebrow">Free and open source · Windows 10 and 11</p>
+        <p class="eyebrow">Free, open-source terminal manager for Windows</p>
         <h1>Every project, server and Claude, <span class="accent">one&nbsp;click&nbsp;away</span>.</h1>
-        <p class="lede">Save a folder with the command you run there, or a server. One click opens it in a tab or split. Each Claude keeps its own conversation, can get its own git worktree, and you read its changes right beside it.</p>
+        <p class="lede">Shellman is a terminal manager for Windows 10 and 11. Save a folder with the command you run there, or a server. One click opens it in a tab or split. Each Claude keeps its own conversation, can get its own git worktree, and you read its changes right beside it.</p>
         <div class="cta">
           <a class="btn primary" href="https://github.com/mahtinen/shellman/releases/latest/download/Shellman-setup.exe">
             <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M8 2v8m0 0l-3-3m3 3l3-3M3 13.5h10"/></svg>
@@ -113,7 +114,7 @@
         <div class="wrap feature-inner">
           <div class="feature-text">
             <p class="kicker">01 · sessions</p>
-            <h2>Save the places you work, not just shells</h2>
+            <h2>Saved terminal sessions for the places you work</h2>
             <p>A session is a folder and the command you run there, like <code>claude</code>, <code>npm run dev</code> or <code>terraform plan</code>. Or an SSH host. Click it for a tab, middle-click for a split.</p>
             <ul class="ticks">
               <li>Each session lists its open terminals, so the right one is a click away, even with twenty tabs.</li>
@@ -134,7 +135,7 @@
         <div class="wrap feature-inner">
           <div class="feature-text">
             <p class="kicker">02 · claude code</p>
-            <h2>Several Claudes in one repository</h2>
+            <h2>Several Claude Code sessions in one repository</h2>
             <p>Open in new worktree gives a terminal its own folder and branch, so two Claudes never edit the same files. It stays under its session in the sidebar, with its branch name.</p>
             <ul class="ticks">
               <li>Every Claude tab keeps its own conversation and gets it back after a restart.</li>
@@ -179,7 +180,7 @@
         <div class="wrap feature-inner">
           <div class="feature-text">
             <p class="kicker">04 · ssh</p>
-            <h2>SSH with the keys you already have</h2>
+            <h2>SSH and Telnet sessions with the keys you already have</h2>
             <p>Shellman runs Windows' own OpenSSH. Your key files, the Windows ssh-agent, 1Password's SSH agent and <code>~/.ssh/config</code> work as they do anywhere else. Shellman never stores passwords or private keys.</p>
             <ul class="ticks">
               <li>Save hosts next to your folders, or type <code>user@host</code> to connect without saving.</li>
@@ -254,6 +255,10 @@
     <section id="faq" class="faq">
       <div class="wrap narrow">
         <h2>Questions</h2>
+        <details>
+          <summary>How is Shellman different from Windows Terminal?</summary>
+          <p>Windows Terminal opens shells; Shellman opens the places you work. A saved session is a folder and the command you run there, or an SSH or Telnet host, and the sidebar lists the terminals open in each one. On top of that come git worktrees for Claude Code, a read-only view of the changes and API requests. Coming from XShell or MobaXterm? Your SSH hosts sit next to your folders, and XShell sessions can be imported.</p>
+        </details>
         <details>
           <summary>Is Shellman free?</summary>
           <p>Yes. It is free and open source under the MIT license, with no account and no telemetry. On its own it only checks GitHub for updates, and you can turn that off. The code is <a href="https://github.com/mahtinen/shellman">on GitHub</a>.</p>
