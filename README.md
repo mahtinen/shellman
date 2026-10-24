@@ -2,7 +2,7 @@
 
 **[shellman.app](https://shellman.app)** · [Download for Windows](https://github.com/mahtinen/shellman/releases/latest/download/Shellman-setup.exe) · MIT license
 
-![Shellman running Claude Code next to a test runner, with saved sessions in the sidebar](docs/img/hero.png)
+![Shellman with Claude Code in a git worktree and its changes as a diff below, saved sessions in the sidebar](docs/img/hero.png)
 
 A lightweight Windows terminal manager built around **saved directories** and **saved SSH/Telnet hosts**. Each entry in the session
 sidebar means "open a terminal in this folder and (optionally) run this command", for example
