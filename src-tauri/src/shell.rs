@@ -160,13 +160,7 @@ pub fn build_launch(
                 ]);
             }
             if !wslenv.is_empty() {
-                let mut value = wslenv.join(":");
-                if let Ok(existing) = std::env::var("WSLENV") {
-                    if !existing.is_empty() {
-                        value = format!("{existing}:{value}");
-                    }
-                }
-                env.push(("WSLENV".into(), value));
+                env.push(("WSLENV".into(), with_wslenv(&wslenv)));
             }
         }
         ShellKind::Other => {
@@ -193,6 +187,74 @@ pub fn wsl_distro(path: &str) -> Option<String> {
         && !name.starts_with('-')
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
     valid.then(|| name.to_string())
+}
+
+/// WSLENV with `names` added to what is set already, so those variables reach Linux.
+pub(crate) fn with_wslenv(names: &[&str]) -> String {
+    let mut value = names.join(":");
+    if let Ok(existing) = std::env::var("WSLENV") {
+        if !existing.is_empty() {
+            value = format!("{existing}:{value}");
+        }
+    }
+    value
+}
+
+pub(crate) fn wsl_exe() -> PathBuf {
+    system_root().join("System32").join("wsl.exe")
+}
+
+/// A folder inside WSL, and how paths are written on each side.
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) struct WslFolder {
+    pub distro: String,
+    /// The distribution's share as the folder writes it: `\\wsl.localhost\Ubuntu`.
+    share: String,
+    /// The folder as Linux sees it: `/home/me/project`.
+    pub linux: String,
+}
+
+impl WslFolder {
+    pub fn of(path: &str) -> Option<WslFolder> {
+        let distro = wsl_distro(path)?;
+        let path = path.trim().replace('/', "\\");
+        // "", "", "wsl.localhost", "Ubuntu", then the Linux path.
+        let parts: Vec<&str> = path.split('\\').collect();
+        let rest: Vec<&str> = parts[4..].iter().copied().filter(|p| !p.is_empty()).collect();
+        Some(WslFolder { distro, share: parts[..4].join("\\"), linux: format!("/{}", rest.join("/")) })
+    }
+
+    /// A path Linux printed, as Windows writes it: `/home/me` is `\\wsl.localhost\Ubuntu\home\me`,
+    /// `/mnt/c/x` is `C:\x`.
+    pub fn windows_path(&self, linux: &str) -> String {
+        if let Some(rest) = linux.strip_prefix("/mnt/") {
+            let (drive, tail) = rest.split_once('/').unwrap_or((rest, ""));
+            if drive.len() == 1 && drive.chars().all(|c| c.is_ascii_alphabetic()) {
+                return format!("{}:\\{}", drive.to_ascii_uppercase(), tail.replace('/', "\\"));
+            }
+        }
+        if linux.starts_with('/') {
+            format!("{}{}", self.share, linux.replace('/', "\\"))
+        } else {
+            linux.replace('/', "\\")
+        }
+    }
+
+    /// A Windows path as Linux sees it; None where Linux can't reach it (another distribution, a
+    /// network share).
+    pub fn linux_path(&self, windows: &str) -> Option<String> {
+        if let Some(other) = WslFolder::of(windows) {
+            return other.distro.eq_ignore_ascii_case(&self.distro).then_some(other.linux);
+        }
+        let w = windows.trim().replace('/', "\\");
+        let b = w.as_bytes();
+        if b.len() < 2 || !b[0].is_ascii_alphabetic() || b[1] != b':' || (b.len() > 2 && b[2] != b'\\') {
+            return None;
+        }
+        let rest = w[2..].trim_matches('\\').replace('\\', "/");
+        let drive = (b[0] as char).to_ascii_lowercase();
+        Some(if rest.is_empty() { format!("/mnt/{drive}") } else { format!("/mnt/{drive}/{rest}") })
+    }
 }
 
 /// The Linux home folder of a WSL shell as a Windows path (`\\wsl.localhost\Ubuntu\home\me`),
@@ -295,7 +357,7 @@ pub fn detect_shells() -> Vec<ShellProfile> {
         shells.push(profile("gitbash", "Git Bash", bash, ShellKind::Bash));
     }
 
-    let wsl = root.join("System32").join("wsl.exe");
+    let wsl = wsl_exe();
     if wsl.is_file() {
         shells.push(profile("wsl", "WSL", wsl, ShellKind::Wsl));
     }
@@ -422,6 +484,28 @@ mod tests {
         assert_eq!(wsl_distro(r"\\wsl.localhost\"), None);
         assert_eq!(wsl_distro(r"\\server\share"), None);
         assert_eq!(wsl_distro("C:\\Projects"), None);
+    }
+
+    #[test]
+    fn wsl_paths_both_ways() {
+        let f = WslFolder::of(r"\\wsl.localhost\Ubuntu\home\me\my project\").unwrap();
+        assert_eq!((f.distro.as_str(), f.linux.as_str()), ("Ubuntu", "/home/me/my project"));
+        assert_eq!(WslFolder::of("//wsl$/Debian").unwrap().linux, "/");
+        assert_eq!(WslFolder::of(r"C:\Projects"), None);
+
+        assert_eq!(f.windows_path("/home/me/wt/fix"), r"\\wsl.localhost\Ubuntu\home\me\wt\fix");
+        assert_eq!(WslFolder::of(r"\\wsl$\Ubuntu\x").unwrap().windows_path("/tmp"), r"\\wsl$\Ubuntu\tmp");
+        assert_eq!(f.windows_path("/mnt/c/Projects/shop"), r"C:\Projects\shop");
+        assert_eq!(f.windows_path("/mnt/d"), r"D:\");
+        assert_eq!(f.windows_path("/mnt/wsl/x"), r"\\wsl.localhost\Ubuntu\mnt\wsl\x");
+        assert_eq!(f.windows_path(".git/rebase-merge"), r".git\rebase-merge");
+
+        assert_eq!(f.linux_path(r"\\WSL$\ubuntu\home\me\wt").as_deref(), Some("/home/me/wt"));
+        assert_eq!(f.linux_path(r"C:\Projects\shop").as_deref(), Some("/mnt/c/Projects/shop"));
+        assert_eq!(f.linux_path("D:/").as_deref(), Some("/mnt/d"));
+        assert_eq!(f.linux_path(r"\\wsl.localhost\Debian\home"), None);
+        assert_eq!(f.linux_path(r"\\server\share\x"), None);
+        assert_eq!(f.linux_path(r"C:relative"), None);
     }
 
     #[test]
