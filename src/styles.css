@@ -489,8 +489,10 @@ select.input {
   margin-left: calc(41px + var(--depth, 0) * 14px);
 }
 
-.terms-head {
-  margin-top: 6px;
+.other-terms {
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
 }
 
 .term-row {

@@ -214,10 +214,7 @@ export class Sidebar {
     const filtering = !!this.search.value.trim();
     const rows: HTMLElement[] = [];
 
-    for (const g of childGroups(groups, null)) rows.push(...this.groupRows(g, 0, filtering));
-    const ungrouped = sessions.filter((s) => !s.groupId && this.matches(s));
-    rows.push(...ungrouped.flatMap((s) => this.sessionRows(s)));
-
+    // Quick throwaway terminals stay at the top, so they are reachable however long the session list is.
     const other = this.terms.get(null) ?? [];
     if (other.length && !filtering) {
       const folded = store.settings.otherTerminalsCollapsed;
@@ -230,9 +227,12 @@ export class Sidebar {
         h('span', { class: 'group-count' }, String(other.length)),
       );
       head.addEventListener('click', () => store.update((c) => (c.settings.otherTerminalsCollapsed = !c.settings.otherTerminalsCollapsed)));
-      rows.push(head);
-      if (!folded) rows.push(this.termTree(other, false));
+      rows.push(h('div', { class: 'other-terms' }, head, ...(folded ? [] : [this.termTree(other, false)])));
     }
+
+    for (const g of childGroups(groups, null)) rows.push(...this.groupRows(g, 0, filtering));
+    const ungrouped = sessions.filter((s) => !s.groupId && this.matches(s));
+    rows.push(...ungrouped.flatMap((s) => this.sessionRows(s)));
 
     if (!sessions.length && !groups.length) {
       rows.push(

@@ -70,7 +70,7 @@ Shellman runs at a time: starting it again brings the open window to the front.
 - **Open terminals tree.** Each session lists its open terminals underneath it: the ones opened from it, plus
   any other terminal sitting in its directory. Click one to jump to its tab, middle-click to close it,
   right-click for more. The chevron next to a session collapses its list, like a group, and the state is
-  saved. Terminals outside every session directory are listed under "Other terminals" (also collapsible).
+  saved. Terminals outside every session directory are listed under "Other terminals" at the top of the sidebar (also collapsible).
 - **Quick open** (Ctrl+Shift+P): fuzzy-search saved sessions; Enter = tab, Ctrl+Enter = split right,
   Shift+Enter = split down.
 - **Any shell, any time.** Open a session with a different shell from the ▾ hover button or "Open with
