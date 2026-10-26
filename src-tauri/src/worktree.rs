@@ -82,8 +82,9 @@ fn same_folder(a: &str, b: &str) -> bool {
     }
 }
 
-/// `git worktree list --porcelain` → worktrees (the first is the main one).
-pub fn parse_worktrees(out: &str) -> Vec<Worktree> {
+/// `git worktree list --porcelain` → worktrees (the first is the main one), with `path` turning
+/// git's paths into Windows ones.
+pub fn parse_worktrees(out: &str, path: impl Fn(&str) -> String) -> Vec<Worktree> {
     let mut list = Vec::new();
     let mut cur: Option<Worktree> = None;
     for line in out.lines().chain([""]) {
@@ -95,7 +96,7 @@ pub fn parse_worktrees(out: &str) -> Vec<Worktree> {
         }
         let (key, value) = line.split_once(' ').unwrap_or((line, ""));
         match key {
-            "worktree" => cur = Some(Worktree { path: windows(value), branch: None, head: String::new(), main: list.is_empty(), locked: false, prunable: false }),
+            "worktree" => cur = Some(Worktree { path: path(value), branch: None, head: String::new(), main: list.is_empty(), locked: false, prunable: false }),
             "HEAD" => cur.iter_mut().for_each(|w| w.head = value.to_string()),
             "branch" => cur.iter_mut().for_each(|w| w.branch = Some(value.strip_prefix("refs/heads/").unwrap_or(value).to_string())),
             "locked" => cur.iter_mut().for_each(|w| w.locked = true),
@@ -110,8 +111,8 @@ pub fn parse_worktrees(out: &str) -> Vec<Worktree> {
 pub fn info(folder: &Path) -> Result<Option<RepoInfo>, String> {
     let g = Git::new(folder, false)?;
     let Some(prefix) = g.prefix()? else { return Ok(None) };
-    let top = windows(&g.ok(&["rev-parse", "--show-toplevel"], QUICK)?);
-    let worktrees = parse_worktrees(&g.ok(&["worktree", "list", "--porcelain"], QUICK)?);
+    let top = g.windows_path(&g.ok(&["rev-parse", "--show-toplevel"], QUICK)?);
+    let worktrees = parse_worktrees(&g.ok(&["worktree", "list", "--porcelain"], QUICK)?, |p| g.windows_path(p));
     let branch = g.ok(&["symbolic-ref", "--short", "-q", "HEAD"], QUICK).ok().map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
     Ok(Some(RepoInfo { top, prefix, branch, worktrees }))
 }
@@ -133,7 +134,7 @@ fn check_branch(g: &Git, branch: &str) -> Result<(), String> {
 /// the files git ignores that match `copy` (globs, like `.env.local`) from the repository into it.
 pub fn add(folder: &Path, path: &str, branch: &str, from: &str, copy: &str) -> Result<Added, String> {
     let g = Git::new(folder, false)?;
-    let top = PathBuf::from(windows(&g.ok(&["rev-parse", "--show-toplevel"], QUICK)?));
+    let top = PathBuf::from(g.windows_path(&g.ok(&["rev-parse", "--show-toplevel"], QUICK)?));
     check_branch(&g, branch)?;
     let target = PathBuf::from(path);
     if !target.is_absolute() {
@@ -150,7 +151,7 @@ pub fn add(folder: &Path, path: &str, branch: &str, from: &str, copy: &str) -> R
         fs::create_dir_all(parent).map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
     }
     let path_arg = target.to_string_lossy().into_owned();
-    let out = g.run(&["worktree", "add", "-b", branch, "--", &path_arg, &base], ADD)?;
+    let out = g.run(&["worktree", "add", "-b", branch, "--", &g.git_path(&path_arg)?, &base], ADD)?;
     if !out.status.success() {
         return Err(crate::git::stderr_message(&out.stderr, "worktree add"));
     }
@@ -205,7 +206,7 @@ pub fn status(path: &Path) -> Result<Status, String> {
 /// `delete_branch` (`force`: also with commits that are on no other branch).
 pub fn remove(folder: &Path, path: &str, delete_branch: bool, force: bool) -> Result<(), String> {
     let g = Git::new(folder, false)?;
-    let list = parse_worktrees(&g.ok(&["worktree", "list", "--porcelain"], QUICK)?);
+    let list = parse_worktrees(&g.ok(&["worktree", "list", "--porcelain"], QUICK)?, |p| g.windows_path(p));
     let Some(wt) = list.iter().find(|w| same_folder(&w.path, path)) else {
         return Err(format!("{path} isn't a worktree of this repository"));
     };
@@ -218,7 +219,7 @@ pub fn remove(folder: &Path, path: &str, delete_branch: bool, force: bool) -> Re
     if force {
         args.push("--force");
     }
-    let path_arg = wt.path.clone();
+    let path_arg = main.git_path(&wt.path)?;
     args.extend(["--", path_arg.as_str()]);
     let out = main.run(&args, ADD)?;
     if !out.status.success() && !wt.prunable {
@@ -247,7 +248,7 @@ mod tests {
     #[test]
     fn reads_worktree_list() {
         let out = "worktree C:/Projects/shop\nHEAD abc\nbranch refs/heads/main\n\nworktree C:/Projects/shop.worktrees/fix\nHEAD def\nbranch refs/heads/claude/fix\nlocked\n\nworktree C:/gone\nHEAD 123\ndetached\nprunable gitdir file points to non-existent location\n";
-        let list = parse_worktrees(out);
+        let list = parse_worktrees(out, windows);
         assert_eq!(list.len(), 3);
         assert_eq!(
             list[0],
@@ -270,6 +271,27 @@ mod tests {
         let out = Command::new("cmd").raw_arg(format!("/C for %I in (\"{}\") do @echo %~sI", dir.display())).output().unwrap();
         let short = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if short.is_empty() { dir.to_string_lossy().into_owned() } else { short }
+    }
+
+    #[test]
+    fn real_worktree_in_wsl() {
+        let Some(repo) = crate::git::tests::wsl_repo() else { return };
+        let i = info(&repo).unwrap().unwrap();
+        // git inside WSL prints Linux paths; they come back as Windows ones.
+        assert_eq!(i.top.to_lowercase(), repo.to_string_lossy().to_lowercase());
+        assert_eq!(i.worktrees[0].path.to_lowercase(), i.top.to_lowercase());
+
+        let path = format!("{}-wt", repo.display());
+        let added = add(&repo, &path, "claude/fix", "main", "").unwrap();
+        assert_eq!(added.path.to_lowercase(), path.to_lowercase());
+        assert!(Path::new(&path).join("run.sh").is_file());
+        let list = info(&repo).unwrap().unwrap().worktrees;
+        assert_eq!(list.iter().map(|w| w.path.to_lowercase()).collect::<Vec<_>>(), [i.top.to_lowercase(), path.to_lowercase()]);
+        assert_eq!(status(Path::new(&path)).unwrap(), Status { branch: Some("claude/fix".into()), changes: 0, only_here: 0 });
+        remove(&repo, &path, true, false).unwrap();
+        assert!(!Path::new(&path).exists());
+        crate::git::tests::wsl_remove(&repo);
+        crate::git::tests::wsl_remove(Path::new(&path));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 use crate::collection::is_collection_file;
 use crate::proc::output_within;
+use crate::shell::WslFolder;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -82,6 +83,10 @@ pub enum Outcome {
 pub(crate) struct Git {
     exe: PathBuf,
     folder: PathBuf,
+    /// A folder inside WSL gets the distribution's own git. Windows' git can't see Linux file modes
+    /// or symlinks there, so it reports every executable file and symlink as changed (and it reads
+    /// each file over the share, which is slow).
+    wsl: Option<WslFolder>,
     interactive: bool,
 }
 
@@ -90,26 +95,64 @@ impl Git {
         if !folder.is_dir() {
             return Err(format!("Folder not found: {}", folder.display()));
         }
-        Ok(Git { exe: git_client()?, folder: folder.to_path_buf(), interactive })
+        let wsl = WslFolder::of(&folder.to_string_lossy());
+        let exe = if wsl.is_some() { crate::shell::wsl_exe() } else { git_client()? };
+        Ok(Git { exe, folder: folder.to_path_buf(), wsl, interactive })
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(&self.exe);
-        cmd.arg("-C").arg(&self.folder).args(args);
         // Messages in English, so `classify` can read them; no terminal prompts (there is no terminal).
-        cmd.env("LC_ALL", "C").env("LANGUAGE", "C").env("GIT_TERMINAL_PROMPT", "0");
+        let mut env = vec![("LC_ALL", "C"), ("LANGUAGE", "C"), ("GIT_TERMINAL_PROMPT", "0")];
         // Background status checks must not take the index lock from a git command the user runs.
-        cmd.env("GIT_OPTIONAL_LOCKS", "0");
+        env.push(("GIT_OPTIONAL_LOCKS", "0"));
         if !self.interactive {
             // Git Credential Manager may show a sign-in window for a sync the user started, not for
             // background ones.
-            cmd.env("GCM_INTERACTIVE", "never");
+            env.push(("GCM_INTERACTIVE", "never"));
         }
+        let mut cmd = Command::new(&self.exe);
+        match &self.wsl {
+            Some(w) => {
+                // `--exec` starts git without a shell, so the arguments arrive as they are.
+                cmd.args(["-d", &w.distro, "--cd", &w.linux, "--exec", "git"]).args(args);
+                let names: Vec<String> = env.iter().map(|(k, _)| format!("{k}/u")).collect();
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                // wsl.exe writes its own messages in UTF-16 unless asked for UTF-8.
+                cmd.env("WSLENV", crate::shell::with_wslenv(&names)).env("WSL_UTF8", "1");
+            }
+            None => {
+                cmd.arg("-C").arg(&self.folder).args(args);
+            }
+        }
+        cmd.envs(env);
         cmd
     }
 
     pub(crate) fn run(&self, args: &[&str], limit: Duration) -> Result<Output, String> {
-        output_within(self.command(args), limit)?.ok_or_else(|| format!("git {} took too long and was stopped", name(args)))
+        let out = output_within(self.command(args), limit)?.ok_or_else(|| format!("git {} took too long and was stopped", name(args)))?;
+        if let Some(w) = &self.wsl {
+            if !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("execvpe(git)") {
+                return Err(format!("git isn't installed in WSL ({}). Install it there, for example: sudo apt install git", w.distro));
+            }
+        }
+        Ok(out)
+    }
+
+    /// A path git printed, as Windows writes it.
+    pub(crate) fn windows_path(&self, printed: &str) -> String {
+        let printed = printed.trim();
+        match &self.wsl {
+            Some(w) => w.windows_path(printed),
+            None => printed.replace('/', "\\"),
+        }
+    }
+
+    /// A Windows path as git takes it.
+    pub(crate) fn git_path(&self, path: &str) -> Result<String, String> {
+        match &self.wsl {
+            Some(w) => w.linux_path(path).ok_or_else(|| format!("{path} can't be reached from WSL ({})", w.distro)),
+            None => Ok(path.to_string()),
+        }
     }
 
     /// stdout of a command that must succeed.
@@ -126,7 +169,7 @@ impl Git {
     fn busy(&self) -> bool {
         ["rebase-merge", "rebase-apply", "MERGE_HEAD"].iter().any(|p| {
             self.ok(&["rev-parse", "--git-path", p], QUICK).is_ok_and(|out| {
-                let path = PathBuf::from(out.trim());
+                let path = PathBuf::from(self.windows_path(&out));
                 if path.is_absolute() { path } else { self.folder.join(path) }.exists()
             })
         })
@@ -860,7 +903,7 @@ pub fn search(folder: &Path, q: &SearchQuery) -> Result<SearchResult, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::fs;
 
@@ -1276,5 +1319,50 @@ mod tests {
         let capped = search(&root, &SearchQuery { max: 1, ..q("user", false, false, false, "") }).unwrap();
         assert!(capped.truncated && capped.matches.len() == 1);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A new repository in WSL's default distribution, as a Windows path, with an executable file,
+    /// a symlink and a README committed. None without WSL or git in it.
+    pub(crate) fn wsl_repo() -> Option<PathBuf> {
+        const SETUP: &str = "set -e; d=$(mktemp -d); cd \"$d\"; git init -q -b main; \
+            git config user.name Test; git config user.email test@example.com; git config commit.gpgsign false; \
+            printf '#!/bin/sh\\necho \"hi there\"\\n' > run.sh; chmod +x run.sh; printf 'hello\\n' > README.md; \
+            ln -s README.md link; git add .; git commit -q -m init; wslpath -w \"$d\"";
+        let mut cmd = Command::new(crate::shell::wsl_exe());
+        cmd.args(["--exec", "sh", "-c", SETUP]).env("WSL_UTF8", "1");
+        let out = output_within(cmd, Duration::from_secs(60)).ok()??;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && path.starts_with(r"\\")).then(|| PathBuf::from(path))
+    }
+
+    /// Removes a folder `wsl_repo` made (or one next to it).
+    pub(crate) fn wsl_remove(path: &Path) {
+        if let Some(w) = WslFolder::of(&path.to_string_lossy()).filter(|w| w.linux.starts_with("/tmp/")) {
+            let _ = Command::new(crate::shell::wsl_exe()).args(["-d", &w.distro, "--exec", "rm", "-rf", "--", &w.linux]).output();
+        }
+    }
+
+    #[test]
+    fn real_wsl_repository() {
+        let Some(repo) = wsl_repo() else { return };
+        fs::write(repo.join("README.md"), "hello\nworld\n").unwrap();
+        fs::write(repo.join("new.txt"), "x\n").unwrap();
+
+        // Windows' git would also list run.sh (its mode) and link (a symlink it can't read).
+        let c = changes(&repo, "HEAD").unwrap().unwrap();
+        let files: Vec<_> = c.files.iter().map(|f| (f.path.as_str(), f.state, f.added, f.removed)).collect();
+        assert_eq!(files, [("new.txt", FileState::Untracked, Some(1), Some(0)), ("README.md", FileState::Modified, Some(1), Some(0))]);
+        assert_eq!(c.branch.as_deref(), Some("main"));
+        let st = status(&repo).unwrap().unwrap();
+        assert_eq!((st.branch.as_deref(), st.changes.len(), st.outside_changes, st.busy), (Some("main"), 0, true, false));
+        assert_eq!(hunks(&repo, "README.md", None, "HEAD").unwrap(), [Hunk { old_start: 1, old_count: 0, new_start: 2, new_count: 1 }]);
+        assert!(file_at(&repo, "run.sh", "HEAD").unwrap().is_some());
+        assert!(!Git::new(&repo, false).unwrap().busy());
+
+        // The query reaches Linux as it is, quotes and all.
+        let q = SearchQuery { query: "\"hi there\"".into(), case_sensitive: true, word: false, regex: false, include: String::new(), max: 10 };
+        let found: Vec<_> = search(&repo, &q).unwrap().matches.into_iter().map(|m| (m.path, m.line)).collect();
+        assert_eq!(found, [("run.sh".to_string(), 2)]);
+        wsl_remove(&repo);
     }
 }
