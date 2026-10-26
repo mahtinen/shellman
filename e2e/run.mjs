@@ -68,6 +68,11 @@ if (phase === 'main') {
     assert((await ev(`${remember}.checked`)) === false, 'Remember is off by default');
     await ev(`(() => { const r = ${remember}; r.checked = true; r.dispatchEvent(new Event('change')); return true; })()`);
     await shot(path.join(OUT, '02-session-dialog.png'));
+    // A stray click outside the dialog keeps it, and what was typed.
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await c.send('Input.dispatchMouseEvent', { type, x: 5, y: 5, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+    }
+    assert(await ev(`document.querySelector('.dialog input.input')?.value === 'Shellman repo'`), 'a click outside closed the dialog');
     await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Open').click()`);
     await waitFor(`!document.querySelector('.dialog') && __t.ws.tabs.length === 1`, 5000, 'dialog closed + tab opened');
     assert((await ev(`document.querySelectorAll('.session-row').length`)) === 1, 'sidebar row missing');

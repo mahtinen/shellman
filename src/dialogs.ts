@@ -45,10 +45,8 @@ export function dialog(opts: DialogOptions): { close: () => void; el: HTMLElemen
     h('div', { class: 'dialog-body' }, ...(Array.isArray(opts.body) ? opts.body : [opts.body])),
     footer,
   );
+  // A click outside doesn't close it: one stray click would lose what was typed. Cancel, × and Esc do.
   const overlay = h('div', { class: 'overlay' }, box);
-  overlay.addEventListener('pointerdown', (e) => {
-    if (e.target === overlay) close();
-  });
 
   let closed = false;
   const close = () => {
