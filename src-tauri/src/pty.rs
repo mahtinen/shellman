@@ -8,7 +8,7 @@
 //!   pseudoconsole is closed, so this is what lets the reader finish.
 
 use crate::connect::{self, Connection};
-use crate::shell::{build_launch, ShellKind, ShellProfile};
+use crate::shell::{self, build_launch, ShellKind, ShellProfile, WslClaude, TERMINAL_ENV};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -16,8 +16,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 struct Session {
@@ -30,7 +30,43 @@ struct Session {
     busy_check: BusyCheck,
     /// Git Bash's `ps.exe`, which still knows a program's parent when Windows doesn't.
     msys_ps: Option<PathBuf>,
+    /// Where a Claude Code started in this terminal keeps its records; none for connections.
+    claude: Option<ClaudeHome>,
+    /// The Claude Code process found in this terminal before, as (pid, start time).
+    claude_proc: Mutex<Option<(u32, u64)>>,
 }
+
+/// Where Claude Code keeps `sessions\<pid>.json` for each one that runs. Only a Claude started in
+/// the terminal's folder (or a worktree inside it, `claude -w`) counts: one typed by hand elsewhere
+/// couldn't be resumed there.
+enum ClaudeHome {
+    /// On Windows: Claude's config folder.
+    Windows { dir: PathBuf, cwd: String },
+    /// Inside WSL, where Windows can't see which processes belong to the terminal, so it passes
+    /// `SHELLMAN_TERMINAL=<marker>` along. Where Claude keeps its files is asked from WSL.
+    Wsl { program: String, args: Vec<String>, cwd: String, marker: String },
+}
+
+/// WSL's answers by (wsl.exe, its arguments, folder), for all terminals: asking runs the user's
+/// `~/.bashrc`. A question that failed is asked again after a minute.
+type WslAnswers = HashMap<(String, Vec<String>, String), Result<WslClaude, Instant>>;
+static WSL_CLAUDE: LazyLock<Mutex<WslAnswers>> = LazyLock::new(Default::default);
+
+fn wsl_claude_home(program: &str, args: &[String], cwd: &str) -> Option<WslClaude> {
+    let key = (program.to_string(), args.to_vec(), cwd.to_string());
+    match WSL_CLAUDE.lock().unwrap().get(&key) {
+        Some(Ok(wsl)) => return Some(wsl.clone()),
+        Some(Err(at)) if at.elapsed() < Duration::from_secs(60) => return None,
+        _ => {}
+    }
+    // Not holding the lock meanwhile: WSL may take a while to answer.
+    let answer = shell::ask_wsl_claude(program, args, cwd);
+    WSL_CLAUDE.lock().unwrap().insert(key, answer.clone().ok_or_else(Instant::now));
+    answer
+}
+
+/// Looks up the conversation of the Claude Code in one terminal, away from the IPC thread.
+pub struct ClaudeFinder(Arc<Session>);
 
 /// How to tell whether a terminal's shell is running a program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,8 +211,25 @@ impl PtyManager {
             cmd.env(k, v);
         }
         for (k, v) in &req.env {
-            cmd.env(k, v);
+            // The session's own WSLENV keeps the variables Shellman passes to Linux.
+            match launch.env.iter().find(|(name, _)| name == "WSLENV" && k.eq_ignore_ascii_case(name)) {
+                Some((_, ours)) => cmd.env(k, format!("{v}:{ours}")),
+                None => cmd.env(k, v),
+            }
         }
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let claude = match (&req.connection, &req.shell) {
+            (None, Some(shell)) if shell.kind == ShellKind::Wsl => {
+                // Unique among Shellman windows, too.
+                let marker = format!("{}-{id}", std::process::id());
+                cmd.env(TERMINAL_ENV, &marker);
+                let args = shell::wsl_args(shell, &req.cwd);
+                Some(ClaudeHome::Wsl { program: launch.program.clone(), args, cwd: req.cwd.clone(), marker })
+            }
+            (None, Some(_)) => claude_config_dir(&req.env).map(|dir| ClaudeHome::Windows { dir, cwd: req.cwd.clone() }),
+            _ => None,
+        };
 
         let mut child = pair
             .slave
@@ -198,9 +251,10 @@ impl PtyManager {
             pid: child.process_id(),
             busy_check,
             msys_ps: if busy_check == BusyCheck::ThroughLauncher { msys_ps(Path::new(&launch.program)) } else { None },
+            claude,
+            claude_proc: Mutex::new(None),
         });
 
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         self.sessions.lock().unwrap().insert(id, session.clone());
         let sessions = self.sessions.clone();
 
@@ -303,6 +357,11 @@ impl PtyManager {
         }
     }
 
+    /// For terminals that can run Claude Code (not connections).
+    pub fn claude_finder(&self, id: u32) -> Option<ClaudeFinder> {
+        self.get(id).filter(|s| s.claude.is_some()).map(ClaudeFinder)
+    }
+
     /// Closes the terminal and terminates its process. Returns immediately.
     pub fn kill(&self, id: u32) {
         let Some(session) = self.sessions.lock().unwrap().remove(&id) else {
@@ -373,6 +432,125 @@ fn shell_and_children(procs: &[Proc], pid: u32, through_launcher: bool) -> (Vec<
 /// Whether the shell `pid` runs a program, judged by Windows' parent links.
 pub fn busy(procs: &[Proc], pid: u32, through_launcher: bool) -> bool {
     !shell_and_children(procs, pid, through_launcher).1.is_empty()
+}
+
+/// Every process below `pid`, nearest first.
+fn descendants(procs: &[Proc], pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut next = vec![pid];
+    // Bounded, in case process ids were reused into a loop.
+    for _ in 0..16 {
+        next = next.iter().flat_map(|&p| children(procs, p)).map(|p| p.pid).filter(|p| !out.contains(p)).collect();
+        if next.is_empty() {
+            break;
+        }
+        out.extend(&next);
+    }
+    out
+}
+
+impl ClaudeFinder {
+    /// The conversation the Claude Code in this terminal shows now; `/resume` and `/clear` change it.
+    /// `known` is the one it was started with. May take a few seconds the first time in WSL.
+    pub fn find(&self, known: &str) -> Option<String> {
+        let session = &self.0;
+        match session.claude.as_ref()? {
+            ClaudeHome::Windows { dir, cwd } => windows_claude(session, dir, cwd, known),
+            ClaudeHome::Wsl { program, args, cwd, marker } => wsl_claude(&wsl_claude_home(program, args, cwd)?, marker),
+        }
+    }
+}
+
+/// Found through the shell's process tree. Git Bash loses the parent links, so there it is the
+/// process that showed `known`, remembered once seen.
+fn windows_claude(session: &Session, dir: &Path, cwd: &str, known: &str) -> Option<String> {
+    let pid = session.pid?;
+    let procs = processes();
+    let alive = |c: &ClaudeProc| procs.iter().any(|p| p.pid == c.pid && (c.start == 0 || p.start == 0 || p.start == c.start));
+    let live = claude_sessions(dir, |c| crate::worktree::within_folder(&c.cwd, cwd) && alive(c));
+    let below = descendants(&procs, pid);
+    let mut seen = session.claude_proc.lock().unwrap();
+    // The Claude closest to the shell, not one it started.
+    let found = below.iter().find_map(|pid| live.iter().find(|c| c.pid == *pid)).or_else(|| {
+        if session.busy_check != BusyCheck::ThroughLauncher {
+            return None;
+        }
+        live.iter().find(|c| *seen == Some((c.pid, c.start))).or_else(|| live.iter().find(|c| c.session_id == known))
+    })?;
+    *seen = Some((found.pid, found.start));
+    Some(found.session_id.clone())
+}
+
+/// The Claude that carries this terminal's marker, read from Linux's `/proc` through the share.
+/// If it started another Claude (which inherits the marker), the older one is the terminal's.
+fn wsl_claude(wsl: &WslClaude, marker: &str) -> Option<String> {
+    let proc_dir = |pid: u32| wsl.share.join("proc").join(pid.to_string());
+    let alive = |c: &ClaudeProc| {
+        let stat = std::fs::read_to_string(proc_dir(c.pid).join("stat")).ok();
+        stat.is_some_and(|s| c.start == 0 || linux_start_time(&s) == Some(c.start))
+    };
+    let wanted = format!("{TERMINAL_ENV}={marker}");
+    let within = |c: &ClaudeProc| c.cwd == wsl.cwd || c.cwd.starts_with(&format!("{}/", wsl.cwd.trim_end_matches('/')));
+    claude_sessions(&wsl.dir, |c| within(c) && alive(c))
+        .into_iter()
+        .filter(|c| std::fs::read(proc_dir(c.pid).join("environ")).is_ok_and(|env| env.split(|&b| b == 0).any(|v| v == wanted.as_bytes())))
+        .min_by_key(|c| c.start)
+        .map(|c| c.session_id)
+}
+
+/// When a Linux process started (clock ticks since boot), from `/proc/<pid>/stat`. The program name
+/// in brackets may contain spaces, so count the fields after it: start time is the 22nd field.
+fn linux_start_time(stat: &str) -> Option<u64> {
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// Claude Code's config folder: `CLAUDE_CONFIG_DIR` (the terminal's own, else Shellman's), or `~\.claude`.
+fn claude_config_dir(env: &HashMap<String, String>) -> Option<PathBuf> {
+    // Windows names are the same in any case.
+    let own = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR")).map(|(_, v)| v.clone());
+    let custom = own.or_else(|| std::env::var("CLAUDE_CONFIG_DIR").ok());
+    match custom.filter(|d| !d.is_empty()) {
+        Some(d) => Some(PathBuf::from(d)),
+        None => std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".claude")),
+    }
+}
+
+/// A running Claude Code and the conversation it shows.
+#[derive(Debug, PartialEq)]
+pub struct ClaudeProc {
+    pub pid: u32,
+    /// Creation time as Claude wrote it (FILETIME ticks; in Linux clock ticks since boot); 0 when missing.
+    pub start: u64,
+    pub session_id: String,
+    /// The folder it started in.
+    pub cwd: String,
+}
+
+/// One `<claude dir>\sessions\<pid>.json`, which Claude Code keeps while it runs. `claude -p`
+/// writes one too (entry point `sdk-cli`), but it isn't a conversation the terminal shows.
+pub fn parse_claude_proc(json: &str) -> Option<ClaudeProc> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    if v.get("entrypoint").and_then(|e| e.as_str()).is_some_and(|e| e.starts_with("sdk")) {
+        return None;
+    }
+    Some(ClaudeProc {
+        pid: u32::try_from(v.get("pid")?.as_u64()?).ok()?,
+        start: v.get("procStart").and_then(|s| s.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0),
+        session_id: v.get("sessionId")?.as_str()?.to_string(),
+        cwd: v.get("cwd").and_then(|c| c.as_str()).unwrap_or_default().to_string(),
+    })
+}
+
+/// The Claude Code processes that are running now. A file left behind by one that crashed is
+/// skipped (`alive` is false: its pid is gone, or belongs to a process started at another time).
+fn claude_sessions(dir: &Path, alive: impl Fn(&ClaudeProc) -> bool) -> Vec<ClaudeProc> {
+    let Ok(entries) = std::fs::read_dir(dir.join("sessions")) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| parse_claude_proc(&std::fs::read_to_string(e.path()).ok()?))
+        .filter(|c| alive(c))
+        .collect()
 }
 
 /// Git Bash's `ps.exe` next to (or below) the given bash.
@@ -721,6 +899,64 @@ mod tests {
         // A child whose start time can't be read is left out; an unknown parent time keeps the old behaviour.
         assert!(!busy(&[proc(50, 1, "pwsh.exe"), Proc { start: 0, ..proc(60, 50, "x.exe") }], 50, false));
         assert!(busy(&[Proc { start: 0, ..proc(50, 1, "pwsh.exe") }, proc(5, 50, "x.exe")], 50, false));
+    }
+
+    #[test]
+    fn descendants_are_found_at_any_depth() {
+        let procs = [proc(10, 1, "pwsh.exe"), proc(11, 10, "cmd.exe"), proc(12, 11, "claude.exe"), proc(13, 1, "other.exe")];
+        assert_eq!(descendants(&procs, 10), vec![11, 12]);
+        assert!(descendants(&procs, 12).is_empty());
+    }
+
+    #[test]
+    fn reads_claude_session_files() {
+        let json = r#"{"pid":27132,"sessionId":"0b3f6c1e-6a52-4c9b-9d0e-2f3a4b5c6d7e","cwd":"C:\\Projects\\app","procStart":"134375523612649951","kind":"interactive"}"#;
+        assert_eq!(
+            parse_claude_proc(json),
+            Some(ClaudeProc {
+                pid: 27132,
+                start: 134375523612649951,
+                session_id: "0b3f6c1e-6a52-4c9b-9d0e-2f3a4b5c6d7e".into(),
+                cwd: r"C:\Projects\app".into(),
+            })
+        );
+        // `claude -p` isn't a conversation on screen.
+        assert_eq!(parse_claude_proc(r#"{"pid":5,"sessionId":"x","entrypoint":"sdk-cli"}"#), None);
+        assert!(parse_claude_proc(r#"{"pid":5,"sessionId":"x","entrypoint":"cli"}"#).is_some());
+        assert_eq!(parse_claude_proc(r#"{"pid":5,"sessionId":"x"}"#).map(|c| c.start), Some(0));
+        assert_eq!(parse_claude_proc(r#"{"sessionId":"x"}"#), None);
+        assert_eq!(parse_claude_proc("not json"), None);
+    }
+
+    #[test]
+    fn skips_files_of_claude_processes_that_are_gone() {
+        let dir = std::env::temp_dir().join(format!("shellman-claude-test-{}", std::process::id()));
+        let sessions = dir.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let write = |pid: u32, start: u64, id: &str| {
+            let json = format!(r#"{{"pid":{pid},"sessionId":"{id}","procStart":"{start}"}}"#);
+            std::fs::write(sessions.join(format!("{pid}.json")), json).unwrap();
+        };
+        write(20, 20, "live");
+        write(21, 5, "pid reused by a later process");
+        write(22, 22, "exited");
+        std::fs::write(sessions.join("20.key"), "{}").unwrap();
+        let procs = [proc(20, 1, "claude.exe"), proc(21, 1, "node.exe")];
+        let alive = |c: &ClaudeProc| procs.iter().any(|p| p.pid == c.pid && p.start == c.start);
+        let ids: Vec<String> = claude_sessions(&dir, alive).into_iter().map(|c| c.session_id).collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(ids, vec!["live"]);
+        // A folder without Claude's files (Claude never ran) is no error.
+        assert!(claude_sessions(&dir, |_| true).is_empty());
+    }
+
+    #[test]
+    fn reads_linux_process_start_time() {
+        let stat = "3133 (claude) S 3020 3133 3020 34816 3133 4194560 1 2 3 4 5 6 7 8 20 0 12 0 30449 1 2";
+        assert_eq!(linux_start_time(stat), Some(30449));
+        // The program name may contain spaces and brackets.
+        assert_eq!(linux_start_time("7 (a) b (c)) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 42 1"), Some(42));
+        assert_eq!(linux_start_time("garbage"), None);
     }
 
     #[test]

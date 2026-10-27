@@ -122,10 +122,12 @@ Tips:
   terminal bell (`/config`). Shellman then marks the tab and flashes the taskbar when Shellman isn't focused.
 - Use plain `claude` (options like `--model` are fine) as a session's startup command. Shellman starts each
   terminal with its own conversation (`--session-id`) and resumes exactly that one after a restart, Restart
-  or Switch shell (`--resume`). A conversation that was never used starts fresh. `claude --continue` would
-  instead make every terminal in the folder open the same, most recent conversation.
-- Not tracked: `claude` typed by hand, startup prompts (`claude "fix the bug"`), `-p`, subcommands, and
-  switching conversations inside a tab with `/resume`.
+  or Switch shell (`--resume`). Switching conversations inside the tab with `/resume` or `/clear` is followed,
+  so the one on screen is the one that comes back. A conversation that was never used starts fresh.
+  `claude --continue` would instead make every terminal in the folder open the same, most recent conversation.
+- Not tracked: sessions whose startup command isn't plain `claude`, such as startup prompts
+  (`claude "fix the bug"`), `-p` and subcommands. In WSL, `/resume` is followed when Claude Code is installed inside
+  WSL (not a Windows `claude.exe` run from there).
 
 </details>
 

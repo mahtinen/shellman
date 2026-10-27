@@ -221,6 +221,8 @@ export const api = {
   kill: (id: number) => invoke<void>('pty_kill', { id }),
   killAll: () => invoke<void>('pty_kill_all'),
   hasChildren: (id: number) => invoke<boolean>('pty_has_children', { id }),
+  /** The conversation the Claude Code in the terminal shows now (`known` is the one it was started with). */
+  claudeSession: (id: number, known: string) => invoke<string | null>('pty_claude_session', { id, known }),
   listShells: () => invoke<ShellProfile[]>('list_shells'),
   /** The WSL home folder as a Windows path (\\wsl.localhost\Ubuntu\home\me). May start WSL. */
   wslHome: (shell: ShellProfile) => invoke<string>('wsl_home', { shell }),

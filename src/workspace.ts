@@ -1024,6 +1024,11 @@ export class Workspace implements PaneHost, RequestHost {
     return all.filter((_, i) => flags[i]);
   }
 
+  /** Has every Claude terminal note the conversation it shows now (before the last save on quit), within 2 s. */
+  async followClaude(): Promise<void> {
+    await Promise.all([...this.panes.values()].filter(isTerminal).map((p) => p.followClaude(2000)));
+  }
+
   applySettings(): void {
     for (const p of this.panes.values()) p.applySettings(store.settings);
     this.refreshGpu();

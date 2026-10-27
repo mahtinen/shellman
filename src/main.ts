@@ -570,6 +570,7 @@ class App {
       );
       if (!ok) return;
     }
+    await this.workspace.followClaude();
     await this.saveWorkspace(true);
     await store.flush();
     const live = [...this.workspace.panes.values()].filter((p) => isTerminal(p) && p.isRunning) as Pane[];
@@ -1453,6 +1454,7 @@ class App {
           }
         }
       }
+      await this.workspace.followClaude();
       await this.saveWorkspace(true);
       await store.flush();
       // A downloaded update is installed on the way out; the next start runs the new version.

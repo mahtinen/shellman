@@ -29,7 +29,10 @@ SHELLMAN_EXE="$CARGO_TARGET_DIR/release/shellman.exe" npm run e2e
 ```
 
 e2e uses a throwaway profile (`SHELLMAN_CONFIG_DIR`) and its own WebView2 profile. Set
-`SSH_AUTH_SOCK=\\.\pipe\shellman-e2e-no-agent` to test a machine without an SSH agent. SSH tests only use
+`SSH_AUTH_SOCK=\\.\pipe\shellman-e2e-no-agent` to test a machine without an SSH agent. The WSL Claude step needs a
+folder Claude inside WSL already trusts: `SHELLMAN_E2E_WSL_CLAUDE_DIR=\\wsl.localhost\<distro>\<folder>` (else it
+is skipped). Unset this session's `CLAUDE_CODE_*` / `CLAUDECODE` variables first: they stop the Claude that e2e
+starts from writing its session files. SSH tests only use
 127.0.0.1 (a closed port, or a small fake server in `e2e/run.mjs`).
 
 ## Layout

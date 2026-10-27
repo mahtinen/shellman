@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const CMD_ENV: &str = "SHELLMAN_CMD";
+/// Set (by pty.rs) to a value unique to each WSL terminal, to find the programs running in it.
+pub const TERMINAL_ENV: &str = "SHELLMAN_TERMINAL";
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -135,16 +137,13 @@ pub fn build_launch(
             }
         }
         ShellKind::Wsl => {
-            // wsl.exe starts the default distribution; a folder inside another one needs `-d`.
-            let picks_distro = args.iter().any(|a| matches!(a.as_str(), "-d" | "--distribution" | "--distribution-id"));
-            if let Some(distro) = wsl_distro(cwd).filter(|_| !picks_distro) {
-                args.push("-d".into());
-                args.push(distro);
-            }
+            args = wsl_args(profile, cwd);
             // `--cd` understands Windows paths and translates them.
             args.push("--cd".into());
             args.push(cwd.into());
-            let mut wslenv: Vec<&str> = Vec::new();
+            // The terminal's marker reaches Linux, so its Claude can be told apart.
+            let terminal = format!("{TERMINAL_ENV}/u");
+            let mut wslenv: Vec<&str> = vec![&terminal];
             if integration {
                 env.push(("PROMPT_COMMAND".into(), WSL_INTEGRATION.into()));
                 wslenv.push("PROMPT_COMMAND/u");
@@ -159,9 +158,7 @@ pub fn build_launch(
                     format!("eval \"${CMD_ENV}\"; unset {CMD_ENV}; exec bash -li"),
                 ]);
             }
-            if !wslenv.is_empty() {
-                env.push(("WSLENV".into(), with_wslenv(&wslenv)));
-            }
+            env.push(("WSLENV".into(), with_wslenv(&wslenv)));
         }
         ShellKind::Other => {
             typed_input = command.map(|c| format!("{c}\r"));
@@ -174,6 +171,18 @@ pub fn build_launch(
         env,
         typed_input,
     }
+}
+
+/// wsl.exe's arguments that choose the distribution: the profile's own, or `-d` for a folder
+/// inside a distribution other than the default one.
+pub fn wsl_args(profile: &ShellProfile, cwd: &str) -> Vec<String> {
+    let mut args = profile.args.clone();
+    let picks_distro = args.iter().any(|a| matches!(a.as_str(), "-d" | "--distribution" | "--distribution-id"));
+    if let Some(distro) = wsl_distro(cwd).filter(|_| !picks_distro) {
+        args.push("-d".into());
+        args.push(distro);
+    }
+    args
 }
 
 /// The distribution a folder inside WSL belongs to: `Ubuntu` for `\\wsl.localhost\Ubuntu\home`
@@ -279,6 +288,42 @@ pub fn wsl_home(profile: &ShellProfile) -> Result<String, String> {
     } else {
         "WSL did not report its home folder".into()
     })
+}
+
+/// Where Claude Code started in a WSL terminal keeps its files, read through the distribution's share.
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) struct WslClaude {
+    /// `\\wsl.localhost\Ubuntu`, where Linux's `/proc` is readable too.
+    pub share: PathBuf,
+    /// Claude's config folder: `\\wsl.localhost\Ubuntu\home\me\.claude`.
+    pub dir: PathBuf,
+    /// The terminal's folder as Linux sees it, with links resolved, as Claude writes its `cwd`.
+    pub cwd: String,
+}
+
+/// Tagged lines, since `~/.bashrc` may print things of its own. The share is `\\wsl.localhost\…`, or
+/// `\\wsl$\…` on older Windows 10.
+const WSL_CLAUDE_QUERY: &str = r#"printf '\nshellman-root=%s\nshellman-claude=%s\nshellman-cwd=%s\n' "$(wslpath -w /)" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$(pwd -P)""#;
+
+/// Asks WSL where Claude keeps its files, the way a WSL terminal in `cwd` starts its command
+/// (`bash -lic`, so a `CLAUDE_CONFIG_DIR` from `~/.bashrc` counts). None when WSL doesn't answer.
+pub(crate) fn ask_wsl_claude(program: &str, args: &[String], cwd: &str) -> Option<WslClaude> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args).args(["--cd", cwd, "-e", "bash", "-lic", WSL_CLAUDE_QUERY]);
+    cmd.env("WSL_UTF8", "1");
+    let out = crate::proc::output_within(cmd, std::time::Duration::from_secs(15)).ok()??;
+    parse_wsl_claude(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_wsl_claude(out: &str) -> Option<WslClaude> {
+    let out = out.replace('\0', "");
+    let value = |tag: &str| out.lines().rev().find_map(|l| l.trim_end_matches('\r').strip_prefix(tag).map(str::to_string));
+    let (root, dir, cwd) = (value("shellman-root=")?, value("shellman-claude=")?, value("shellman-cwd=")?);
+    // Also rules out anything but a plain distribution's share.
+    let folder = WslFolder::of(&root)?;
+    let dir = dir.trim_end_matches('/');
+    (folder.linux == "/" && dir.starts_with('/') && cwd.starts_with('/')).then_some(())?;
+    Some(WslClaude { dir: PathBuf::from(folder.windows_path(dir)), share: PathBuf::from(root.trim_end_matches('\\')), cwd })
 }
 
 pub(crate) fn find_on_path(exe: &str) -> Option<PathBuf> {
@@ -455,7 +500,37 @@ mod tests {
         assert_eq!(l.args[..2], ["--cd", "C:\\Projects\\x"]);
         assert!(l.args.contains(&"-lic".to_string()));
         let wslenv = &l.env.iter().find(|(k, _)| k == "WSLENV").unwrap().1;
-        assert!(wslenv.ends_with("PROMPT_COMMAND/u:SHELLMAN_CMD/u"));
+        assert!(wslenv.ends_with("SHELLMAN_TERMINAL/u:PROMPT_COMMAND/u:SHELLMAN_CMD/u"));
+        // The terminal's marker reaches Linux even without a command or shell integration.
+        let l = build_launch(&p(ShellKind::Wsl), "C:\\Projects\\x", None, false);
+        assert!(l.env.iter().any(|(k, v)| k == "WSLENV" && v.ends_with("SHELLMAN_TERMINAL/u")));
+    }
+
+    #[test]
+    fn reads_where_claude_keeps_its_files_in_wsl() {
+        // ~/.bashrc output around the answer is ignored.
+        let out = "Welcome!\n\nshellman-root=\\\\wsl.localhost\\Ubuntu\\\nshellman-claude=/home/me/.claude/\nshellman-cwd=/mnt/c/Projects/app\n";
+        assert_eq!(
+            parse_wsl_claude(out),
+            Some(WslClaude {
+                share: r"\\wsl.localhost\Ubuntu".into(),
+                dir: r"\\wsl.localhost\Ubuntu\home\me\.claude".into(),
+                cwd: "/mnt/c/Projects/app".into(),
+            })
+        );
+        // CLAUDE_CONFIG_DIR on a Windows drive is read from there.
+        let out = "shellman-root=\\\\wsl.localhost\\Debian\\\r\nshellman-claude=/mnt/c/Users/me/claude\r\nshellman-cwd=/home/me\r\n";
+        assert_eq!(parse_wsl_claude(out).unwrap().dir, PathBuf::from(r"C:\Users\me\claude"));
+        // Older Windows 10 only has \\wsl$.
+        let out = "shellman-root=\\\\wsl$\\Ubuntu\\\nshellman-claude=/home/me/.claude\nshellman-cwd=/home/me\n";
+        let wsl = parse_wsl_claude(out).unwrap();
+        assert_eq!((wsl.share, wsl.dir), (PathBuf::from(r"\\wsl$\Ubuntu"), PathBuf::from(r"\\wsl$\Ubuntu\home\me\.claude")));
+        // Missing or odd answers: nothing to read.
+        assert_eq!(parse_wsl_claude(""), None);
+        assert_eq!(parse_wsl_claude("shellman-root=\nshellman-claude=/home/me/.claude\nshellman-cwd=/"), None);
+        assert_eq!(parse_wsl_claude("shellman-root=C:\\\nshellman-claude=/home/me/.claude\nshellman-cwd=/"), None);
+        assert_eq!(parse_wsl_claude("shellman-root=\\\\wsl.localhost\\Ubuntu\\home\nshellman-claude=/home/me/.claude\nshellman-cwd=/"), None);
+        assert_eq!(parse_wsl_claude("shellman-root=\\\\wsl.localhost\\Ubuntu\\\nshellman-claude=.claude\nshellman-cwd=/"), None);
     }
 
     #[test]

@@ -5,7 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { api, type PtyMessage } from './api';
-import { claudeCommand, isTrackableClaude } from './claude';
+import { claudeCommand, isTrackableClaude, isUuid } from './claude';
 import { uid } from './config';
 import { connectionError, connectionLabel, connectionRequest, connectionTarget, needsLegacyAlgorithms } from './connection';
 import { fileUriPath, findPathLinks, resolvePath } from './fileLinks';
@@ -116,6 +116,10 @@ export class Pane implements WorkspacePane {
   private loginAsked = false;
   /** Paths printed in the output that were checked: are they files? */
   private readonly knownFiles = new Map<string, { file: boolean; at: number }>();
+  /** A look-up of the Claude conversation shown now is due (see followClaude). */
+  private claudeTimer: number | undefined;
+  /** The terminal title without Claude's spinner, when the conversation was last looked up. */
+  private claudeTopic = '';
 
   constructor(spec: LaunchSpec, host: PaneHost) {
     // A terminal that starts Claude gets its own conversation (kept when it is restored or restarted).
@@ -173,6 +177,7 @@ export class Pane implements WorkspacePane {
       this.title = this.isShellPathTitle(t) ? '' : t;
       this.updateHeader();
       host.onInfoChange(this);
+      this.queueFollowClaude();
     });
     this.term.onBell(() => host.onBell(this));
     this.term.onSelectionChange(() => {
@@ -285,6 +290,34 @@ export class Pane implements WorkspacePane {
     } catch (err) {
       if (gen === this.generation) this.fail(String(err));
     }
+  }
+
+  /**
+   * Claude titles the terminal with the conversation's topic, which changes on `/resume`, so look the
+   * conversation up then. The spinner in front changes all the time and doesn't count. Restart and
+   * quitting look again, for switches that keep the title (`/clear`).
+   */
+  private queueFollowClaude(): void {
+    const topic = this.title.replace(/^[^\p{L}\p{N}]+/u, '');
+    if (!this.spec.claudeId || topic === this.claudeTopic) return;
+    this.claudeTopic = topic;
+    clearTimeout(this.claudeTimer);
+    this.claudeTimer = window.setTimeout(() => void this.followClaude(), 1000);
+  }
+
+  /**
+   * Keeps the conversation this terminal shows now, so it is the one that comes back. `/resume` and
+   * `/clear` inside Claude switch to another conversation. Gives up after `limitMs`, if given.
+   */
+  async followClaude(limitMs?: number): Promise<void> {
+    const { claudeId } = this.spec;
+    const ptyId = this.ptyId;
+    if (!claudeId || ptyId === null || this.state !== 'running') return;
+    const lookup = api.claudeSession(ptyId, claudeId).catch(() => null);
+    const now = limitMs === undefined ? await lookup : await Promise.race([lookup, new Promise<null>((r) => setTimeout(() => r(null), limitMs))]);
+    if (ptyId !== this.ptyId || !isUuid(now) || now === this.spec.claudeId) return;
+    this.spec = { ...this.spec, claudeId: now, claudeStarted: true };
+    this.host.onInfoChange(this);
   }
 
   /** Starts ssh.exe / telnet.exe for the pane's connection. */
@@ -401,6 +434,14 @@ export class Pane implements WorkspacePane {
   }
 
   restart(): void {
+    if (!this.spec.claudeId || this.state !== 'running') return this.restartNow();
+    // Claude may have switched conversations since the last look: start again with the one it shows.
+    // Not waiting long, as the first look in WSL has to ask WSL.
+    void this.followClaude(1000).finally(() => this.restartNow());
+  }
+
+  private restartNow(): void {
+    if (this.disposed) return;
     if (this.ptyId !== null) void api.kill(this.ptyId);
     this.ptyId = null;
     this.pendingInput = [];
@@ -783,6 +824,7 @@ export class Pane implements WorkspacePane {
     this.disposed = true;
     this.generation++;
     clearTimeout(this.resizeTimer);
+    clearTimeout(this.claudeTimer);
     this.resizeObserver.disconnect();
     if (this.ptyId !== null) void api.kill(this.ptyId);
     this.ptyId = null;
