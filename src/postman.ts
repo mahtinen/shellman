@@ -233,5 +233,5 @@ export function importEnvironment(raw: unknown): EnvironmentImport {
     if (v.type === 'secret' || looksSecretName(key)) personal.push({ name: key, value: str(v.value) });
     else variables[key] = str(v.value);
   }
-  return { file: environmentFileName(name), name, doc: { variables, protected: /prod/i.test(name), color: '' }, personal };
+  return { file: environmentFileName(name), name, doc: { variables, choices: {}, protected: /prod/i.test(name), color: '' }, personal };
 }

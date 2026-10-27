@@ -9,7 +9,7 @@ import { moveFolded } from './config';
 import { parseCurl } from './curl';
 import { confirmDialog, dialog, promptDialog, toast } from './dialogs';
 import { h } from './dom';
-import { localEnvFile, parseDotenv, setDotenv, type DotenvEntry } from './dotenv';
+import { isLocalEnvFile, localEnvFile, parseDotenv, setDotenv, type DotenvEntry } from './dotenv';
 import type { MenuEntry } from './menu';
 import { importCollection, importEnvironment, importGlobals, isPostmanCollection, isPostmanEnvironment, isPostmanGlobals } from './postman';
 import {
@@ -25,6 +25,7 @@ import {
 } from './requestFile';
 import type { RequestPane } from './requestPane';
 import { store } from './store';
+import { choiceLabel, displayValue } from './variables';
 import { editVariables } from './variablesDialog';
 import { gitSync } from './gitSync';
 import type { Group, SplitPlacement } from './types';
@@ -342,7 +343,7 @@ export async function createEnvironment(group: Group): Promise<void> {
   const first = c.environments.values().next().value;
   // Same variable names as an existing environment, so the values are easy to fill in.
   const variables = Object.fromEntries(Object.keys(first?.variables ?? { baseUrl: '' }).map((k) => [k, '']));
-  await api.collectionWrite(c.folder, `environments/${file}.json`, 'environment', serializeEnvironment({ variables, protected: /prod/i.test(file), color: '' }));
+  await api.collectionWrite(c.folder, `environments/${file}.json`, 'environment', serializeEnvironment({ variables, choices: {}, protected: /prod/i.test(file), color: '' }));
   store.update((cfg) => {
     const g = cfg.groups.find((x) => x.id === group.id);
     if (g) g.env = file;
@@ -361,11 +362,24 @@ export async function toggleProtected(group: Group, env: string): Promise<void> 
   void gitSync.changed(group.id, [`environments/${env}.json`]);
 }
 
-/** The environment choices of a group, for its pill, the status bar and its menu. */
+/** The values a variable can be switched to, the current one marked. */
+export function choiceEntries(group: Group, name: string): MenuEntry[] {
+  const v = collections.variables(group).get(name);
+  if (!v?.choices) return [];
+  // A personal file's choices are secret; a shared variable's only its 1Password references (which show).
+  const secret = isLocalEnvFile(v.source);
+  return v.choices.map((c) => ({
+    label: `${c.value === v.value ? '● ' : ''}${choiceLabel(c, secret, store.settings.hideSecrets)}`,
+    action: () => void collections.choose(group, name, c.value).catch((e) => toast(String(e), 'error')),
+  }));
+}
+
+/** The environment choices of a group, for its pill, the status bar and its menu; then its variables with choices. */
 export function environmentEntries(group: Group): MenuEntry[] {
   const c = collections.get(group.id);
   const current = collections.env(group);
   const envs = [...(c?.environments.entries() ?? [])];
+  const choosable = [...collections.variables(group).values()].filter((v) => v.choices);
   const choose = (name: string) =>
     store.update((cfg) => {
       const g = cfg.groups.find((x) => x.id === group.id);
@@ -374,6 +388,8 @@ export function environmentEntries(group: Group): MenuEntry[] {
   return [
     ...envs.map(([name, doc]): MenuEntry => ({ label: `${name === current ? '● ' : ''}${name}${doc.protected ? ' (protected)' : ''}`, action: () => choose(name) })),
     ...(envs.length ? (['separator'] as MenuEntry[]) : []),
+    ...choosable.map((v): MenuEntry => ({ label: `${v.name}: ${displayValue(v, store.settings.hideSecrets) || '(empty)'}`, submenu: choiceEntries(group, v.name) })),
+    ...(choosable.length ? (['separator'] as MenuEntry[]) : []),
     { label: 'Edit variables…', icon: 'edit', disabled: !c, action: () => editVariables(group) },
     { label: 'New environment…', icon: 'plus', action: () => void createEnvironment(group) },
     { label: current ? `Protect "${current}"` : 'Protect', disabled: !current, action: () => void toggleProtected(group, current) },

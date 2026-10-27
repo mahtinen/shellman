@@ -217,6 +217,11 @@ Ctrl+Enter, save with Ctrl+S.
   the app (Variables, or click one in the URL line or the list under each section): shared values in `.env` and
   `environments/<env>.json` (pick the environment next to Send or on the group; one marked `"protected": true`
   asks before anything but GET).
+- **Choices.** A variable can have several values to switch between (a tenant, a test user, an API version),
+  each with a short note on when to use it; the note is only shown, never sent. Switch from the environment
+  menu next to Send, with Ctrl+click on the variable, or from the list under each section. The choices are
+  shared with the team; which one you use is your own and never changes the shared files (in `.env` they are
+  `# @choice value -- note` lines above the variable, so other tools read the first one as its value).
 - **Secrets.** Each variable applies to every environment or one, and is secret or not: normal values are shared
   through git (`.env`, `environments/<env>.json`), secret ones stay on your computer in `.env.local` /
   `.env.<env>.local`, which git must ignore (Shellman checks and offers to add them to `.gitignore`). A value can

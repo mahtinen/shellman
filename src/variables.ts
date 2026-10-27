@@ -8,7 +8,7 @@
  * through the request text, the command line or Shellman's logs.
  */
 import type { HttpBody, HttpHeader, HttpRequest } from './api';
-import { isLocalEnvFile, localEnvFile, parseDotenv, removeDotenv, setDotenv } from './dotenv';
+import { isLocalEnvFile, localEnvFile, parseDotenv, removeDotenv, setDotenv, type Choice } from './dotenv';
 import { serializeEnvironment, type EnvironmentDoc, type RequestDoc } from './requestFile';
 
 export interface Variable {
@@ -17,6 +17,8 @@ export interface Variable {
   /** The file it comes from: `.env`, `environments/dev.json`, `.env.local`, … */
   source: string;
   secret: boolean;
+  /** Values it can be switched between; `value` is the chosen one. */
+  choices?: Choice[];
 }
 
 export interface VariableFiles {
@@ -24,6 +26,10 @@ export interface VariableFiles {
   env: string;
   /** Variables of `environments/<env>.json`. */
   environment: Record<string, string>;
+  /** Their choices. */
+  choices?: Record<string, Choice[]>;
+  /** The value each variable with choices is switched to (the group's `picks`). */
+  picks?: Record<string, string>;
   /** `.env`, `.env.local`, `.env.<environment>.local` (all of them; the right ones are picked here). */
   dotenv: { path: string; text: string }[];
 }
@@ -46,13 +52,18 @@ const VAR = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g;
 
 export function collectVariables(files: VariableFiles): Map<string, Variable> {
   const vars = new Map<string, Variable>();
-  const set = (name: string, value: string, source: string, personal: boolean) => vars.set(name, { name, value, source, secret: personal || isOpRef(value) });
+  // The choice of a shared variable is kept in the group; a personal file holds its own.
+  const set = (name: string, value: string, source: string, personal: boolean, choices: Choice[] = []) => {
+    const pick = files.picks?.[name];
+    if (!personal && pick !== undefined && choices.some((c) => c.value === pick)) value = pick;
+    vars.set(name, { name, value, source, secret: personal || isOpRef(value), ...(choices.length ? { choices } : {}) });
+  };
   const file = (name: string) => files.dotenv.find((f) => f.path.toLowerCase() === name.toLowerCase());
-  for (const e of parseDotenv(file('.env')?.text ?? '')) set(e.name, e.value, '.env', false);
-  for (const [k, v] of Object.entries(files.environment)) set(k, v, `environments/${files.env}.json`, false);
+  for (const e of parseDotenv(file('.env')?.text ?? '')) set(e.name, e.value, '.env', false, e.choices);
+  for (const [k, v] of Object.entries(files.environment)) set(k, v, `environments/${files.env}.json`, false, files.choices?.[k]);
   for (const name of ['.env.local', files.env ? localEnvFile(files.env) : '']) {
     const f = name && isLocalEnvFile(name) ? file(name) : undefined;
-    if (f) for (const e of parseDotenv(f.text)) set(e.name, e.value, f.path, true);
+    if (f) for (const e of parseDotenv(f.text)) set(e.name, e.value, f.path, true, e.choices);
   }
   return vars;
 }
@@ -62,6 +73,17 @@ export function displayValue(v: Variable, hideSecrets: boolean): string {
   const ref = opRef(v.value);
   if (ref) return ref;
   return hideSecrets && v.secret ? '••••••••' : v.value;
+}
+
+/** The choice a variable is switched to, or undefined (no choices, or a value that isn't one). */
+export function currentChoice(v: Variable): Choice | undefined {
+  return v.choices?.find((c) => c.value === v.value);
+}
+
+/** A choice as a list shows it: its value (hidden when secret) and what it is for. */
+export function choiceLabel(c: Choice, secret: boolean, hideSecrets: boolean): string {
+  const value = hideSecrets && secret && !isOpRef(c.value) ? '••••••••' : c.value || '(empty)';
+  return c.description ? `${value} — ${c.description}` : value;
 }
 
 /** Names of the variables `text` uses. */
@@ -103,7 +125,9 @@ export function describeVariable(name: string, vars: Map<string, Variable>, hide
   const v = vars.get(name);
   if (!v) return { kind: 'missing', title: `{{${name}}} isn't defined. Ctrl+click to add it.` };
   const note = isOpRef(v.value) ? ' (1Password, filled in when sending)' : '';
-  return { kind: v.secret ? 'secret' : 'var', title: `{{${name}}} = ${displayValue(v, hideSecrets)}${note}\nfrom ${v.source}. Ctrl+click to edit.` };
+  const about = currentChoice(v)?.description;
+  const action = v.choices ? `One of ${v.choices.length} choices: Ctrl+click to switch.` : 'Ctrl+click to edit.';
+  return { kind: v.secret ? 'secret' : 'var', title: `{{${name}}} = ${displayValue(v, hideSecrets)}${note}${about ? `\n${about}` : ''}\nfrom ${v.source}. ${action}` };
 }
 
 export interface Prepared {
@@ -297,7 +321,11 @@ export interface VarRow {
   name: string;
   value: string;
   scope: Scope;
+  /** Values to switch between; for a shared variable `value` is the first (the default). */
+  choices?: Choice[];
 }
+
+const personalScope = (scope: Scope) => scope === 'mine' || scope === 'mineEnv';
 
 /** The file a scope is kept in. */
 export function scopeFile(scope: Scope, env: string): string {
@@ -307,14 +335,15 @@ export function scopeFile(scope: Scope, env: string): string {
 /** The variables of the four files that apply to `files.env`, as editable rows. */
 export function variableRows(files: VariableFiles): VarRow[] {
   const file = (name: string) => files.dotenv.find((f) => f.path.toLowerCase() === name.toLowerCase())?.text ?? '';
+  const row = (name: string, value: string, scope: Scope, choices?: Choice[]): VarRow => ({ name, value, scope, ...(choices?.length ? { choices } : {}) });
   const fromDotenv = (text: string, scope: Scope) => {
     // A name twice in one file: the last one is what counts.
-    const map = new Map(parseDotenv(text).map((e) => [e.name, e.value]));
-    return [...map].map(([name, value]) => ({ name, value, scope }));
+    const map = new Map(parseDotenv(text).map((e) => [e.name, e]));
+    return [...map.values()].map((e) => row(e.name, e.value, scope, e.choices));
   };
   return [
     ...fromDotenv(file('.env'), 'shared'),
-    ...(files.env ? Object.entries(files.environment).map(([name, value]) => ({ name, value, scope: 'sharedEnv' as const })) : []),
+    ...(files.env ? Object.entries(files.environment).map(([name, value]) => row(name, value, 'sharedEnv', files.choices?.[name])) : []),
     ...fromDotenv(file('.env.local'), 'mine'),
     ...(files.env ? fromDotenv(file(localEnvFile(files.env)), 'mineEnv') : []),
   ];
@@ -334,6 +363,8 @@ export function checkRows(rows: VarRow[], env: string): string | null {
     if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(r.name)) return `"${r.name}" isn't a valid name: use letters, digits, _ . and -, starting with a letter or _.`;
     if (!env && (r.scope === 'sharedEnv' || r.scope === 'mineEnv')) return 'There is no environment yet: add one to keep values per environment.';
     if (rows.some((o) => o !== r && o.name === r.name && o.scope === r.scope)) return `"${r.name}" is twice in ${scopeFile(r.scope, env)}.`;
+    const twice = r.choices?.find((c, i) => r.choices!.findIndex((o) => o.value === c.value) !== i);
+    if (twice) return `"${r.name}" has the choice "${twice.value}" twice.`;
   }
   return null;
 }
@@ -343,6 +374,8 @@ export interface FileWrite {
   kind: 'rootFile' | 'environment';
   text: string;
 }
+
+const sameChoices = (a: Choice[] = [], b: Choice[] = []) => a.length === b.length && a.every((c, i) => c.value === b[i].value && c.description === b[i].description);
 
 /**
  * The files to write so that they hold `after` instead of `before`. `.env` files keep their
@@ -354,18 +387,26 @@ export function variableWrites(before: VarRow[], after: VarRow[], files: Variabl
   for (const scope of SCOPES) {
     const was = before.filter((r) => r.scope === scope);
     const now = after.filter((r) => r.scope === scope);
-    const same = was.length === now.length && was.every((r) => now.some((n) => n.name === r.name && n.value === r.value));
+    const same = was.length === now.length && was.every((r) => now.some((n) => n.name === r.name && n.value === r.value && sameChoices(n.choices, r.choices)));
     if (same) continue;
     const path = scopeFile(scope, files.env);
     const removed = was.filter((r) => !now.some((n) => n.name === r.name)).map((r) => r.name);
     if (scope === 'sharedEnv') {
-      const doc = environment ?? { variables: {}, protected: false, color: '' };
+      const doc = environment ?? { variables: {}, choices: {}, protected: false, color: '' };
       const variables = { ...doc.variables };
-      for (const name of removed) delete variables[name];
-      for (const r of now) variables[r.name] = r.value;
-      out.push({ path, kind: 'environment', text: serializeEnvironment({ ...doc, variables }) });
+      const choices = { ...doc.choices };
+      for (const name of removed) {
+        delete variables[name];
+        delete choices[name];
+      }
+      for (const r of now) {
+        variables[r.name] = r.value;
+        if (r.choices?.length) choices[r.name] = r.choices;
+        else delete choices[r.name];
+      }
+      out.push({ path, kind: 'environment', text: serializeEnvironment({ ...doc, variables, choices }) });
     } else {
-      out.push({ path, kind: 'rootFile', text: setDotenv(removeDotenv(text(path), removed), now.map(({ name, value }) => ({ name, value }))) });
+      out.push({ path, kind: 'rootFile', text: setDotenv(removeDotenv(text(path), removed), now.map(({ name, value, choices }) => ({ name, value, choices: choices ?? [] }))) });
     }
   }
   return out;
@@ -378,22 +419,60 @@ export function variableWrites(before: VarRow[], after: VarRow[], files: Variabl
  */
 export interface EditRow {
   name: string;
+  /** With choices: the chosen one. */
   value: string;
   perEnv: boolean;
   secret: boolean;
   /** Read from a personal file: stays there while secret, even as a 1Password reference (someone's
    * own reference, in place of the team's). */
   local?: boolean;
+  choices?: Choice[];
 }
 
-export function editRow(r: VarRow): EditRow {
-  const personal = r.scope === 'mine' || r.scope === 'mineEnv';
-  return { name: r.name, value: r.value, perEnv: r.scope === 'sharedEnv' || r.scope === 'mineEnv', secret: personal || isOpRef(r.value), ...(personal ? { local: true } : {}) };
+/** Its value, or all of its choices. */
+export const rowValues = (r: { value: string; choices?: Choice[] }) => (r.choices?.length ? r.choices.map((c) => c.value) : [r.value]);
+
+/** Only 1Password references (always secret, but safe to share). */
+export const onlyOpRefs = (r: { value: string; choices?: Choice[] }) => rowValues(r).every(isOpRef);
+
+/** `picks`: the group's chosen values, shown as the value of a shared variable with choices. */
+export function editRow(r: VarRow, picks: Record<string, string> = {}): EditRow {
+  const personal = personalScope(r.scope);
+  const pick = picks[r.name];
+  const value = !personal && pick !== undefined && r.choices?.some((c) => c.value === pick) ? pick : r.value;
+  return {
+    name: r.name,
+    value,
+    perEnv: r.scope === 'sharedEnv' || r.scope === 'mineEnv',
+    secret: personal || onlyOpRefs(r),
+    ...(personal ? { local: true } : {}),
+    // A copy: the editor changes it in place.
+    ...(r.choices?.length ? { choices: r.choices.map((c) => ({ ...c })) } : {}),
+  };
 }
 
 export function rowScope(r: EditRow): Scope {
-  const personal = r.secret && (!isOpRef(r.value) || !!r.local);
+  const personal = r.secret && (!onlyOpRefs(r) || !!r.local);
   return r.perEnv ? (personal ? 'mineEnv' : 'sharedEnv') : personal ? 'mine' : 'shared';
 }
 
-export const varRow = (r: EditRow): VarRow => ({ name: r.name, value: r.value, scope: rowScope(r) });
+/**
+ * The row as kept in its file. A personal file holds the chosen value; a shared one the first
+ * choice, as the default for everyone (and for other tools that read `.env`).
+ */
+export function varRow(r: EditRow): VarRow {
+  const scope = rowScope(r);
+  if (!r.choices?.length) return { name: r.name, value: r.value, scope };
+  return { name: r.name, value: personalScope(scope) ? r.value : r.choices[0].value, scope, choices: r.choices.map((c) => ({ ...c })) };
+}
+
+/** What the rows choose for shared variables with choices (the group's `picks`). */
+export function rowPicks(rows: EditRow[]): Record<string, string> {
+  const vrows = rows.map(varRow);
+  const overridden = overriddenRows(vrows);
+  const out: Record<string, string> = {};
+  rows.forEach((r, i) => {
+    if (r.choices?.length && !personalScope(vrows[i].scope) && !overridden.has(vrows[i])) out[r.name] = r.value;
+  });
+  return out;
+}

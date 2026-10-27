@@ -46,6 +46,60 @@ describe('.env files', () => {
     expect(removeDotenv('A=1\n', ['A'])).toBe('');
   });
 
+  it('reads the choices right above a variable', () => {
+    const text = [
+      '# Which tenant to test with',
+      '# @choice acme -- Demos and screenshots',
+      '#@choice "globex eu" -- EU data -- for GDPR tests',
+      '# @choice ""',
+      'TENANT=acme',
+      '# @choice orphan -- a blank line comes after it',
+      '',
+      'OTHER=1',
+    ].join('\n');
+    expect(parseDotenv(text)).toEqual([
+      {
+        name: 'TENANT',
+        value: 'acme',
+        choices: [
+          { value: 'acme', description: 'Demos and screenshots' },
+          { value: 'globex eu', description: 'EU data -- for GDPR tests' },
+          { value: '', description: '' },
+        ],
+      },
+      { name: 'OTHER', value: '1' },
+    ]);
+  });
+
+  it('keeps any characters in choices', () => {
+    const odd = ['#', '@', '# @choice x', '--', '-- y', 'a -- b', 'a--b', '"', '"quoted"', "it's", '`', '\\', 'C:\\Users\\me', 'tab\there', ' lead', 'trail ', '=', 'a=b#c', 'ä€😀', '{{x}}', '', '$HOME', '%PATH%', '\\n', 'line\nbreak', '<b>&amp;</b>'];
+    const notes = ['#', '@choice', '-- leading dashes', 'a -- b', '"quotes" and \'apostrophes\'', '\\', 'ä€😀', '=', '', '  spaces  '];
+    const choices = odd.map((value, i) => ({ value, description: notes[i % notes.length] }));
+    const back = parseDotenv(setDotenv('', [{ name: 'V', value: '#', choices }]));
+    // A note is one line, without spaces around it.
+    expect(back).toEqual([{ name: 'V', value: '#', choices: choices.map((c) => ({ ...c, description: c.description.trim() })) }]);
+  });
+
+  it('writes choices so they read the same, and keeps them when only the value changes', () => {
+    const choices = [
+      { value: 'plain', description: 'first' },
+      { value: 'with space', description: '' },
+      { value: 'a"b\\c', description: 'two\nlines' },
+      { value: '--', description: 'dashes' },
+      { value: '', description: 'empty' },
+    ];
+    const text = setDotenv('# top\nA=1\n', [{ name: 'T', value: 'plain', choices }]);
+    expect(text).toBe(
+      '# top\nA=1\n# @choice plain -- first\n# @choice "with space"\n# @choice "a\\"b\\\\c" -- two lines\n# @choice -- -- dashes\n# @choice "" -- empty\nT=plain\n',
+    );
+    expect(parseDotenv(text)[1]).toEqual({ name: 'T', value: 'plain', choices: choices.map((c) => ({ ...c, description: c.description.replace('\n', ' ') })) });
+    // A new value alone keeps the choices; new choices replace them; [] removes them.
+    expect(parseDotenv(setDotenv(text, [{ name: 'T', value: '--' }]))[1]).toMatchObject({ value: '--', choices: { length: 5 } });
+    expect(setDotenv(text, [{ name: 'T', value: 'x', choices: [{ value: 'x', description: '' }] }])).toBe('# top\nA=1\n# @choice x\nT=x\n');
+    expect(setDotenv(text, [{ name: 'T', value: 'x', choices: [] }])).toBe('# top\nA=1\nT=x\n');
+    expect(removeDotenv(text, ['T'])).toBe('# top\nA=1\n');
+  });
+
   it('knows the personal files', () => {
     expect(['.env.local', '.env.dev.local', '.env.Prod-EU.local'].every(isLocalEnvFile)).toBe(true);
     expect(['.env', '.env.example', '.env..local', 'x.env.local'].some(isLocalEnvFile)).toBe(false);

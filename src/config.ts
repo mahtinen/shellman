@@ -176,6 +176,7 @@ export function normalizeConfig(raw: unknown): Config {
         folded: [...new Set(Array.isArray(g.folded) ? g.folded.filter((f): f is string => typeof f === 'string' && f !== '') : [])],
         folder: str(g.folder).trim(),
         env: str(g.env),
+        picks: strRecord(g.picks),
         sync: oneOf(g.sync, ['off', 'manual', 'auto'] as const, 'manual'),
         syncPush: oneOf(g.syncPush, ['push', 'commit'] as const, 'push'),
         syncCheck: [-1, 0, 60, 180, 300, 600].includes(g.syncCheck as number) ? (g.syncCheck as number) : 180,
@@ -234,7 +235,7 @@ function fixParents(groups: Group[], ids: Set<string>): void {
 }
 
 export function newGroup(name: string, parentId: string | null = null, color = ''): Group {
-  return { id: uid('g-'), name, parentId, color, collapsed: false, folded: [], folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
+  return { id: uid('g-'), name, parentId, color, collapsed: false, folded: [], folder: '', env: '', picks: {}, sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
 }
 
 /** Folded request folders after `from` moved to `to` (null = deleted), so folders inside keep their state. */

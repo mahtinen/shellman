@@ -66,7 +66,7 @@ describe('normalizeConfig', () => {
 
   it('loads groups saved before subgroups existed as top-level groups', () => {
     const c = normalizeConfig({ groups: [{ id: 'g1', name: 'Work', collapsed: true }] });
-    expect(c.groups).toEqual([{ id: 'g1', name: 'Work', parentId: null, color: '', collapsed: true, folded: [], folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' }]);
+    expect(c.groups).toEqual([{ id: 'g1', name: 'Work', parentId: null, color: '', collapsed: true, folded: [], folder: '', env: '', picks: {}, sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' }]);
   });
 
   it('keeps a group\'s linked folder and environment', () => {
@@ -75,6 +75,11 @@ describe('normalizeConfig', () => {
       ['C:\\Projects\\api', 'staging'],
       ['', ''],
     ]);
+  });
+
+  it('keeps the values a group\'s variables are switched to', () => {
+    const c = normalizeConfig({ groups: [{ id: 'g1', name: 'API', picks: { tenant: 'globex', bad: 7, '': 'x' } }, { id: 'g2', name: 'X', picks: 'oops' }] });
+    expect(c.groups.map((g) => g.picks)).toEqual([{ tenant: 'globex' }, {}]);
   });
 
   it('defaults git sync per group and corrects bad values', () => {
@@ -215,7 +220,7 @@ describe('moveFolded', () => {
 });
 
 describe('group tree', () => {
-  const g = (id: string, parentId: string | null = null, color = ''): Group => ({ id, name: id.toUpperCase(), parentId, color, collapsed: false, folded: [], folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' });
+  const g = (id: string, parentId: string | null = null, color = ''): Group => ({ id, name: id.toUpperCase(), parentId, color, collapsed: false, folded: [], folder: '', env: '', picks: {}, sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' });
   // a > (b > c), d
   const groups = [g('a'), g('d'), g('b', 'a'), g('c', 'b')];
 

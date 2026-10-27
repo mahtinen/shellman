@@ -99,9 +99,15 @@ describe('request files', () => {
 
   it('environments', () => {
     const env = parseEnvironment('{"variables":{"baseUrl":"https://staging.example.com","port":8080,"x":null},"protected":true}');
-    expect(env).toEqual({ variables: { baseUrl: 'https://staging.example.com', port: '8080' }, protected: true, color: '' });
+    expect(env).toEqual({ variables: { baseUrl: 'https://staging.example.com', port: '8080' }, choices: {}, protected: true, color: '' });
     expect(serializeEnvironment(env)).toBe('{\n  "variables": {\n    "baseUrl": "https://staging.example.com",\n    "port": "8080"\n  },\n  "protected": true\n}\n');
-    expect(parseEnvironment('oops')).toEqual({ variables: {}, protected: false, color: '' });
+    expect(parseEnvironment('oops')).toEqual({ variables: {}, choices: {}, protected: false, color: '' });
+    // Choices: invalid ones are left out; a description is written only when there is one.
+    const withChoices = parseEnvironment('{"variables":{"tenant":"acme"},"choices":{"tenant":[{"value":"acme","description":"Demos"},{"value":2},{"description":"no value"},"x"],"none":[],"bad":7}}');
+    expect(withChoices.choices).toEqual({ tenant: [{ value: 'acme', description: 'Demos' }, { value: '2', description: '' }] });
+    expect(serializeEnvironment(withChoices)).toBe(
+      '{\n  "variables": {\n    "tenant": "acme"\n  },\n  "choices": {\n    "tenant": [\n      {\n        "value": "acme",\n        "description": "Demos"\n      },\n      {\n        "value": "2"\n      }\n    ]\n  }\n}\n',
+    );
     expect(environmentFileName('Production EU')).toBe('production-eu');
     expect(environmentFileName('***')).toBe('environment');
   });

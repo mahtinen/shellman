@@ -74,6 +74,11 @@ export interface Group {
   folder: string;
   /** The environment its requests use (`environments/<env>.json`); '' = the first one. */
   env: string;
+  /**
+   * The value chosen for each variable that has choices (by name). Personal, so switching never
+   * changes the files the team shares; a value that is no longer one of the choices is ignored.
+   */
+  picks: Record<string, string>;
   /** Git sync of the folder: off, a Sync button, or automatic (commit on save, pull in the background). */
   sync: SyncMode;
   /** Automatic sync: push each save (after a few seconds), or only commit and push with Sync. */

@@ -6,6 +6,7 @@
 import { api } from './api';
 import { isLocalEnvFile, localEnvFile, parseDotenv, setDotenv, type DotenvEntry } from './dotenv';
 import { parseEnvironment, parseRequest, requestFolder, type EnvironmentDoc, type RequestDoc } from './requestFile';
+import { store } from './store';
 import type { Group } from './types';
 import { collectVariables, type Variable } from './variables';
 
@@ -144,7 +145,28 @@ class Collections {
     const c = this.get(group.id);
     if (!c) return new Map();
     const env = this.env(group);
-    return collectVariables({ env, environment: c.environments.get(env)?.variables ?? {}, dotenv: c.dotenv });
+    const doc = c.environments.get(env);
+    return collectVariables({ env, environment: doc?.variables ?? {}, choices: doc?.choices, dotenv: c.dotenv, picks: group.picks });
+  }
+
+  /**
+   * Switches a variable with choices to `value`. A shared one is switched for this person only
+   * (the group's picks, never the shared files); one from a personal file is changed there.
+   */
+  async choose(group: Group, name: string, value: string): Promise<void> {
+    const c = this.get(group.id);
+    const v = this.variables(group).get(name);
+    if (!c || !v?.choices?.some((x) => x.value === value)) return;
+    if (isLocalEnvFile(v.source)) {
+      const text = c.dotenv.find((f) => f.path === v.source)?.text ?? '';
+      await api.collectionWrite(c.folder, v.source, 'rootFile', setDotenv(text, [{ name, value }]));
+      await this.reload(group.id);
+    } else {
+      store.update((cfg) => {
+        const g = cfg.groups.find((x) => x.id === group.id);
+        if (g) g.picks = { ...g.picks, [name]: value };
+      });
+    }
   }
 
   /** The request at `path`; case doesn't matter, as on Windows' disks. */
