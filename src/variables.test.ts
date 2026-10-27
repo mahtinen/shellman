@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { newRequest, type RequestDoc } from './requestFile';
 import { localEnvFile } from './dotenv';
-import { checkRows, collectVariables, describeVariable, displayValue, editRow, filesOutside, findSecretLiterals, opRef, overriddenRows, prepareRequest, rowScope, scopeFile, SCOPES, segments, splitVariables, variableRows, variableWrites } from './variables';
+import { checkRows, choiceLabel, collectVariables, currentChoice, describeVariable, displayValue, editRow, filesOutside, findSecretLiterals, opRef, overriddenRows, prepareRequest, rowPicks, rowScope, scopeFile, SCOPES, segments, splitVariables, variableRows, variableWrites, varRow } from './variables';
 
 const files = (env = 'staging') => ({
   env,
@@ -157,7 +157,7 @@ describe('variables', () => {
   it('writes only the files that change, keeping their comments', () => {
     const f = { ...files(), dotenv: [{ path: '.env', text: '# shared\nPAGE=20\nOLD=x\n' }, { path: '.env.local', text: 'A=1\n' }] };
     const before = variableRows(f);
-    const env = { variables: { baseUrl: 'https://staging.example.com', tenant: 'acme-test' }, protected: true, color: '' };
+    const env = { variables: { baseUrl: 'https://staging.example.com', tenant: 'acme-test' }, choices: {}, protected: true, color: '' };
     const after = [
       ...before.filter((r) => r.name !== 'OLD' && r.name !== 'A'),
       { name: 'TOKEN', value: 'secret value', scope: 'mineEnv' as const },
@@ -270,6 +270,75 @@ describe('secret or not', () => {
     expect(displayValue({ name: 'userId', value: '42', source: '.env.local', secret: true }, true)).toBe('••••••••');
     expect(displayValue({ name: 'userId', value: '42', source: '.env.local', secret: true }, false)).toBe('42');
     expect(displayValue({ name: 'TOKEN', value: 'op://V/I/f', source: '.env', secret: true }, true)).toBe('op://V/I/f');
+  });
+});
+
+describe('choices', () => {
+  const tenants = [
+    { value: 'acme', description: 'Demos' },
+    { value: 'globex', description: 'EU data' },
+  ];
+  const withChoices = (picks: Record<string, string> = {}) => ({
+    env: 'staging',
+    environment: { region: 'eu' },
+    choices: { region: [{ value: 'eu', description: '' }, { value: 'us', description: 'US only' }] },
+    dotenv: [
+      { path: '.env', text: '# @choice acme -- Demos\n# @choice globex -- EU data\nTENANT=acme\n' },
+      { path: '.env.local', text: '# @choice key-one -- mine\n# @choice key-two\nMY_KEY=key-two\n' },
+    ],
+    picks,
+  });
+
+  it('use the value chosen, if it is still one of them', () => {
+    expect(collectVariables(withChoices()).get('TENANT')).toEqual({ name: 'TENANT', value: 'acme', source: '.env', secret: false, choices: tenants });
+    expect(collectVariables(withChoices({ TENANT: 'globex', region: 'us' })).get('TENANT')?.value).toBe('globex');
+    expect(collectVariables(withChoices({ region: 'us' })).get('region')?.value).toBe('us');
+    expect(collectVariables(withChoices({ TENANT: 'gone' })).get('TENANT')?.value).toBe('acme');
+    // A personal file holds its own choice; the group's picks don't apply to it.
+    expect(collectVariables(withChoices({ MY_KEY: 'key-one' })).get('MY_KEY')).toMatchObject({ value: 'key-two', secret: true });
+  });
+
+  it('show what the chosen one is for', () => {
+    const vars = collectVariables(withChoices({ TENANT: 'globex' }));
+    expect(describeVariable('TENANT', vars, true).title).toBe('{{TENANT}} = globex\nEU data\nfrom .env. One of 2 choices: Ctrl+click to switch.');
+    expect(currentChoice(vars.get('TENANT')!)).toEqual(tenants[1]);
+    expect(choiceLabel(tenants[0], false, true)).toBe('acme — Demos');
+    expect(choiceLabel({ value: 'x', description: '' }, true, true)).toBe('••••••••');
+    expect(choiceLabel({ value: '', description: 'none' }, false, true)).toBe('(empty) — none');
+  });
+
+  it('are edited with the value in use, and kept with the first as the default', () => {
+    const rows = variableRows(withChoices());
+    expect(rows.find((r) => r.name === 'region')).toEqual({ name: 'region', value: 'eu', scope: 'sharedEnv', choices: [{ value: 'eu', description: '' }, { value: 'us', description: 'US only' }] });
+    const edit = rows.map((r) => editRow(r, { TENANT: 'globex', MY_KEY: 'key-one' }));
+    expect(edit.map((r) => r.value)).toEqual(['globex', 'eu', 'key-two']);
+    // Shared: the file keeps the first one; the one in use is this person's pick. Personal: the file holds it.
+    expect(edit.map(varRow).map((r) => r.value)).toEqual(['acme', 'eu', 'key-two']);
+    expect(rowPicks(edit)).toEqual({ TENANT: 'globex', region: 'eu' });
+    // The editor's copy can change without touching what was read.
+    edit[0].choices![0].description = 'changed';
+    expect(rows[0].choices![0].description).toBe('Demos');
+    // Only 1Password references: secret, but shared.
+    const refs = editRow({ name: 'TOKEN', value: 'op://V/a/f', scope: 'shared', choices: [{ value: 'op://V/a/f', description: '' }, { value: 'op://V/b/f', description: '' }] });
+    expect([refs.secret, rowScope(refs)]).toEqual([true, 'shared']);
+    expect(rowScope({ ...refs, choices: [...refs.choices!, { value: 'literal', description: '' }] })).toBe('mine');
+  });
+
+  it('are checked and written', () => {
+    const f = withChoices();
+    const before = variableRows(f);
+    expect(checkRows([{ name: 'A', value: 'x', scope: 'shared', choices: [{ value: 'x', description: '1' }, { value: 'x', description: '2' }] }], '')).toBe('"A" has the choice "x" twice.');
+    const after = before.map((r) =>
+      r.name === 'TENANT' ? { ...r, choices: [...r.choices!, { value: 'initech', description: 'Load tests' }] } : r.name === 'region' ? { name: 'region', value: 'eu', scope: r.scope } : r,
+    );
+    const writes = variableWrites(before, after, f, { variables: { region: 'eu' }, choices: f.choices, protected: false, color: '' });
+    expect(writes).toEqual([
+      { path: '.env', kind: 'rootFile', text: '# @choice acme -- Demos\n# @choice globex -- EU data\n# @choice initech -- Load tests\nTENANT=acme\n' },
+      { path: 'environments/staging.json', kind: 'environment', text: '{\n  "variables": {\n    "region": "eu"\n  }\n}\n' },
+    ]);
+    // Only a description changed: still written.
+    const described = before.map((r) => (r.name === 'TENANT' ? { ...r, choices: [tenants[0], { value: 'globex', description: 'EU' }] } : r));
+    expect(variableWrites(before, described, f, undefined).map((w) => w.path)).toEqual(['.env']);
   });
 });
 

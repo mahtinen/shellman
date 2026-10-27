@@ -109,7 +109,7 @@ describe('Postman import', () => {
     expect(env).toEqual({
       file: 'production-eu',
       name: 'Production EU',
-      doc: { variables: { baseUrl: 'https://api.example.com' }, protected: true, color: '' },
+      doc: { variables: { baseUrl: 'https://api.example.com' }, choices: {}, protected: true, color: '' },
       personal: [
         { name: 'clientId', value: 'abc' },
         { name: 'API_TOKEN', value: 'xyz' },

@@ -40,6 +40,7 @@ export const icons = {
   arrowDown: svg('<path d="M8 3v10M4 9l4 4 4-4"/>'),
   check: svg('<path d="M3 8.5l3 3 7-7"/>'),
   refresh: svg('<path d="M13.25 8a5.25 5.25 0 11-1.54-3.71M13.25 2.5v3.25H10"/>'),
+  list: svg('<path d="M6 4h7.5M6 8h7.5M6 12h7.5"/><circle cx="3" cy="4" r=".6"/><circle cx="3" cy="8" r=".6"/><circle cx="3" cy="12" r=".6"/>'),
 };
 
 export type IconName = keyof typeof icons;

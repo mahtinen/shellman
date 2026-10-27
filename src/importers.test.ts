@@ -51,7 +51,7 @@ describe('markDuplicates', () => {
 });
 
 describe('importInto', () => {
-  const target: Group = { id: 'g1', name: 'XShell', parentId: null, color: '', collapsed: false, folded: [], folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
+  const target: Group = { id: 'g1', name: 'XShell', parentId: null, color: '', collapsed: false, folded: [], folder: '', env: '', picks: {}, sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
 
   it('makes the folders subgroups of the group', () => {
     const list = [
@@ -74,8 +74,8 @@ describe('importInto', () => {
   });
 
   it('reuses subgroups that are already there (any case)', () => {
-    const prod: Group = { id: 'p', name: 'prod', parentId: 'g1', color: '', collapsed: true, folded: [], folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
-    const elsewhere: Group = { id: 'x', name: 'Web', parentId: null, color: '', collapsed: false, folded: [], folder: '', env: '', sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
+    const prod: Group = { id: 'p', name: 'prod', parentId: 'g1', color: '', collapsed: true, folded: [], folder: '', env: '', picks: {}, sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
+    const elsewhere: Group = { id: 'x', name: 'Web', parentId: null, color: '', collapsed: false, folded: [], folder: '', env: '', picks: {}, sync: 'manual', syncPush: 'push', syncCheck: 180, syncDelay: 60, syncBranch: '', commitTemplate: 'Update {request}' };
     const { groups, sessions } = importInto([candidate('web1', ssh('web1.example.com'), ['Prod', 'Web'])], [target, prod, elsewhere], 'g1', 'subgroups');
     expect(groups.map((g) => [g.name, g.parentId])).toEqual([['Web', 'p']]);
     expect(sessions[0].groupId).toBe(groups[0].id);

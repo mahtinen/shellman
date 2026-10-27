@@ -3,6 +3,7 @@
  * git. Written with a fixed key order and without defaults, so a change shows as a small diff;
  * nothing that changes by itself (ids, times, history) goes in them.
  */
+import type { Choice } from './dotenv';
 
 export const REQUEST_EXT = '.request.json';
 
@@ -143,11 +144,15 @@ export function serializeRequest(doc: RequestDoc): string {
 /** `environments/<name>.json`: values for one environment (shared; secrets go in `.env.<name>.local`). */
 export interface EnvironmentDoc {
   variables: Record<string, string>;
+  /** Values a variable can be switched between (its value in `variables` is the first one). */
+  choices: Record<string, Choice[]>;
   /** Shown in red, and asks before sending anything but GET. */
   protected: boolean;
   /** '' = the default for its kind. */
   color: string;
 }
+
+const scalar = (v: unknown): v is string | number | boolean => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
 
 export function parseEnvironment(text: string): EnvironmentDoc {
   let raw: unknown;
@@ -158,12 +163,20 @@ export function parseEnvironment(text: string): EnvironmentDoc {
   }
   const o = isObj(raw) ? raw : {};
   const variables: Record<string, string> = {};
-  if (isObj(o.variables)) for (const [k, v] of Object.entries(o.variables)) if (k && (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')) variables[k] = String(v);
-  return { variables, protected: o.protected === true, color: str(o.color) };
+  if (isObj(o.variables)) for (const [k, v] of Object.entries(o.variables)) if (k && scalar(v)) variables[k] = String(v);
+  const choices: Record<string, Choice[]> = {};
+  if (isObj(o.choices))
+    for (const [k, list] of Object.entries(o.choices)) {
+      const items = Array.isArray(list) ? list.filter((c) => isObj(c) && scalar(c.value)).map((c) => ({ value: String(c.value), description: str(c.description) })) : [];
+      if (k && items.length) choices[k] = items;
+    }
+  return { variables, choices, protected: o.protected === true, color: str(o.color) };
 }
 
 export function serializeEnvironment(env: EnvironmentDoc): string {
   const out: Record<string, unknown> = { variables: env.variables };
+  const choices = Object.entries(env.choices).filter(([, list]) => list.length);
+  if (choices.length) out.choices = Object.fromEntries(choices.map(([k, list]) => [k, list.map((c) => (c.description ? { value: c.value, description: c.description } : { value: c.value }))]));
   if (env.protected) out.protected = true;
   if (env.color) out.color = env.color;
   return `${JSON.stringify(out, null, 2)}\n`;

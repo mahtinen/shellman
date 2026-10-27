@@ -1240,6 +1240,38 @@ if (phase === 'main') {
       assert(fs.readFileSync(path.join(dir, '.env'), 'utf8').includes('NEWVAR=hello'), 'variable not saved');
       assert((await ev(`${active}.el.querySelector('.rq-env').textContent`)) === 'dev', 'environment button');
 
+      // A variable with choices: switched from the environment menu or its dropdown, for this person only.
+      const envText = '# @choice acme-test -- Demos\n# @choice globex -- EU data\nTENANT=acme-test\nNEWVAR=hello\n';
+      put('.env', envText);
+      const choiceSelect = `${active}.el.querySelector('.rq-source select.rq-choice')`;
+      // The response shows its body (the Console tab is still open from above).
+      await ev(`[...${active}.el.querySelectorAll('.rq-tabs')[1].querySelectorAll('.rq-tab')].find(b => b.textContent === 'Body')?.click()`);
+      await waitFor(`${choiceSelect}?.value === 'acme-test'`, 5000, 'choices in variables used');
+      await ev(`${active}.el.querySelector('.rq-env').click()`);
+      await waitFor(`!!${menuItem('TENANT: acme-test')}`, 2000, 'choices in the environment menu');
+      await ev(`${menuItem('TENANT: acme-test')}.click()`);
+      await waitFor(`!!${menuItem('globex — EU data')}`, 2000, 'choices submenu');
+      await ev(`${menuItem('globex — EU data')}.click()`);
+      await waitFor(`${choiceSelect}?.value === 'globex'`, 3000, 'switched from the menu');
+      assert((await send()).includes('"globex"'), 'the chosen value is sent');
+      assert(fs.readFileSync(path.join(dir, '.env'), 'utf8') === envText, 'switching changed the shared .env');
+      await ev(`(() => { const s = ${choiceSelect}; s.value = 'acme-test'; s.dispatchEvent(new Event('change')); return true; })()`);
+      await waitFor(`${choiceSelect}?.value === 'acme-test'`, 3000, 'switched from the dropdown');
+      assert((await send()).includes('"acme-test"'), 'switched back');
+      // The editor shows them under the variable; a new one is shared in .env.
+      await ev(`[...${active}.el.querySelectorAll('.rq-tool')].find(b => b.textContent.includes('Variables')).click()`);
+      await waitFor(`document.querySelectorAll('.variables-dialog .var-choice').length === 2`, 3000, 'choices in the editor');
+      await ev(`[...document.querySelectorAll('.variables-dialog .var-choice-foot .btn')][0].click()`);
+      await ev(`(() => { const rows = document.querySelectorAll('.variables-dialog .var-choice'); const [v, d] = rows[rows.length - 1].querySelectorAll('input'); v.value = 'initech'; v.dispatchEvent(new Event('input')); d.value = 'Load tests'; d.dispatchEvent(new Event('input')); return true; })()`);
+      await sleep(400);
+      await shot(path.join(OUT, '22-variable-choices.png'));
+      await ev(`[...document.querySelectorAll('.variables-dialog .btn')].find(b => b.textContent === 'Save').click()`);
+      await waitFor(`!document.querySelector('.variables-dialog')`, 3000, 'dialog closed');
+      assert(fs.readFileSync(path.join(dir, '.env'), 'utf8').includes('# @choice initech -- Load tests\nTENANT=acme-test\n'), 'choice not saved: ' + fs.readFileSync(path.join(dir, '.env'), 'utf8'));
+      // Plain again for the steps below (a click on a variable with choices switches it instead of editing it).
+      put('.env', 'TENANT=acme-test\nNEWVAR=hello\n');
+      await waitFor(`!${choiceSelect} && ${sourcesShow('acme-test')}`, 5000, 'TENANT plain again');
+
       // A login cookie is kept and sent with the next request.
       await ev(`${row('login')}.click()`);
       await waitFor(`${active}?.ref.path === 'login.request.json'`, 5000, 'login open');

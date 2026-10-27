@@ -8,12 +8,13 @@ import { api } from './api';
 import { collections } from './collections';
 import { choiceDialog, dialog, toast } from './dialogs';
 import { h } from './dom';
+import type { Choice } from './dotenv';
 import { icons } from './icons';
 import { gitSync } from './gitSync';
 import { openSettings } from './settingsDialog';
 import { store } from './store';
 import type { Group } from './types';
-import { checkRows, editRow, isOpRef, looksSecretName, opRef, overriddenRows, rowScope, scopeFile, variableRows, variableWrites, varRow, type EditRow } from './variables';
+import { checkRows, choiceLabel, editRow, isOpRef, looksSecretName, onlyOpRefs, opRef, overriddenRows, rowPicks, rowScope, rowValues, scopeFile, variableRows, variableWrites, varRow, type EditRow } from './variables';
 
 /** The 1Password guide stays open once opened. */
 let opHelpOpen = false;
@@ -66,29 +67,103 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
   let env = collections.env(group);
   // The folder as now: a pull or another editor may have changed it while the dialog was open.
   const now = () => collections.get(group.id) ?? c;
-  const files = () => ({ env, environment: now().environments.get(env)?.variables ?? {}, dotenv: now().dotenv });
+  const files = () => {
+    const doc = now().environments.get(env);
+    return { env, environment: doc?.variables ?? {}, choices: doc?.choices, dotenv: now().dotenv };
+  };
+  // What this person has chosen, as now (a request may switch a variable while the dialog is open).
+  const picks = () => store.config.groups.find((g) => g.id === group.id)?.picks ?? group.picks;
   let before = variableRows(files());
-  let rows: EditRow[] = before.map(editRow);
+  let rows: EditRow[] = before.map((r) => editRow(r, picks()));
+  let beforePicks = rowPicks(rows);
   for (const name of add) if (!rows.some((r) => r.name === name)) rows.push({ name, value: '', perEnv: !!env, secret: looksSecretName(name) });
 
   const table = h('div', { class: 'var-table' });
   const error = h('div', { class: 'field-error' });
-  const changed = () => JSON.stringify(rows.map(varRow)) !== JSON.stringify(before);
+  const changed = () => JSON.stringify([rows.map(varRow), rowPicks(rows)]) !== JSON.stringify([before, beforePicks]);
   const where = (r: EditRow) => `${r.perEnv ? env : 'every environment'}${r.secret && !isOpRef(r.value) ? ', secret' : ''}`;
 
   /** The row of `focus` that counts (a secret, and one for this environment, wins), to start on. */
   let start: EditRow | undefined;
+
+  /** Puts the caret in a row's choice (after a draw). */
+  const focusChoice = (r: EditRow, index: number) =>
+    table.querySelectorAll<HTMLInputElement>(`.var-choices[data-row="${rows.indexOf(r)}"] .var-choice input.mono`)[index]?.focus();
+
+  /** A row's choices, to edit: each a value and a note on when to use it (only shown, never sent). */
+  const choicesEditor = (r: EditRow, list: Choice[]) => {
+    const personal = rowScope(r) === 'mine' || rowScope(r) === 'mineEnv';
+    return h(
+      'div',
+      { class: 'var-choices', dataset: { row: String(rows.indexOf(r)) } },
+      ...list.map((ch, i) => {
+        const hidden = store.settings.hideSecrets && r.secret && !isOpRef(ch.value);
+        const value = h('input', { class: 'input small mono', value: ch.value, placeholder: 'value', spellcheck: false, type: hidden ? 'password' : 'text' });
+        const about = h('input', { class: 'input small', value: ch.description, placeholder: 'When to use it (only shown, never sent)' });
+        // The one in use follows its value as it is edited.
+        value.addEventListener('input', () => {
+          if (r.value === ch.value) r.value = value.value;
+          ch.value = value.value;
+        });
+        value.addEventListener('change', () => {
+          const ref = opRef(ch.value);
+          if (ref) {
+            if (r.value === ch.value) r.value = ref;
+            ch.value = ref;
+            if (onlyOpRefs(r)) r.secret = true;
+          }
+          draw();
+        });
+        about.addEventListener('input', () => (ch.description = about.value));
+        about.addEventListener('change', () => draw());
+        return h(
+          'div',
+          { class: 'var-choice' },
+          value,
+          about,
+          h('button', {
+            class: 'icon-btn small',
+            title: 'Delete this choice',
+            html: icons.trash,
+            onclick: () => {
+              list.splice(i, 1);
+              if (!list.length) r.choices = undefined;
+              else if (!list.some((o) => o.value === r.value)) r.value = list[0].value;
+              draw();
+            },
+          }),
+        );
+      }),
+      h(
+        'div',
+        { class: 'var-choice-foot' },
+        h(
+          'button',
+          {
+            class: 'btn small',
+            onclick: () => {
+              list.push({ value: '', description: '' });
+              draw();
+              focusChoice(r, list.length - 1);
+            },
+          },
+          '+ Add choice',
+        ),
+        h('span', { class: 'hint' }, personal ? 'Kept in your own file, with the one you use as its value.' : 'Shared with the team; each person picks their own. The first is the default.'),
+      ),
+    );
+  };
 
   const draw = (focusLast = false) => {
     const vrows = rows.map(varRow);
     const overridden = overriddenRows(vrows);
     table.replaceChildren(
       h('div', { class: 'var-row var-head' }, h('span', null, 'Name'), h('span', null, 'Value'), h('span', null, 'Applies to'), h('span', { title: 'Secret values stay on this computer (git ignores them) and are hidden' }, 'Secret'), h('span')),
-      ...rows.map((r, i) => {
-        const op = isOpRef(r.value);
-        const name = h('input', { class: 'input small mono', value: r.name, placeholder: 'name', spellcheck: false });
+      ...rows.flatMap((r, i) => {
+        const op = onlyOpRefs(r);
+        const name = h('input', { class: 'input small mono var-name', value: r.name, placeholder: 'name', spellcheck: false });
         const hidden = store.settings.hideSecrets && r.secret && !op;
-        const value = h('input', { class: 'input small mono', value: r.value, placeholder: 'value, or op://Vault/Item/field', spellcheck: false, type: hidden ? 'password' : 'text' });
+        const value = h('input', { class: 'input small mono var-val', value: r.value, placeholder: 'value, or op://Vault/Item/field', spellcheck: false, type: hidden ? 'password' : 'text' });
         name.addEventListener('input', () => (r.name = name.value.trim()));
         name.addEventListener('change', () => draw());
         value.addEventListener('input', () => (r.value = value.value));
@@ -101,7 +176,16 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
           }
           draw();
         });
-        const reveal = hidden
+        // With choices, the value is the one in use, picked from them.
+        const pick = r.choices
+          ? h(
+              'select',
+              { class: 'input small mono var-val', title: 'The one in use now' },
+              ...r.choices.map((ch) => h('option', { value: ch.value, selected: ch.value === r.value }, choiceLabel(ch, r.secret, store.settings.hideSecrets))),
+            )
+          : null;
+        pick?.addEventListener('change', () => (r.value = pick.value));
+        const reveal = hidden && !pick
           ? h('button', {
               class: 'icon-btn small',
               title: 'Show the value',
@@ -136,26 +220,41 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
           draw();
         });
         const winner = overridden.has(vrows[i]) ? rows.filter((o, j) => o.name === r.name && j !== i && !overridden.has(vrows[j])).pop() : undefined;
-        return h(
+        const row = h(
           'div',
           {
             class: `var-row${overridden.has(vrows[i]) ? ' overridden' : ''}${r.secret ? ' secret' : ''}${r === start ? ' focus' : ''}`,
             title: winner ? `Not used: "${r.name}" is also set for ${where(winner)}, which wins.` : `Kept in ${scopeFile(rowScope(r), env)}`,
           },
           name,
-          h('div', { class: 'var-value' }, value, reveal),
+          h('div', { class: 'var-value' }, pick ?? value, reveal),
           applies,
           h('label', { class: 'var-secret' }, secret),
-          h('button', {
-            class: 'icon-btn small',
-            title: 'Delete',
-            html: icons.trash,
-            onclick: () => {
-              rows.splice(i, 1);
-              draw();
-            },
-          }),
+          h(
+            'div',
+            { class: 'var-actions' },
+            h('button', {
+              class: `icon-btn small${r.choices ? ' active' : ''}`,
+              title: r.choices ? 'Remove the choices (the one in use stays as the value)' : 'Choices: several values to switch between, each with a note on when to use it',
+              html: icons.list,
+              onclick: () => {
+                r.choices = r.choices ? undefined : [{ value: r.value, description: '' }, ...(r.value ? [{ value: '', description: '' }] : [])];
+                draw();
+                if (r.choices) focusChoice(r, r.choices.length - 1);
+              },
+            }),
+            h('button', {
+              class: 'icon-btn small',
+              title: 'Delete',
+              html: icons.trash,
+              onclick: () => {
+                rows.splice(i, 1);
+                draw();
+              },
+            }),
+          ),
         );
+        return r.choices ? [row, choicesEditor(r, r.choices)] : [row];
       }),
       h(
         'button',
@@ -169,7 +268,7 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
         '+ Add variable',
       ),
     );
-    if (focusLast) table.querySelectorAll<HTMLInputElement>('.var-row:not(.var-head) input.mono')[(rows.length - 1) * 2]?.focus();
+    if (focusLast) table.querySelectorAll<HTMLInputElement>('.var-name')[rows.length - 1]?.focus();
   };
 
   const envSelect = h('select', { class: 'input small' }, ...[...c.environments.keys()].map((e) => h('option', { value: e, selected: e === env }, e)));
@@ -186,7 +285,8 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
     }
     env = envSelect.value;
     before = variableRows(files());
-    rows = before.map(editRow);
+    rows = before.map((r) => editRow(r, picks()));
+    beforePicks = rowPicks(rows);
     draw();
   });
 
@@ -200,9 +300,9 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
     requestAnimationFrame(() => {
       const row = table.querySelector<HTMLElement>('.var-row.focus');
       row?.scrollIntoView({ block: 'nearest' });
-      const value = row?.querySelectorAll<HTMLInputElement>('input.mono')[1];
+      const value = row?.querySelector<HTMLInputElement | HTMLSelectElement>('.var-val');
       value?.focus();
-      value?.select();
+      if (value instanceof HTMLInputElement) value.select();
     });
   }
   dialog({
@@ -216,7 +316,7 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
       h(
         'p',
         { class: 'hint' },
-        'Normal values are shared with the team through git: .env for every environment, environments/<env>.json for one. Secret values stay on this computer in .env.local / .env.<env>.local, which git ignores, so each person keeps their own. A 1Password reference (op://Vault/Item/field) is secret but holds no secret, so it is shared. For the same name, a secret wins over a normal value, and one for an environment wins over one for every environment.',
+        'Normal values are shared with the team through git: .env for every environment, environments/<env>.json for one. Secret values stay on this computer in .env.local / .env.<env>.local, which git ignores, so each person keeps their own. A 1Password reference (op://Vault/Item/field) is secret but holds no secret, so it is shared. For the same name, a secret wins over a normal value, and one for an environment wins over one for every environment. A variable with choices (the list button) has several values, each with a note on when to use it: switch between them from the environment menu, or Ctrl+click the variable in a request.',
       ),
       onePasswordHelp(),
       c.notIgnored.length ? h('p', { class: 'hint err-text' }, `${c.notIgnored.join(', ')} isn't ignored by git: add it to .gitignore before putting secrets in it.`) : null,
@@ -227,7 +327,13 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
         label: 'Save',
         kind: 'primary',
         onClick: async () => {
-          rows = rows.filter((r) => r.name || r.value);
+          // Empty choices are left out; the one in use must be one of those left.
+          for (const r of rows) {
+            r.choices = r.choices?.filter((ch) => ch.value || ch.description);
+            if (!r.choices?.length) r.choices = undefined;
+            else if (!r.choices.some((ch) => ch.value === r.value)) r.value = r.choices[0].value;
+          }
+          rows = rows.filter((r) => r.name || r.value || r.choices);
           const problem = checkRows(rows.map(varRow), env);
           if (problem) {
             error.textContent = problem;
@@ -235,7 +341,7 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
             return false;
           }
           // A secret-looking value that isn't marked secret would be shared through git.
-          const exposed = rows.filter((r) => !r.secret && looksSecretName(r.name) && r.value && !before.some((b) => b.name === r.name && b.value === r.value && editRow(b).perEnv === r.perEnv && !editRow(b).secret));
+          const exposed = rows.filter((r) => !r.secret && looksSecretName(r.name) && rowValues(r).some(Boolean) && !before.some((b) => JSON.stringify(b) === JSON.stringify(varRow(r))));
           if (exposed.length) {
             const answer = await choiceDialog(
               'Share it with the team?',
@@ -258,6 +364,13 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
             error.textContent = String(e);
             return false;
           }
+          // The ones chosen here are this person's, kept with the group (not in the shared files).
+          const chosen = rowPicks(rows);
+          if (JSON.stringify(chosen) !== JSON.stringify(beforePicks))
+            store.update((cfg) => {
+              const g = cfg.groups.find((x) => x.id === group.id);
+              if (g) g.picks = { ...g.picks, ...chosen };
+            });
           await collections.reload(group.id);
           // Secret files are git-ignored; gitSync leaves them out anyway.
           void gitSync.changed(group.id, writes.map((w) => w.path));

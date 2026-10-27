@@ -11,10 +11,11 @@ import { groupColor, uid } from './config';
 import { curlCommand } from './curl';
 import { choiceDialog, confirmDialog, toast } from './dialogs';
 import { h, setChildren } from './dom';
+import { isLocalEnvFile } from './dotenv';
 import { icons } from './icons';
 import { jsonLines, lineText, type JsonLine } from './jsonView';
 import { matchRequestKey } from './keys';
-import { showMenuBelow } from './menu';
+import { showMenu, showMenuBelow } from './menu';
 import { paneHeader, type PaneEvents, type WorkspacePane } from './panes';
 import {
   emptyBody,
@@ -29,11 +30,11 @@ import {
   type KeyValue,
   type RequestDoc,
 } from './requestFile';
-import { environmentEntries } from './requestActions';
+import { choiceEntries, environmentEntries } from './requestActions';
 import type { RequestRef, SnapshotLeaf } from './snapshot';
 import { store } from './store';
 import type { Group, Settings } from './types';
-import { displayValue, filesOutside, findSecretLiterals, isOpRef, opRef, prepareRequest, segments, usedVariables, type Variable } from './variables';
+import { choiceLabel, currentChoice, displayValue, filesOutside, findSecretLiterals, isOpRef, opRef, prepareRequest, segments, usedVariables, type Variable } from './variables';
 import { editVariables } from './variablesDialog';
 import { onRepaint, repaintVarFields, varField, type VarContext } from './varField';
 import { gitSync } from './gitSync';
@@ -180,7 +181,12 @@ export class RequestPane implements WorkspacePane {
       const group = this.group;
       return group ? collections.variables(group) : new Map<string, Variable>();
     },
-    edit: (name, missing) => this.editVariables(missing ? [name] : [], name),
+    edit: (name, missing, at) => {
+      const group = this.group;
+      const choices = group && !missing ? choiceEntries(group, name) : [];
+      if (!choices.length || !at) return this.editVariables(missing ? [name] : [], name);
+      showMenu(at.x, at.y, [...choices, 'separator', { label: 'Edit variables…', icon: 'edit', action: () => this.editVariables([], name) }]);
+    },
   };
   private readonly mainEl: HTMLElement;
   private readonly statusEl: HTMLElement;
@@ -655,15 +661,22 @@ export class RequestPane implements WorkspacePane {
     this.resolvedEl.replaceChildren(h('span', { class: 'muted' }, '→ '), ...this.filledIn(this.doc.url));
   }
 
-  /** `text` with its variables' values, each one a click away from editing it. */
+  /** `text` with its variables' values, each one a click away from editing (or switching) it. */
   private filledIn(text: string): HTMLElement[] {
-    return segments(text, this.varCtx.vars(), store.settings.hideSecrets).map((p) =>
+    const vars = this.varCtx.vars();
+    const title = (name: string, kind: string) => (kind === 'missing' ? `{{${name}}} isn't defined: click to add it` : `{{${name}}}: click to ${vars.get(name)?.choices ? 'switch' : 'edit'}`);
+    return segments(text, vars, store.settings.hideSecrets).map((p) =>
       h(
         'span',
         {
           class: `seg-${p.kind}`,
-          title: p.name ? (p.kind === 'missing' ? `{{${p.name}}} isn't defined: click to add it` : `{{${p.name}}}: click to edit`) : undefined,
-          onclick: p.name ? () => this.varCtx.edit(p.name!, p.kind === 'missing') : undefined,
+          title: p.name ? title(p.name, p.kind) : undefined,
+          onclick: p.name
+            ? (e: MouseEvent) => {
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                this.varCtx.edit(p.name!, p.kind === 'missing', { x: r.left, y: r.bottom + 2 });
+              }
+            : undefined,
         },
         p.text,
       ),
@@ -1055,11 +1068,31 @@ export class RequestPane implements WorkspacePane {
             `{{${n}}}`,
           ),
           v
-            ? h('span', null, h('span', { class: 'muted' }, `${v.source} → `), h('span', { class: 'mono' }, displayValue(v, store.settings.hideSecrets)), isOpRef(v.value) ? h('span', { class: 'muted' }, ' (1Password, filled in when sending)') : null)
+            ? h(
+                'span',
+                null,
+                h('span', { class: 'muted' }, `${v.source} → `),
+                v.choices ? this.choiceSelect(group, v) : h('span', { class: 'mono' }, displayValue(v, store.settings.hideSecrets)),
+                isOpRef(v.value) ? h('span', { class: 'muted' }, ' (1Password, filled in when sending)') : null,
+              )
             : h('span', { class: 'seg-missing' }, 'not defined'),
         );
       }),
     );
+  }
+
+  /** A dropdown of a variable's choices, to switch it. */
+  private choiceSelect(group: Group, v: Variable): HTMLSelectElement {
+    const secret = isLocalEnvFile(v.source);
+    const select = h(
+      'select',
+      { class: 'input small rq-choice', title: `Switch {{${v.name}}}` },
+      // A value that isn't one of them (the file was edited by hand) shows as it is.
+      currentChoice(v) ? null : h('option', { value: '', selected: true, disabled: true }, displayValue(v, store.settings.hideSecrets)),
+      ...v.choices!.map((c) => h('option', { value: c.value, selected: c.value === v.value }, choiceLabel(c, secret, store.settings.hideSecrets))),
+    );
+    select.addEventListener('change', () => void collections.choose(group, v.name, select.value).catch((e) => toast(String(e), 'error')));
+    return select;
   }
 
   private optionsEditor(): HTMLElement {

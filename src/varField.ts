@@ -1,6 +1,6 @@
 /**
  * `{{variables}}` look and work the same in every request field (URL, headers, params, auth, body):
- * coloured by whether they are defined, their value on hover, Ctrl+click to edit them. A field's
+ * coloured by whether they are defined, their value on hover, Ctrl+click to edit (or switch) them. A field's
  * text is made transparent over a coloured copy (as the body editor does) only while it has
  * variables, so other fields stay exactly the browser's.
  */
@@ -11,8 +11,11 @@ import { describeVariable, splitVariables, usedVariables, type Variable } from '
 export interface VarContext {
   /** The variables in effect now (they change with the environment and the files). */
   vars(): Map<string, Variable>;
-  /** Opens the variables editor at `name`; `missing`: adds it. */
-  edit(name: string, missing: boolean): void;
+  /**
+   * Opens the variables editor at `name`; `missing`: adds it. One with choices instead shows them
+   * at `at` (where it was clicked), to switch.
+   */
+  edit(name: string, missing: boolean, at?: { x: number; y: number }): void;
 }
 
 /** How each field repaints, for when the variables change. */
@@ -77,7 +80,7 @@ export function varPointer(field: HTMLElement, view: HTMLElement, ctx: VarContex
     const s = at(e.clientX, e.clientY);
     if (!s) return;
     e.preventDefault();
-    ctx.edit(s.dataset.var!, s.classList.contains('seg-missing'));
+    ctx.edit(s.dataset.var!, s.classList.contains('seg-missing'), { x: e.clientX, y: e.clientY });
   });
 }
 
