@@ -71,6 +71,15 @@ describe('.env files', () => {
     ]);
   });
 
+  it('keeps any characters in choices', () => {
+    const odd = ['#', '@', '# @choice x', '--', '-- y', 'a -- b', 'a--b', '"', '"quoted"', "it's", '`', '\\', 'C:\\Users\\me', 'tab\there', ' lead', 'trail ', '=', 'a=b#c', 'ä€😀', '{{x}}', '', '$HOME', '%PATH%', '\\n', 'line\nbreak', '<b>&amp;</b>'];
+    const notes = ['#', '@choice', '-- leading dashes', 'a -- b', '"quotes" and \'apostrophes\'', '\\', 'ä€😀', '=', '', '  spaces  '];
+    const choices = odd.map((value, i) => ({ value, description: notes[i % notes.length] }));
+    const back = parseDotenv(setDotenv('', [{ name: 'V', value: '#', choices }]));
+    // A note is one line, without spaces around it.
+    expect(back).toEqual([{ name: 'V', value: '#', choices: choices.map((c) => ({ ...c, description: c.description.trim() })) }]);
+  });
+
   it('writes choices so they read the same, and keeps them when only the value changes', () => {
     const choices = [
       { value: 'plain', description: 'first' },

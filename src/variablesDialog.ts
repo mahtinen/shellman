@@ -86,6 +86,17 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
   /** The row of `focus` that counts (a secret, and one for this environment, wins), to start on. */
   let start: EditRow | undefined;
 
+  /**
+   * A draw for a field that was changed. A change comes as the field loses focus, before the click
+   * or Tab that moves it lands: drawing right then would replace the field it is going to. So the
+   * draw waits for focus to move, and then puts it back in the same field (see `draw`).
+   */
+  let redrawTimer = 0;
+  const redrawSoon = () => {
+    clearTimeout(redrawTimer);
+    redrawTimer = window.setTimeout(() => draw());
+  };
+
   /** Puts the caret in a row's choice (after a draw). */
   const focusChoice = (r: EditRow, index: number) =>
     table.querySelectorAll<HTMLInputElement>(`.var-choices[data-row="${rows.indexOf(r)}"] .var-choice input.mono`)[index]?.focus();
@@ -98,8 +109,9 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
       { class: 'var-choices', dataset: { row: String(rows.indexOf(r)) } },
       ...list.map((ch, i) => {
         const hidden = store.settings.hideSecrets && r.secret && !isOpRef(ch.value);
-        const value = h('input', { class: 'input small mono', value: ch.value, placeholder: 'value', spellcheck: false, type: hidden ? 'password' : 'text' });
-        const about = h('input', { class: 'input small', value: ch.description, placeholder: 'When to use it (only shown, never sent)' });
+        const key = `${rows.indexOf(r)}.${i}`;
+        const value = h('input', { class: 'input small mono', value: ch.value, placeholder: 'value', spellcheck: false, type: hidden ? 'password' : 'text', dataset: { key: `cv${key}` } });
+        const about = h('input', { class: 'input small', value: ch.description, placeholder: 'When to use it (only shown, never sent)', dataset: { key: `cd${key}` } });
         // The one in use follows its value as it is edited.
         value.addEventListener('input', () => {
           if (r.value === ch.value) r.value = value.value;
@@ -112,10 +124,10 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
             ch.value = ref;
             if (onlyOpRefs(r)) r.secret = true;
           }
-          draw();
+          redrawSoon();
         });
         about.addEventListener('input', () => (ch.description = about.value));
-        about.addEventListener('change', () => draw());
+        about.addEventListener('change', redrawSoon);
         return h(
           'div',
           { class: 'var-choice' },
@@ -125,6 +137,7 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
             class: 'icon-btn small',
             title: 'Delete this choice',
             html: icons.trash,
+            dataset: { key: `cx${key}` },
             onclick: () => {
               list.splice(i, 1);
               if (!list.length) r.choices = undefined;
@@ -155,17 +168,21 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
   };
 
   const draw = (focusLast = false) => {
+    clearTimeout(redrawTimer);
+    // The field with focus (and its caret) is the same one after the table is built again.
+    const was = table.contains(document.activeElement) ? (document.activeElement as HTMLInputElement) : null;
+    const caret = was && typeof was.selectionStart === 'number' ? [was.selectionStart, was.selectionEnd ?? was.selectionStart] : null;
     const vrows = rows.map(varRow);
     const overridden = overriddenRows(vrows);
     table.replaceChildren(
       h('div', { class: 'var-row var-head' }, h('span', null, 'Name'), h('span', null, 'Value'), h('span', null, 'Applies to'), h('span', { title: 'Secret values stay on this computer (git ignores them) and are hidden' }, 'Secret'), h('span')),
       ...rows.flatMap((r, i) => {
         const op = onlyOpRefs(r);
-        const name = h('input', { class: 'input small mono var-name', value: r.name, placeholder: 'name', spellcheck: false });
+        const name = h('input', { class: 'input small mono var-name', value: r.name, placeholder: 'name', spellcheck: false, dataset: { key: `n${i}` } });
         const hidden = store.settings.hideSecrets && r.secret && !op;
-        const value = h('input', { class: 'input small mono var-val', value: r.value, placeholder: 'value, or op://Vault/Item/field', spellcheck: false, type: hidden ? 'password' : 'text' });
+        const value = h('input', { class: 'input small mono var-val', value: r.value, placeholder: 'value, or op://Vault/Item/field', spellcheck: false, type: hidden ? 'password' : 'text', dataset: { key: `v${i}` } });
         name.addEventListener('input', () => (r.name = name.value.trim()));
-        name.addEventListener('change', () => draw());
+        name.addEventListener('change', redrawSoon);
         value.addEventListener('input', () => (r.value = value.value));
         // A 1Password reference is always secret; it is kept without quotes or spaces around it.
         value.addEventListener('change', () => {
@@ -174,13 +191,13 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
             r.value = ref;
             r.secret = true;
           }
-          draw();
+          redrawSoon();
         });
         // With choices, the value is the one in use, picked from them.
         const pick = r.choices
           ? h(
               'select',
-              { class: 'input small mono var-val', title: 'The one in use now' },
+              { class: 'input small mono var-val', title: 'The one in use now', dataset: { key: `v${i}` } },
               ...r.choices.map((ch) => h('option', { value: ch.value, selected: ch.value === r.value }, choiceLabel(ch, r.secret, store.settings.hideSecrets))),
             )
           : null;
@@ -201,23 +218,24 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
           : null;
         const applies = h(
           'select',
-          { class: 'input small' },
+          { class: 'input small', dataset: { key: `a${i}` } },
           h('option', { value: 'all', selected: !r.perEnv }, 'Every environment'),
           h('option', { value: 'env', selected: r.perEnv, disabled: !env }, env ? `${env} only` : '(no environment)'),
         );
         applies.addEventListener('change', () => {
           r.perEnv = applies.value === 'env';
-          draw();
+          redrawSoon();
         });
         const secret = h('input', {
           type: 'checkbox',
           checked: r.secret,
           disabled: op,
           title: op ? 'A 1Password reference is always secret, and safe to share' : 'Secret: kept on this computer only (git ignores it) and hidden',
+          dataset: { key: `s${i}` },
         });
         secret.addEventListener('change', () => {
           r.secret = secret.checked;
-          draw();
+          redrawSoon();
         });
         const winner = overridden.has(vrows[i]) ? rows.filter((o, j) => o.name === r.name && j !== i && !overridden.has(vrows[j])).pop() : undefined;
         const row = h(
@@ -237,6 +255,7 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
               class: `icon-btn small${r.choices ? ' active' : ''}`,
               title: r.choices ? 'Remove the choices (the one in use stays as the value)' : 'Choices: several values to switch between, each with a note on when to use it',
               html: icons.list,
+              dataset: { key: `c${i}` },
               onclick: () => {
                 r.choices = r.choices ? undefined : [{ value: r.value, description: '' }, ...(r.value ? [{ value: '', description: '' }] : [])];
                 draw();
@@ -247,6 +266,7 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
               class: 'icon-btn small',
               title: 'Delete',
               html: icons.trash,
+              dataset: { key: `d${i}` },
               onclick: () => {
                 rows.splice(i, 1);
                 draw();
@@ -268,7 +288,11 @@ export function editVariables(group: Group, add: string[] = [], focus?: string):
         '+ Add variable',
       ),
     );
-    if (focusLast) table.querySelectorAll<HTMLInputElement>('.var-name')[rows.length - 1]?.focus();
+    if (focusLast) return table.querySelectorAll<HTMLInputElement>('.var-name')[rows.length - 1]?.focus();
+    const again = was?.dataset.key ? table.querySelector<HTMLInputElement>(`[data-key="${was.dataset.key}"]`) : null;
+    if (!again) return;
+    again.focus();
+    if (caret && typeof again.selectionStart === 'number') again.setSelectionRange(caret[0], caret[1]);
   };
 
   const envSelect = h('select', { class: 'input small' }, ...[...c.environments.keys()].map((e) => h('option', { value: e, selected: e === env }, e)));

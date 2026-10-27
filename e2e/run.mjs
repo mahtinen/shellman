@@ -1261,13 +1261,32 @@ if (phase === 'main') {
       // The editor shows them under the variable; a new one is shared in .env.
       await ev(`[...${active}.el.querySelectorAll('.rq-tool')].find(b => b.textContent.includes('Variables')).click()`);
       await waitFor(`document.querySelectorAll('.variables-dialog .var-choice').length === 2`, 3000, 'choices in the editor');
-      await ev(`[...document.querySelectorAll('.variables-dialog .var-choice-foot .btn')][0].click()`);
-      await ev(`(() => { const rows = document.querySelectorAll('.variables-dialog .var-choice'); const [v, d] = rows[rows.length - 1].querySelectorAll('input'); v.value = 'initech'; v.dispatchEvent(new Event('input')); d.value = 'Load tests'; d.dispatchEvent(new Event('input')); return true; })()`);
+      // Typed for real: Tab goes from a choice's value to its note, and one click into a note is enough
+      // (a change redraws the table, which must not lose where the focus was going).
+      const focused = `document.activeElement?.dataset.key`;
+      const addChoice = `[...document.querySelectorAll('.variables-dialog .var-choice-foot .btn')][0].click()`;
+      await ev(addChoice);
+      await waitFor(`${focused} === 'cv0.2'`, 2000, 'new choice focused');
+      await type('initech');
+      await key('Tab', 'Tab', 9);
+      await sleep(150);
+      assert((await ev(focused)) === 'cd0.2', 'Tab from a value goes to its note, not to ' + (await ev(focused)));
+      await type('Load tests');
+      await key('Tab', 'Tab', 9);
+      await sleep(150);
+      assert((await ev(focused)) === 'cx0.2', 'Tab from a note goes to its delete button, not to ' + (await ev(focused)));
+      await ev(addChoice);
+      await waitFor(`${focused} === 'cv0.3'`, 2000, 'another choice focused');
+      await type('umbrella');
+      await click('.variables-dialog [data-key="cd0.3"]');
+      await sleep(150);
+      assert((await ev(focused)) === 'cd0.3', 'one click goes to the note, not to ' + (await ev(focused)));
+      await type('Staging only');
       await sleep(400);
       await shot(path.join(OUT, '22-variable-choices.png'));
       await ev(`[...document.querySelectorAll('.variables-dialog .btn')].find(b => b.textContent === 'Save').click()`);
       await waitFor(`!document.querySelector('.variables-dialog')`, 3000, 'dialog closed');
-      assert(fs.readFileSync(path.join(dir, '.env'), 'utf8').includes('# @choice initech -- Load tests\nTENANT=acme-test\n'), 'choice not saved: ' + fs.readFileSync(path.join(dir, '.env'), 'utf8'));
+      assert(fs.readFileSync(path.join(dir, '.env'), 'utf8').includes('# @choice initech -- Load tests\n# @choice umbrella -- Staging only\nTENANT=acme-test\n'), 'choice not saved: ' + fs.readFileSync(path.join(dir, '.env'), 'utf8'));
       // Plain again for the steps below (a click on a variable with choices switches it instead of editing it).
       put('.env', 'TENANT=acme-test\nNEWVAR=hello\n');
       await waitFor(`!${choiceSelect} && ${sourcesShow('acme-test')}`, 5000, 'TENANT plain again');
