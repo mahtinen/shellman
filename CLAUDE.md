@@ -1,8 +1,10 @@
 # Shellman: notes for Claude
 
 Shellman is a Windows-only terminal manager (Tauri 2 + Rust backend, TypeScript + xterm.js frontend, no UI
-framework). Saved sessions are local folders (with a startup command and shell) or SSH/Telnet hosts. The
-repository is public (MIT), and every release auto-updates everyone's installed copy.
+framework). Saved sessions are local folders (with a startup command and shell) or SSH/Telnet hosts. A group can
+be linked to a folder of API request files that a team shares through git (request panes, run with curl). Panes
+can also be a read-only Files view of a session's folder. The repository is public (MIT), and every release
+auto-updates everyone's installed copy.
 
 ## Commands
 
@@ -35,6 +37,14 @@ is skipped). Unset this session's `CLAUDE_CODE_*` / `CLAUDECODE` variables first
 starts from writing its session files. SSH tests only use
 127.0.0.1 (a closed port, or a small fake server in `e2e/run.mjs`).
 
+- Set `\\wsl.localhost\…` paths from PowerShell: Git Bash turns them into `\wsl.localhost\…`.
+- A test build started without its own `SHELLMAN_CONFIG_DIR` only focuses the installed Shellman (single
+  instance), so you end up testing the old version.
+- The step "right-click in Claude Code pastes once" fails now and then in the main checkout (Claude starts slower
+  there); it passes from a fresh worktree. On its own it isn't a regression.
+- New UI gets a check in the matching `e2e/run.mjs` step, using real keys and clicks (`key`, `type`, `click`)
+  where focus matters.
+
 ## Layout
 
 | Path | What |
@@ -43,10 +53,17 @@ starts from writing its session files. SSH tests only use
 | `src-tauri/src/shell.rs` | Shell detection and launch arguments (startup commands, shell integration) |
 | `src-tauri/src/connect.rs` | SSH/Telnet: finds ssh.exe/telnet.exe, builds and checks their arguments, agent keys |
 | `src-tauri/src/config.rs`, `lib.rs` | Atomic config files, Tauri commands |
+| `src-tauri/src/collection.rs`, `http.rs`, `git.rs` | Linked request folders (scan, watch, checked paths), the curl runner, git for git sync |
+| `src-tauri/src/proc.rs` | Helper programs (curl, op, git): no console window, a Job object ends all they start |
+| `src-tauri/src/files.rs`, `worktree.rs`, `xshell.rs` | Files pane (read-only), git worktrees for sessions, reading XShell's `.xsh` files |
 | `src/main.ts` | App shell: status bar, menus, dialogs wiring, shortcuts, restore |
 | `src/workspace.ts`, `pane.ts`, `layout.ts` | Tabs and splits, one terminal (xterm), pure split-tree ops |
 | `src/sidebar.ts`, `sessionEditor.ts`, `settingsDialog.ts`, `palette.ts` | UI |
+| `src/requestPane.ts`, `requestActions.ts`, `variablesDialog.ts`, `varField.ts` | Request panes, their actions and menus, the variables editor, `{{variable}}` fields |
+| `src/collections.ts`, `gitSync.ts` | Linked folders as read from disk (and the variables in effect), git sync |
+| `src/filesPane.ts`, `worktreeDialog.ts`, `importDialog.ts` | Files pane, worktrees, importing sessions |
 | `src/config.ts`, `connection.ts`, `snapshot.ts`, `claude.ts` | Pure logic with unit tests |
+| `src/requestFile.ts`, `variables.ts`, `dotenv.ts`, `curl.ts`, `postman.ts`, `xshell.ts` | Pure logic with unit tests: request and environment files, variable lookup and what curl is given, `.env` files, curl commands, importers |
 | `docs/` | The shellman.app website (GitHub Pages, served from `main:/docs`) |
 
 ## Rules
@@ -61,6 +78,16 @@ starts from writing its session files. SSH tests only use
 - **Config and workspace files must stay loadable.** New fields get defaults in `normalizeConfig` /
   `normalizeSnapshot` / `normalizeConnection`, old files keep working, and the config version stays 1 for
   additive changes. Cover it in `config.test.ts` / `snapshot.test.ts`.
+- **Request folders are shared through git.** Request files, `environments/*.json` and `.env` are written with a
+  fixed key order and without defaults, so a change is a small diff. New fields are optional, so a teammate's
+  older Shellman still reads the files. Shellman touches only its own files there, by relative paths that
+  `collection.rs` checks. Personal values live in `.env.local` / `.env.<env>.local`: git sync commits only
+  Shellman's files and `git.rs` refuses the personal ones. Choices made in the app (the environment, a variable's
+  chosen value) are kept in the config, not in the shared files, so switching never makes a commit.
+- **Secret values never reach a command line, the request text or a log.** Secret variables and `op://`
+  references go to curl through its environment (`--variable`), and 1Password's `op run` fills the references.
+  Console output and "Copy as curl" hide them.
+- **The Files pane is read-only.** Helper programs (curl, op, git) start through `proc.rs`.
 - **Shortcuts** live in `src/keys.ts`. Never use Ctrl+Alt (it is AltGr on Nordic and other layouts).
 - Match the surrounding code: small functions, comments that explain why, plain and short UI text.
 
