@@ -450,6 +450,36 @@ if (phase === 'main') {
     await waitFor(`__t.ws.tabs.length === ${tabs}`, 3000, 'closed');
   });
 
+  await step('Claude in WSL: switching conversations with /clear is followed', async () => {
+    if ((await ev(`window.__shellman.workspace.resolveShell('wsl')?.id ?? ''`)) !== 'wsl') {
+      console.log('       (WSL not installed; skipped)');
+      return;
+    }
+    const tabs = await ev(`__t.ws.tabs.length`);
+    // A folder Claude inside WSL already trusts (a \\wsl.localhost\… path), else this repository.
+    const dir = process.env.SHELLMAN_E2E_WSL_CLAUDE_DIR || REPO;
+    await ev(`void __t.ws.open({ name: 'wsl claude', cwd: ${js(dir)}, command: 'claude', shellId: 'wsl', env: {}, color: '', sessionId: null }, 'tab')`);
+    try {
+      // wsl.exe without WSL or a distribution only says so.
+      await waitFor(`/Claude Code v\\d|trust|not found|No such file|Subsystem for Linux|distribution/i.test(__t.text()) || __t.active().ended`, 60000, 'claude in WSL');
+      // The folder's trust is left for the user to decide.
+      if (!(await ev(`/Claude Code v\\d/.test(__t.text())`))) {
+        console.log(`       (no Claude Code inside WSL, or it doesn't trust ${dir}: set SHELLMAN_E2E_WSL_CLAUDE_DIR; skipped)`);
+        return;
+      }
+      const started = await ev(`__t.active().spec.claudeId`);
+      await sleep(1000);
+      await ev(`__t.active().sendInput('/clear')`);
+      await sleep(500);
+      await ev(`__t.active().sendInput('\\r')`);
+      // The first look-up asks WSL where Claude keeps its files.
+      await waitFor(`(async () => { await __t.active().followClaude(); return __t.active().spec.claudeId !== ${js(started)}; })()`, 30000, 'followed /clear');
+    } finally {
+      await ev(`__t.ws.closePane(__t.active().id)`);
+      await waitFor(`__t.ws.tabs.length === ${tabs}`, 3000, 'closed');
+    }
+  });
+
   await step('a missing directory shows an error and Enter retries', async () => {
     await ev(`void __t.ws.open({ name: 'gone', cwd: 'C:\\\\does\\\\not\\\\exist', command: '', shellId: '', env: {}, color: '', sessionId: null }, 'tab')`);
     await waitFor(`__t.text().includes('Directory not found') && __t.active().state === 'error'`, 5000, 'error shown');
@@ -1695,6 +1725,14 @@ if (phase === 'main') {
     await ev(`void __t.ws.open({ name: 'claude', cwd: ${js(REPO)}, command: 'claude', shellId: '', env: {}, color: '', sessionId: null }, 'tab')`);
     await waitFor(`__t.ws.tabs.length === 3 && __t.active().spec.claudeStarted === true`, 15000, 'claude tab started');
     await waitFor(`/Claude Code|Welcome|trust/i.test(__t.text())`, 40000, 'claude UI');
+    // /clear switches Claude to a new conversation (as /resume does); the terminal follows it.
+    const started = await ev(`__t.active().spec.claudeId`);
+    await waitFor(`/Claude Code v\\d/.test(__t.text())`, 40000, 'claude prompt');
+    await sleep(1000);
+    await ev(`__t.active().sendInput('/clear')`);
+    await sleep(500);
+    await ev(`__t.active().sendInput('\\r')`);
+    await waitFor(`(async () => { await __t.active().followClaude(); return __t.active().spec.claudeId !== ${js(started)}; })()`, 15000, 'followed /clear');
     await ev(`(() => {
       const [first, second] = __t.ws.tabs;
       __t.ws.renameTab(second, 'Parent');
@@ -1708,6 +1746,7 @@ if (phase === 'main') {
     assert(saved.tabs.length === 3 && saved.activeTab === 0, 'tabs: ' + JSON.stringify(saved).slice(0, 300));
     const claude = saved.tabs[2].root.pane;
     assert(claude.command === 'claude' && /^[0-9a-f-]{36}$/.test(claude.claudeId) && claude.claudeStarted === true, 'claude conversation: ' + JSON.stringify(claude));
+    assert(claude.claudeId !== started, 'saved the conversation Claude started with, not the one after /clear');
     assert(saved.tabs[0].root.split === 'row' && Math.abs(saved.tabs[0].root.sizes[0] - 0.7) < 0.01, 'split: ' + JSON.stringify(saved.tabs[0].root).slice(0, 300));
     assert(saved.tabs[0].activePane === 1 && saved.tabs[1].title === 'Parent', 'active pane / title');
   });
@@ -1745,14 +1784,13 @@ if (phase === 'restart') {
     // The session's startup command runs again.
     await waitFor(`__t.text(__t.ws.panesOf(__t.ws.tabs[0])[0]).includes('startup-ok')`, 15000, 'startup command re-ran');
   });
-  await step('a restored Claude terminal resumes its own conversation', async () => {
+  await step('a restored Claude terminal resumes the conversation it showed', async () => {
     const id = await ev(`__t.ws.panesOf(__t.ws.tabs[2])[0].spec.claudeId`);
     assert(/^[0-9a-f-]{36}$/.test(id ?? ''), 'no conversation id: ' + id);
     const claudePane = `__t.ws.panesOf(__t.ws.tabs[2])[0]`;
-    // It tries to resume exactly that conversation; it was never used, so Claude starts it fresh with the same id.
-    await waitFor(`__t.text(${claudePane}).includes('No conversation found with session ID: ${id}')`, 40000, 'resumed by id');
-    // Claude clears the screen when it starts, so the message above disappears again.
-    await waitFor(`/Claude Code v\\d/.test(__t.text(${claudePane}))`, 40000, 'fresh conversation started');
+    // The terminal switched conversations with /clear before the restart; Claude resumes that one, which shows the /clear.
+    await waitFor(`/Claude Code v\\d/.test(__t.text(${claudePane})) && __t.text(${claudePane}).includes('/clear')`, 40000, 'resumed by id');
+    assert(!(await ev(`__t.text(${claudePane}).includes('No conversation found')`)), 'the conversation after /clear was not found');
   });
   await step('one click on a saved session opens it', async () => {
     await ev(`(() => { window.__log = []; for (const t of ['mousedown','mouseup','click']) document.addEventListener(t, e => window.__log.push(t + ':' + e.target.className), true); return true; })()`);

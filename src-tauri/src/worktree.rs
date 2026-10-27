@@ -82,6 +82,13 @@ fn same_folder(a: &str, b: &str) -> bool {
     }
 }
 
+/// Whether `inner` is the folder `outer` or one inside it, however they are written.
+pub(crate) fn within_folder(inner: &str, outer: &str) -> bool {
+    let key = |p: &str| windows(&full_path(Path::new(p)).unwrap_or_else(|| p.to_string())).trim_end_matches('\\').to_lowercase();
+    let (inner, outer) = (key(inner), key(outer));
+    !outer.is_empty() && (inner == outer || inner.starts_with(&format!("{outer}\\")))
+}
+
 /// `git worktree list --porcelain` → worktrees (the first is the main one), with `path` turning
 /// git's paths into Windows ones.
 pub fn parse_worktrees(out: &str, path: impl Fn(&str) -> String) -> Vec<Worktree> {
@@ -256,6 +263,22 @@ mod tests {
         );
         assert_eq!((list[1].branch.as_deref(), list[1].locked, list[1].main), (Some("claude/fix"), true, false));
         assert_eq!((list[2].branch.as_deref(), list[2].prunable), (None, true));
+    }
+
+    #[test]
+    fn folders_within_folders() {
+        assert!(within_folder(r"C:\Projects\App", r"c:\projects\app\"));
+        assert!(within_folder("C:/Projects/app/.claude/worktrees/x", r"C:\Projects\app"));
+        assert!(!within_folder(r"C:\Projects\app2", r"C:\Projects\app"));
+        assert!(!within_folder("", r"C:\Projects\app"));
+        assert!(!within_folder(r"C:\Projects\app", ""));
+        // A short (8.3) name is the same folder.
+        let dir = std::env::temp_dir().join(format!("shellman within {}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let short = short_name(&dir);
+        let same = within_folder(&short, &dir.to_string_lossy());
+        let _ = fs::remove_dir_all(&dir);
+        assert!(same, "{short}");
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {

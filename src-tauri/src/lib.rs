@@ -83,6 +83,13 @@ async fn pty_has_children(state: State<'_, PtyManager>, id: u32) -> Result<bool,
 }
 
 #[tauri::command]
+async fn pty_claude_session(state: State<'_, PtyManager>, id: u32, known: String) -> Result<Option<String>, String> {
+    let Some(finder) = state.claude_finder(id) else { return Ok(None) };
+    // Reads files, and in WSL may ask WSL first.
+    blocking(move || Ok(finder.find(&known))).await
+}
+
+#[tauri::command]
 async fn list_shells() -> Vec<ShellProfile> {
     shell::detect_shells()
 }
@@ -510,6 +517,7 @@ pub fn run() {
             pty_kill,
             pty_kill_all,
             pty_has_children,
+            pty_claude_session,
             list_shells,
             wsl_home,
             ssh_agent_keys,
