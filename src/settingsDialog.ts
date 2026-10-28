@@ -4,7 +4,7 @@ import { DEFAULT_FONT, defaultSettings, guessShellKind, uid } from './config';
 import { dialog } from './dialogs';
 import { h } from './dom';
 import { icons } from './icons';
-import { ACTION_LABELS, BINDINGS, bindingLabel, REQUEST_BINDINGS, REQUEST_LABELS, type Action } from './keys';
+import { ACTION_LABELS, BINDINGS, bindingLabel, NOTE_BINDINGS, NOTE_LABELS, REQUEST_BINDINGS, REQUEST_LABELS, type Action } from './keys';
 import { pickDirectory, shellOptions } from './sessionEditor';
 import { store } from './store';
 import { THEMES } from './themes';
@@ -281,7 +281,7 @@ export function openSettings(tab?: SettingsTab): void {
       section(
         'Terminal',
         h('div', { class: 'row two' }, field('Default shell', defaultShell), field('Scrollback lines', scrollback)),
-        field('On start', restore, 'Tabs and splits open where you left them, each in the folder it was last in.'),
+        field('On start', restore, 'Tabs and splits open where you left them, each in the folder it was last in. Notes always reopen.'),
         field('Default directory', h('div', { class: 'row' }, defaultCwd, browse), 'Used for new terminals that are not opened from a session or an existing terminal.'),
         h(
           'div',
@@ -457,6 +457,7 @@ export function openShortcuts(): void {
     rows.push(h('tr', null, h('td', null, REQUEST_LABELS[action]), h('td', null, h('kbd', null, keys[0]))));
   }
   rows.push(h('tr', null, h('td', null, 'Open a request in a split'), h('td', null, h('kbd', null, 'Middle-click request'))));
+  for (const b of NOTE_BINDINGS) rows.push(h('tr', null, h('td', null, NOTE_LABELS[b.action]), h('td', null, h('kbd', null, bindingLabel(b)))));
   dialog({
     title: 'Keyboard shortcuts',
     width: 560,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BINDINGS, bindingLabel, matchKey, type KeyLike } from './keys';
+import { BINDINGS, bindingLabel, matchKey, matchNoteKey, type KeyLike } from './keys';
 
 const key = (code: string, mods: Partial<KeyLike> = {}): KeyLike => ({
   code,
@@ -27,6 +27,13 @@ describe('matchKey', () => {
   it('leaves plain Ctrl+C / Ctrl+V for the terminal to decide', () => {
     expect(matchKey(key('KeyC', { ctrlKey: true }))).toBeNull();
     expect(matchKey(key('KeyV', { ctrlKey: true }))).toBeNull();
+  });
+
+  it('opens a new note with Ctrl+Shift+J; Ctrl+S and Ctrl+F belong to the note', () => {
+    expect(matchKey(key('KeyJ', { ctrlKey: true, shiftKey: true }))).toEqual({ action: 'newNote' });
+    expect(matchNoteKey(key('KeyS', { ctrlKey: true }))).toBe('save');
+    expect(matchNoteKey(key('KeyF', { ctrlKey: true }))).toBe('find');
+    expect(matchNoteKey(key('KeyF', { ctrlKey: true, shiftKey: true }))).toBeNull();
   });
 
   it('distinguishes next and previous tab', () => {

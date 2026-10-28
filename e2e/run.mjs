@@ -21,6 +21,8 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PARENT = path.dirname(REPO);
 const js = JSON.stringify;
 const prompt = (dir) => js(`PS ${dir}>`);
+// A file opened in a note before the restart (in the throwaway profile's folder).
+const NOTE_FILE = path.join(process.env.SHELLMAN_CONFIG_DIR ?? os.tmpdir(), 'e2e-note.txt');
 
 let passed = 0;
 const failures = [];
@@ -1745,7 +1747,7 @@ if (phase === 'main') {
       await ev(`${row}.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
       await waitFor(`document.querySelectorAll('.menu-item').length > 3`, 2000, 'session menu');
       assert(!(await ev(`!!${menuItem('worktree')}`)), 'worktree entries shown while off');
-      await ev(`document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+      await ev(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
       await ev(`${row}.click()`);
       await waitFor(`!document.querySelector('.dialog') && __t.active()?.cwd?.toLowerCase() === ${js(repo.toLowerCase())} && !__t.active().spec.worktree`, 8000, 'plain session terminal');
     } finally {
@@ -1761,6 +1763,89 @@ if (phase === 'main') {
       } catch (e) {
         console.log(`       (could not remove ${base}: ${e.code})`);
       }
+    }
+  });
+
+  await step('notes: typing is kept, find, add from a terminal, save to a file, closing asks', async () => {
+    const NOTES = path.join(path.dirname(CONFIG), 'notes');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-notes-'));
+    const file = path.join(dir, 'kept.txt');
+    const note = `__t.active()`;
+    try {
+      await ev(`(() => { for (const t of [...__t.ws.tabs]) __t.ws.removeTab(t); return true; })()`);
+      await ev(`void __t.ws.open({ name: 'repo', cwd: ${js(REPO)}, command: '', shellId: 'cmd', env: {}, color: '', sessionId: null }, 'tab')`);
+      await waitFor(`__t.active()?.kind === 'terminal' && !document.querySelector('.dialog, .menu, .palette')`, 5000, 'terminal');
+      // Earlier steps can leave the focus elsewhere (the sidebar): click into the terminal, as a person would.
+      await click('.pane.active .pane-term');
+      await waitFor(`document.activeElement?.classList.contains('xterm-helper-textarea')`, 5000, 'terminal focused').catch(async (e) => {
+        throw new Error(e.message + ' ' + (await ev(`JSON.stringify({ active: __t.active()?.kind, focus: document.activeElement?.className, tag: document.activeElement?.tagName })`)));
+      });
+      await key('KeyJ', 'J', 74, ['ctrl', 'shift']);
+      await waitFor(`__t.active()?.kind === 'note' && document.activeElement?.classList.contains('note-input') && !document.activeElement.readOnly`, 5000, 'Ctrl+Shift+J opens a note with the caret in it').catch(async (e) => {
+        throw new Error(e.message + ' ' + (await ev(`JSON.stringify({ active: __t.active()?.kind, panes: [...__t.ws.panes.values()].map((p) => p.kind), focus: document.activeElement?.className, dialog: !!document.querySelector('.dialog, .menu, .palette') })`)));
+      });
+      assert((await ev(`${note}.name`)) === 'Note 1', 'name');
+      await type('echo hello');
+      assert((await ev(`${note}.dirty`)) === true, 'a new note with text is unsaved');
+      const id = await ev(`${note}.ref.id`);
+      await waitFor(`${note}.kept === 'echo hello'`, 3000, 'text kept for the next start');
+      assert(fs.readFileSync(path.join(NOTES, `${id}.txt`), 'utf8') === 'echo hello', 'kept file');
+      // Ctrl+F finds in the note; Enter goes on to the next match.
+      await key('KeyF', 'f', 70, ['ctrl']);
+      await waitFor(`document.activeElement?.classList.contains('note-find')`, 2000, 'find box focused');
+      await type('L');
+      await waitFor(`document.querySelector('.note-find-count').textContent === '1 of 2'`, 2000, 'two matches');
+      await key('Enter', 'Enter', 13);
+      const sel = await ev(`(() => { const t = document.querySelector('.note-pane.active .note-input'); return [t.selectionStart, t.selectionEnd, document.querySelector('.note-find-count').textContent]; })()`);
+      assert(sel[0] === 8 && sel[1] === 9 && sel[2] === '2 of 2', 'second match selected: ' + js(sel));
+      await key('Escape', 'Escape', 27);
+      await waitFor(`document.activeElement?.classList.contains('note-input')`, 2000, 'Escape goes back to the text');
+      // A terminal's selection goes to the note last used, while the terminal keeps the focus.
+      const term = `[...__t.ws.panes.values()].find((p) => p.kind === 'terminal')`;
+      await ev(`${term}.sendInput('echo from-terminal\\r')`);
+      await waitFor(`__t.text(${term}).includes('from-terminal')`, 5000, 'terminal output');
+      await ev(`(() => { __t.ws.setActivePane(${term}.id, true); return true; })()`);
+      await waitFor(`__t.active()?.kind === 'terminal'`, 2000, 'terminal focused');
+      await ev(`__t.app.addToNote('from-terminal\\r\\n')`);
+      const notePane = `[...__t.ws.panes.values()].find((p) => p.kind === 'note')`;
+      await waitFor(`${notePane}.input.value === 'echo hello\\nfrom-terminal\\n'`, 3000, 'added on a line of its own');
+      assert((await ev(`__t.active()?.kind`)) === 'terminal', 'the terminal kept the focus');
+      await ev(`(() => { __t.ws.setActivePane(${notePane}.id, true); return true; })()`);
+      // Saved to a file (the save dialog is Windows' own, so the path is given here): CRLF, nothing kept any more.
+      assert(await ev(`${note}.writeFile(${js(file)})`), 'saved');
+      assert(fs.readFileSync(file, 'utf8') === 'echo hello\r\nfrom-terminal\r\n', 'file: ' + js(fs.readFileSync(file, 'utf8')));
+      await waitFor(`!${note}.dirty && ${note}.kept === null`, 3000, 'kept text dropped once saved');
+      await sleep(200);
+      assert(!fs.existsSync(path.join(NOTES, `${id}.txt`)), 'kept file deleted');
+      assert((await ev(`${note}.name`)) === 'kept.txt', 'named after the file');
+      // Ctrl+S saves to the same file without asking.
+      await ev(`${note}.input.focus()`);
+      await type('more');
+      await key('KeyS', 's', 83, ['ctrl']);
+      await waitFor(`!${note}.dirty`, 3000, 'Ctrl+S saved');
+      assert(fs.readFileSync(file, 'utf8') === 'echo hello\r\nfrom-terminal\r\nmore', 'file after Ctrl+S');
+      // Closing a note that isn't saved asks first; "Don't save" drops its kept text.
+      await key('KeyJ', 'J', 74, ['ctrl', 'shift']);
+      await waitFor(`__t.active()?.kind === 'note' && __t.active().name === 'Note 1' && !__t.active().input.readOnly`, 5000, 'second note (Note 1 is free again)');
+      await type('scratch');
+      const id2 = await ev(`${note}.ref.id`);
+      await ev(`${note}.flush()`);
+      assert(fs.existsSync(path.join(NOTES, `${id2}.txt`)), 'second note kept');
+      // Quitting doesn't ask about notes: they reopen.
+      assert((await ev(`__t.ws.unsavedPanes().length`)) === 0, 'notes are not asked about on quit');
+      await key('KeyW', 'W', 87, ['ctrl', 'shift']);
+      await waitFor(`!!document.querySelector('.dialog') && document.querySelector('.dialog').textContent.includes('Note 1')`, 3000, 'asks to save');
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find((b) => b.textContent === "Don't save").click()`);
+      await waitFor(`!document.querySelector('.dialog') && ![...__t.ws.panes.values()].some((p) => p.ref?.id === ${js(id2)})`, 3000, 'closed');
+      await sleep(300);
+      assert(!fs.existsSync(path.join(NOTES, `${id2}.txt`)), 'kept text of a closed note deleted');
+      // The sidebar's New note button, next to New session and New group.
+      const notesBefore = await ev(`[...__t.ws.panes.values()].filter((p) => p.kind === 'note').length`);
+      await click('.sidebar-header .icon-btn[title^="New note"]');
+      await waitFor(`__t.active()?.kind === 'note' && [...__t.ws.panes.values()].filter((p) => p.kind === 'note').length === ${notesBefore + 1}`, 3000, 'sidebar button opens a note');
+    } finally {
+      await ev(`(() => { for (const t of [...__t.ws.tabs]) __t.ws.removeTab(t); return true; })()`);
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
@@ -1792,6 +1877,19 @@ if (phase === 'main') {
       __t.ws.setActivePane(__t.ws.panesOf(first)[1].id, true);
       return true;
     })()`);
+    // Notes beside the Parent terminal: one never saved, one saved to a file and changed since.
+    fs.writeFileSync(NOTE_FILE, 'on disk\r\n');
+    await ev(`(() => {
+      const parent = __t.ws.panesOf(__t.ws.tabs[1])[0];
+      __t.ws.openNote({ text: 'kept across restarts\\n', placement: 'right', targetPaneId: parent.id });
+      const file = __t.ws.openNote({ path: ${js(NOTE_FILE)}, placement: 'down', targetPaneId: __t.active().id });
+      void file.append('not saved yet');
+      __t.ws.activateTab(__t.ws.tabs[0].id);
+      __t.ws.setActivePane(__t.ws.panesOf(__t.ws.tabs[0])[1].id, true);
+      return true;
+    })()`);
+    await waitFor(`[...__t.ws.panes.values()].filter((p) => p.kind === 'note' && p.dirty).length === 2`, 5000, 'notes loaded');
+    await ev(`__t.ws.flush()`);
     await ev(`__t.app.saveWorkspace()`);
     const saved = JSON.parse(fs.readFileSync(path.join(path.dirname(CONFIG), 'workspace.json'), 'utf8'));
     assert(saved.tabs.length === 3 && saved.activeTab === 0, 'tabs: ' + JSON.stringify(saved).slice(0, 300));
@@ -1831,6 +1929,15 @@ if (phase === 'restart') {
     assert(r.split === 'row' && Math.abs(r.size - 0.7) < 0.01, 'layout: ' + JSON.stringify(r));
     assert(r.aSession && r.bShell === 'cmd' && r.bCwd === 'C:\\', 'panes: ' + JSON.stringify(r));
     assert(r.title === 'Parent' && r.parentCwd === PARENT, 'second tab: ' + JSON.stringify(r));
+    // Notes reopen with what they had, saved or not.
+    const notesOf = `__t.ws.panesOf(__t.ws.tabs[1]).filter((p) => p.kind === 'note')`;
+    await waitFor(`${notesOf}.length === 2 && ${notesOf}.every((p) => p.ready)`, 5000, 'notes reopened');
+    const notes = await ev(`${notesOf}.map((p) => ({ name: p.name, text: p.input.value, dirty: p.dirty }))`);
+    assert(
+      js(notes) === js([{ name: 'Note 1', text: 'kept across restarts\n', dirty: true }, { name: 'e2e-note.txt', text: 'on disk\nnot saved yet\n', dirty: true }]),
+      'notes: ' + js(notes),
+    );
+    assert(fs.readFileSync(NOTE_FILE, 'utf8') === 'on disk\r\n', 'the file itself is unchanged');
     assert(r.activeTab === 0 && r.activePane, 'focus: ' + JSON.stringify(r));
     // The session's startup command runs again.
     await waitFor(`__t.text(__t.ws.panesOf(__t.ws.tabs[0])[0]).includes('startup-ok')`, 15000, 'startup command re-ran');

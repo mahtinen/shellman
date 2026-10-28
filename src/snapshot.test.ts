@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { leaf, type LayoutNode } from './layout';
-import { layoutFromSnapshot, normalizeSnapshot, snapshotLeaves, snapshotNode, snapshotPanes, type SnapshotLeaf } from './snapshot';
+import { layoutFromSnapshot, normalizeSnapshot, notesOnly, snapshotLeaves, snapshotNode, snapshotNotes, snapshotPanes, type SnapshotLeaf } from './snapshot';
 import type { LaunchSpec } from './types';
 
 const spec = (cwd: string, extra: Partial<LaunchSpec> = {}): LaunchSpec => ({
@@ -82,6 +82,36 @@ describe('snapshot', () => {
       files: { root: 'C:\\x', path: '', view: 'all', mode: 'file', base: 'HEAD', baseLabel: '' },
     });
     expect(normalizeSnapshot({ tabs: [{ root: { files: { path: 'a.ts' } } }] })).toBeNull();
+  });
+
+  it('keeps notes, saved or not', () => {
+    const note: SnapshotLeaf = { note: { id: 'n-1', name: 'Note 1', path: '', wrap: true } };
+    const saved: SnapshotLeaf = { note: { id: 'n-2', name: 'todo.txt', path: 'C:\\Users\\me\\todo.txt', wrap: false } };
+    const snap = normalizeSnapshot({ tabs: [{ root: { split: 'row', sizes: [1, 1], children: [note, saved] } }] })!;
+    expect(snapshotNotes(snap.tabs[0].root)).toEqual([note.note, saved.note]);
+    expect(normalizeSnapshot({ tabs: [{ root: { note: { id: 'n-3' } } }] })!.tabs[0].root).toEqual({ note: { id: 'n-3', name: 'Note', path: '', wrap: false } });
+    // The id names a file in the notes folder.
+    for (const id of ['', '../config', 'a\\b', 'x'.repeat(65), 7]) expect(normalizeSnapshot({ tabs: [{ root: { note: { id } } }] })).toBeNull();
+  });
+
+  it('notesOnly keeps the notes where they were and drops everything else', () => {
+    const note = (id: string): SnapshotLeaf => ({ note: { id, name: id, path: '', wrap: false } });
+    const snap = normalizeSnapshot({
+      activeTab: 2,
+      tabs: [
+        { title: 'logs', root: { split: 'row', sizes: [1, 2, 1], children: [{ pane: spec('C:\\a') }, note('a'), note('b')] } },
+        { root: { pane: spec('C:\\b') } },
+        { root: { request: { groupId: 'g', path: 'x.request.json' } } },
+        { root: note('c') },
+      ],
+    })!;
+    const notes = notesOnly(snap)!;
+    expect(notes.tabs).toEqual([
+      { title: 'logs', activePane: 0, root: { split: 'row', sizes: [2 / 3, 1 / 3], children: [note('a'), note('b')] } },
+      { title: null, activePane: 0, root: note('c') },
+    ]);
+    expect(notes.activeTab).toBe(0);
+    expect(notesOnly(normalizeSnapshot({ tabs: [{ root: { pane: spec('C:\\a') } }] })!)).toBeNull();
   });
 
   it('leaves out panes that can no longer be opened', () => {

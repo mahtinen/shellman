@@ -1,12 +1,15 @@
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { api } from './api';
 import { collections } from './collections';
 import { baseName, deleteGroup, groupColor, groupPath, newGroup, ownerSession, sessionColor, uid } from './config';
 import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, newSshConnection, parseQuickConnect } from './connection';
 import { confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
 import { FilesPane } from './filesPane';
+import { appendText } from './note';
+import { latestNote, NotePane } from './notePane';
 import { askNewWorktree, askRemoveWorktree } from './worktreeDialog';
 import { folderInWorktree, isInside } from './worktrees';
 import { clamp, h, isEditableTarget, setChildren } from './dom';
@@ -37,7 +40,7 @@ import { requestFolder } from './requestFile';
 import { copyRequestAsCurl, RequestPane } from './requestPane';
 import { editVariables } from './variablesDialog';
 import { showPalette, type PaletteItem } from './palette';
-import { normalizeSnapshot, snapshotPanes } from './snapshot';
+import { normalizeSnapshot, notesOnly, snapshotNotes, snapshotPanes } from './snapshot';
 import { gitSync } from './gitSync';
 import { editGroup, editSession, pickDirectory, shellEntries } from './sessionEditor';
 import { openSettings, openShortcuts } from './settingsDialog';
@@ -96,6 +99,7 @@ class App {
       remove: (s) => void this.removeSession(s),
       createGroup: (parentId) => void this.createGroup(parentId),
       importSessions: (groupId) => importSessions(groupId),
+      newNote: () => this.workspace.openNote(),
       editGroup: (g) => void this.editGroup(g),
       removeGroup: (g) => void this.removeGroup(g),
       openFolder: (s) => void api.openDir(s.cwd).catch((e) => toast(String(e), 'error')),
@@ -246,6 +250,7 @@ class App {
   private updateStatus(pane: WorkspacePane | null): void {
     if (pane instanceof RequestPane) return this.updateRequestStatus(pane);
     if (pane instanceof FilesPane) return this.updateFilesStatus(pane);
+    if (pane instanceof NotePane) return this.updateNoteStatus(pane);
     if (!isTerminal(pane)) {
       this.statusLeft.replaceChildren(h('span', { class: 'muted' }, `${store.config.sessions.length} saved sessions`));
       this.statusRight.replaceChildren(h('span', { class: 'muted' }, `${shortcutFor('palette')} quick open`));
@@ -304,6 +309,25 @@ class App {
       state ? h('span', { class: 'status-state' }, state) : null,
       h('span', { class: 'muted' }, `${pane.term.cols}×${pane.term.rows}`),
     );
+    if (this.workspace.activeTab) {
+      const title = `${this.workspace.tabLabel(this.workspace.activeTab)} — Shellman`;
+      if (document.title !== title) {
+        document.title = title;
+        void getCurrentWindow().setTitle(title).catch(() => undefined);
+      }
+    }
+  }
+
+  /** A note's file, or that Shellman keeps it. */
+  private updateNoteStatus(pane: NotePane): void {
+    setChildren(
+      this.statusLeft,
+      h('span', { class: 'status-shell static' }, 'Note'),
+      pane.path
+        ? h('button', { class: 'status-link', title: 'Open the folder in Explorer', onclick: () => void api.openDir(dirName(pane.path)).catch((e) => toast(String(e), 'error')) }, pane.path)
+        : h('span', { class: 'muted' }, 'Not saved to a file: Shellman keeps it until you close it'),
+    );
+    setChildren(this.statusRight, pane.dirty && pane.path ? h('span', { class: 'muted' }, 'unsaved changes') : null, pane.eolLabel ? h('span', { class: 'muted' }, pane.eolLabel) : null);
     if (this.workspace.activeTab) {
       const title = `${this.workspace.tabLabel(this.workspace.activeTab)} — Shellman`;
       if (document.title !== title) {
@@ -439,6 +463,7 @@ class App {
           h('button', { class: 'btn', onclick: () => void this.openDirectory() }, h('span', { html: icons.folder }), 'Open directory…'),
           h('button', { class: 'btn', onclick: () => void this.createSession({}) }, h('span', { html: icons.plus }), 'New session…'),
           h('button', { class: 'btn', onclick: () => this.newConnection() }, h('span', { html: icons.globe }), 'New connection…'),
+          h('button', { class: 'btn', onclick: () => this.workspace.openNote() }, h('span', { html: icons.note }), 'New note'),
         ),
         sessions.length ? h('div', { class: 'welcome-grid' }, ...sessions.slice(0, 24).map(card)) : null,
         h(
@@ -448,6 +473,7 @@ class App {
             [
               ['palette', 'quick open a saved session, or type user@host'],
               ['newConnection', 'new SSH or Telnet connection'],
+              ['newNote', 'new note'],
               ['newTab', 'new tab in the current directory'],
               ['splitRight', 'split right'],
               ['splitDown', 'split down'],
@@ -464,19 +490,22 @@ class App {
   async restoreWorkspace(): Promise<void> {
     const mode = store.settings.restoreTerminals;
     let raw: unknown = null;
-    if (mode !== 'off') {
-      try {
-        const loaded = await api.loadWorkspace();
-        raw = loaded.value;
-        if (loaded.notice) toast(loaded.notice, 'error', 12000);
-      } catch (e) {
-        // The file is there but can't be read: leave it alone instead of overwriting it (saving stays off).
-        toast(`Could not reopen the previous tabs: ${e}`, 'error', 10000);
-        return;
-      }
+    try {
+      const loaded = await api.loadWorkspace();
+      raw = loaded.value;
+      if (loaded.notice) toast(loaded.notice, 'error', 12000);
+    } catch (e) {
+      // The file is there but can't be read: leave it alone instead of overwriting it (saving stays off).
+      toast(`Could not reopen the previous tabs: ${e}`, 'error', 10000);
+      return;
     }
     try {
-      const snap = normalizeSnapshot(raw);
+      const all = normalizeSnapshot(raw);
+      // Notes always reopen: their text may be kept nowhere else.
+      const snap = all && mode === 'off' ? notesOnly(all) : all;
+      // Text kept for notes that are no longer open goes.
+      const open = all ? all.tabs.flatMap((t) => snapshotNotes(t.root)).map((n) => n.id) : [];
+      void api.noteBackupPrune(open).catch((e) => console.warn('Could not tidy the notes folder:', e));
       if (!snap) return;
       // Request panes reopen from their files.
       await collections.ready();
@@ -571,6 +600,7 @@ class App {
       if (!ok) return;
     }
     await this.workspace.followClaude();
+    await this.workspace.flush();
     await this.saveWorkspace(true);
     await store.flush();
     const live = [...this.workspace.panes.values()].filter((p) => isTerminal(p) && p.isRunning) as Pane[];
@@ -834,6 +864,35 @@ class App {
     for (const s of store.config.sessions.filter((x) => x.groupId === g.id)) this.workspace.open(this.sessionSpec(s), 'tab');
   }
 
+  /** A new note, in a split of the active pane or in a tab. */
+  private newNote(placement: SplitPlacement = 'tab'): void {
+    const pane = this.workspace.activePane();
+    this.workspace.openNote({ placement: pane ? placement : 'tab', targetPaneId: pane?.id });
+  }
+
+  private async openNoteFile(placement: SplitPlacement = 'tab'): Promise<void> {
+    const path = await openDialog({
+      title: 'Open a text file as a note',
+      filters: [
+        { name: 'Text files', extensions: ['txt', 'log', 'md'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    }).catch(() => null);
+    if (typeof path !== 'string') return;
+    const pane = this.workspace.activePane();
+    this.workspace.openNote({ path, placement: pane ? placement : 'tab', targetPaneId: pane?.id });
+  }
+
+  /** Adds a terminal's selection to the note last used (a new one when there is none). */
+  private addToNote(text: string): void {
+    const note = latestNote();
+    if (!note || !this.workspace.panes.has(note.id)) {
+      this.workspace.openNote({ text: appendText('', text) });
+      return;
+    }
+    void note.append(text).then(() => toast(`Added to "${note.name}"`, 'info', 2500, () => this.workspace.setActivePane(note.id, true)));
+  }
+
   private async openDirectory(placement: SplitPlacement = 'tab'): Promise<void> {
     const dir = await pickDirectory(this.workspace.activeTerminal()?.cwd ?? store.defaultCwd());
     if (!dir) return;
@@ -852,6 +911,9 @@ class App {
       { label: 'Quick open saved session…', icon: 'search', shortcut: shortcutFor('palette'), action: () => this.palette() },
       { label: 'New connection…', icon: 'globe', shortcut: shortcutFor('newConnection'), action: () => this.newConnection() },
       { label: 'Import sessions…', icon: 'globe', action: () => importSessions() },
+      'separator',
+      { label: 'New note', icon: 'note', shortcut: shortcutFor('newNote'), action: () => this.workspace.openNote() },
+      { label: 'Open text file as note…', icon: 'file', action: () => void this.openNoteFile() },
       'separator',
       { label: 'Settings', icon: 'gear', shortcut: shortcutFor('settings'), action: () => openSettings() },
       { label: 'Keyboard shortcuts', icon: 'keyboard', action: () => openShortcuts() },
@@ -879,6 +941,8 @@ class App {
     const filesRoot = this.filesRoot(this.workspace.activePane());
     if (filesRoot) items.push({ label: `Show files of ${baseName(filesRoot)}`, detail: filesRoot, icon: 'files', run: () => void this.workspace.openFiles(filesRoot) });
     items.push({ label: 'Open directory…', icon: 'folder', run: (placement) => void this.openDirectory(placement) });
+    items.push({ label: 'New note', icon: 'note', detail: 'Text to keep: commands, log output…', keywords: ['notepad', 'scratch'], run: (placement) => this.newNote(placement) });
+    items.push({ label: 'Open text file as note…', icon: 'file', run: (placement) => void this.openNoteFile(placement) });
     items.push({ label: 'New connection…', icon: 'globe', detail: 'SSH or Telnet', run: () => this.newConnection() });
     items.push({ label: 'Import sessions…', icon: 'globe', detail: 'SSH and Telnet sessions from XShell', run: () => importSessions() });
     showPalette(items, 'Open a saved session, or type user@host to connect…', (q) => {
@@ -1005,8 +1069,10 @@ class App {
   private paneMenu(pane: WorkspacePane, e: MouseEvent): void {
     if (pane instanceof RequestPane) return this.requestPaneMenu(pane, e);
     if (pane instanceof FilesPane) return this.filesPaneMenu(pane, e);
+    if (pane instanceof NotePane) return this.notePaneMenu(pane, e);
     if (!isTerminal(pane)) return;
     const hasSel = pane.term.hasSelection();
+    const note = latestNote();
     const conn = pane.connection;
     const localOnly = (entries: MenuEntry[]): MenuEntry[] => (conn ? [] : entries);
     const tab = this.workspace.tabOf(pane);
@@ -1014,6 +1080,7 @@ class App {
     showMenu(e.clientX, e.clientY, [
       { label: 'Copy', icon: 'copy', shortcut: 'Ctrl+C', disabled: !hasSel, action: () => void pane.copySelection(true) },
       { label: 'Paste', icon: 'paste', shortcut: 'Ctrl+V', action: () => void pane.paste() },
+      { label: note ? `Add to "${note.name}"` : 'Add to a new note', icon: 'note', disabled: !hasSel, action: () => this.addToNote(pane.term.getSelection()) },
       'separator',
       { label: 'Split right', icon: 'splitRight', shortcut: shortcutFor('splitRight'), action: () => this.workspace.open(this.workspace.specFrom(pane, false), 'right', pane.id) },
       { label: 'Split down', icon: 'splitDown', shortcut: shortcutFor('splitDown'), action: () => this.workspace.open(this.workspace.specFrom(pane, false), 'down', pane.id) },
@@ -1064,6 +1131,30 @@ class App {
       'separator',
       { label: 'Terminal in split right', icon: 'splitRight', shortcut: shortcutFor('splitRight'), action: () => terminal('right') },
       { label: 'Terminal in split down', icon: 'splitDown', shortcut: shortcutFor('splitDown'), action: () => terminal('down') },
+      { label: 'Move to new tab', icon: 'popOut', shortcut: shortcutFor('movePaneToTab'), disabled: !split, action: () => this.workspace.moveToNewTab(pane.id) },
+      'separator',
+      { label: 'Close pane', icon: 'x', danger: true, shortcut: shortcutFor('closePane'), action: () => void this.workspace.requestClosePane(pane.id) },
+    ]);
+  }
+
+  private notePaneMenu(pane: NotePane, e: MouseEvent): void {
+    const tab = this.workspace.tabOf(pane);
+    const split = !!tab && this.workspace.panesOf(tab).length > 1;
+    showMenu(e.clientX, e.clientY, [
+      { label: 'Save', icon: 'save', shortcut: 'Ctrl+S', action: () => void pane.save() },
+      { label: 'Save as…', icon: 'save', action: () => void pane.saveAs() },
+      { label: 'Find…', icon: 'search', shortcut: 'Ctrl+F', action: () => pane.openSearch() },
+      { label: 'Wrap long lines', icon: pane.wraps ? 'check' : undefined, action: () => pane.toggleWrap() },
+      ...(pane.path
+        ? [
+            { label: 'Copy path', icon: 'copy' as const, action: () => void api.clipboardWrite(pane.path).then(() => toast('Path copied')) },
+            { label: 'Open folder in Explorer', icon: 'openExternal' as const, action: () => void api.openDir(dirName(pane.path)).catch((err) => toast(String(err), 'error')) },
+          ]
+        : []),
+      'separator',
+      { label: 'New note', icon: 'note', shortcut: shortcutFor('newNote'), action: () => this.workspace.openNote() },
+      { label: 'Terminal in split right', icon: 'splitRight', shortcut: shortcutFor('splitRight'), action: () => this.newTerminal('right') },
+      { label: 'Terminal in split down', icon: 'splitDown', shortcut: shortcutFor('splitDown'), action: () => this.newTerminal('down') },
       { label: 'Move to new tab', icon: 'popOut', shortcut: shortcutFor('movePaneToTab'), disabled: !split, action: () => this.workspace.moveToNewTab(pane.id) },
       'separator',
       { label: 'Close pane', icon: 'x', danger: true, shortcut: shortcutFor('closePane'), action: () => void this.workspace.requestClosePane(pane.id) },
@@ -1356,6 +1447,9 @@ class App {
         return true;
       case 'showFiles':
         return this.showFiles();
+      case 'newNote':
+        this.workspace.openNote();
+        return true;
       case 'newConnection':
         this.newConnection();
         return true;
@@ -1455,6 +1549,7 @@ class App {
         }
       }
       await this.workspace.followClaude();
+      await this.workspace.flush();
       await this.saveWorkspace(true);
       await store.flush();
       // A downloaded update is installed on the way out; the next start runs the new version.
@@ -1462,6 +1557,9 @@ class App {
     });
   }
 }
+
+/** The folder a file is in. */
+const dirName = (path: string): string => path.replace(/[\\/][^\\/]*$/, '');
 
 async function main(): Promise<void> {
   try {
