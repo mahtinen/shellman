@@ -25,6 +25,7 @@ export type Action =
   | 'palette'
   | 'showFiles'
   | 'newConnection'
+  | 'newNote'
   | 'toggleSidebar'
   | 'settings'
   | 'saveSession'
@@ -72,6 +73,7 @@ export const BINDINGS: Binding[] = [
   { action: 'palette', code: 'KeyP', ctrl: true, shift: true },
   { action: 'showFiles', code: 'KeyG', ctrl: true, shift: true },
   { action: 'newConnection', code: 'KeyN', ctrl: true, shift: true },
+  { action: 'newNote', code: 'KeyJ', ctrl: true, shift: true },
   { action: 'toggleSidebar', code: 'KeyB', ctrl: true, shift: true },
   { action: 'settings', code: 'Comma', ctrl: true },
   { action: 'saveSession', code: 'KeyS', ctrl: true, shift: true },
@@ -99,6 +101,19 @@ export const REQUEST_LABELS: Record<RequestAction, string> = {
   save: 'Save the request (in a request pane)',
 };
 
+/** Keys of a note pane, handled by the pane itself. */
+export type NoteAction = 'save' | 'find';
+
+export const NOTE_BINDINGS: { action: NoteAction; code: string; ctrl?: boolean; shift?: boolean; alt?: boolean }[] = [
+  { action: 'save', code: 'KeyS', ctrl: true },
+  { action: 'find', code: 'KeyF', ctrl: true },
+];
+
+export const NOTE_LABELS: Record<NoteAction, string> = {
+  save: 'Save the note to a file (in a note)',
+  find: 'Find in the note',
+};
+
 export interface KeyLike {
   code: string;
   ctrlKey: boolean;
@@ -110,6 +125,11 @@ export interface KeyLike {
 export function matchRequestKey(e: KeyLike): RequestAction | null {
   if (e.metaKey) return null;
   return REQUEST_BINDINGS.find((b) => b.code === e.code && !!b.ctrl === e.ctrlKey && !!b.shift === e.shiftKey && !!b.alt === e.altKey)?.action ?? null;
+}
+
+export function matchNoteKey(e: KeyLike): NoteAction | null {
+  if (e.metaKey) return null;
+  return NOTE_BINDINGS.find((b) => b.code === e.code && !!b.ctrl === e.ctrlKey && !!b.shift === e.shiftKey && !!b.alt === e.altKey)?.action ?? null;
 }
 
 export function matchKey(e: KeyLike, bindings: Binding[] = BINDINGS): Match | null {
@@ -170,6 +190,7 @@ export const ACTION_LABELS: Record<Action, string> = {
   palette: 'Quick open saved session (or type user@host to connect)',
   showFiles: 'Show the files and changes of the current folder',
   newConnection: 'New SSH or Telnet connection',
+  newNote: 'New note',
   toggleSidebar: 'Show / hide sidebar',
   settings: 'Settings',
   saveSession: 'Save pane as session',

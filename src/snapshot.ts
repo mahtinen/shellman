@@ -30,12 +30,27 @@ export interface FilesRef {
   baseLabel: string;
 }
 
-/** One saved pane: a terminal, a request or a Files pane. */
-export type SnapshotLeaf = { pane: LaunchSpec } | { request: RequestRef } | { files: FilesRef };
+/**
+ * A note. Its text is kept apart (`<config dir>
+otes\<id>.txt`) while it has changes that aren't
+ * saved to a file, so it can be large and is only written when it changes.
+ */
+export interface NoteRef {
+  id: string;
+  /** Shown for a note that isn't saved to a file ("Note 1"). */
+  name: string;
+  /** The file it is saved to ('' = none yet). */
+  path: string;
+  /** Long lines wrap instead of scrolling sideways. */
+  wrap: boolean;
+}
+
+/** One saved pane: a terminal, a request, a Files pane or a note. */
+export type SnapshotLeaf = { pane: LaunchSpec } | { request: RequestRef } | { files: FilesRef } | { note: NoteRef };
 
 export type SnapshotNode = SnapshotLeaf | { split: Direction; sizes: number[]; children: SnapshotNode[] };
 
-const isLeaf = (n: SnapshotNode): n is SnapshotLeaf => 'pane' in n || 'request' in n || 'files' in n;
+const isLeaf = (n: SnapshotNode): n is SnapshotLeaf => 'pane' in n || 'request' in n || 'files' in n || 'note' in n;
 
 export interface TabSnapshot {
   /** Name the user gave the tab, if any. */
@@ -99,6 +114,42 @@ export function snapshotLeaves(node: SnapshotNode): SnapshotLeaf[] {
   return isLeaf(node) ? [node] : node.children.flatMap(snapshotLeaves);
 }
 
+/** The notes, in layout order. */
+export function snapshotNotes(node: SnapshotNode): NoteRef[] {
+  return snapshotLeaves(node).flatMap((l) => ('note' in l ? [l.note] : []));
+}
+
+/**
+ * Only the notes of a snapshot, where they were (notes reopen also when terminals don't); null when
+ * there are none.
+ */
+export function notesOnly(snap: WorkspaceSnapshot): WorkspaceSnapshot | null {
+  const keep = (node: SnapshotNode): SnapshotNode | null => {
+    if (isLeaf(node)) return 'note' in node ? node : null;
+    const children: SnapshotNode[] = [];
+    const sizes: number[] = [];
+    node.children.forEach((c, i) => {
+      const k = keep(c);
+      if (k) {
+        children.push(k);
+        sizes.push(node.sizes[i] ?? 1);
+      }
+    });
+    if (!children.length) return null;
+    if (children.length === 1) return children[0];
+    return { split: node.split, sizes: normalizeSizes(sizes, children.length), children };
+  };
+  const tabs: TabSnapshot[] = [];
+  let activeTab = 0;
+  snap.tabs.forEach((t, i) => {
+    const root = keep(t.root);
+    if (!root) return;
+    if (i <= snap.activeTab) activeTab = tabs.length;
+    tabs.push({ title: t.title, activePane: 0, root });
+  });
+  return tabs.length ? { version: 1, activeTab, tabs } : null;
+}
+
 /** The terminals' launch specs, in layout order. */
 export function snapshotPanes(node: SnapshotNode): LaunchSpec[] {
   return snapshotLeaves(node).flatMap((l) => ('pane' in l ? [l.pane] : []));
@@ -148,6 +199,11 @@ function normalizeNode(v: unknown, depth: number): SnapshotNode | null {
   if ('request' in v) {
     const r = isObj(v.request) ? v.request : {};
     return str(r.groupId) && str(r.path) ? { request: { groupId: str(r.groupId), path: str(r.path) } } : null;
+  }
+  if ('note' in v) {
+    const n = isObj(v.note) ? v.note : {};
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(str(n.id))) return null;
+    return { note: { id: str(n.id), name: str(n.name) || 'Note', path: str(n.path), wrap: n.wrap === true } };
   }
   if ('files' in v) {
     const f = isObj(v.files) ? v.files : {};

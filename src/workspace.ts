@@ -2,6 +2,8 @@ import { getCurrentWindow, UserAttentionType } from '@tauri-apps/api/window';
 import { baseName, ownerSession, pathKey, sessionColor, uid } from './config';
 import { choiceDialog, confirmDialog, toast } from './dialogs';
 import { FilesPane } from './filesPane';
+import { nextNoteName } from './note';
+import { NotePane } from './notePane';
 import { isInside } from './worktrees';
 import { h } from './dom';
 import { icons } from './icons';
@@ -445,6 +447,7 @@ export class Workspace implements PaneHost, RequestHost {
   private paneFromSnapshot(leaf: SnapshotLeaf): WorkspacePane | null {
     if ('pane' in leaf) return new Pane(leaf.pane, this);
     if ('files' in leaf) return new FilesPane(leaf.files, this);
+    if ('note' in leaf) return new NotePane(leaf.note, this);
     return this.requestFactory?.(leaf.request, this) ?? null;
   }
 
@@ -463,6 +466,20 @@ export class Workspace implements PaneHost, RequestHost {
       this.add(pane, how.placement ?? 'tab', how.targetPaneId);
     }
     if (how.path) pane.open(how.path, how.mode, how.line);
+    return pane;
+  }
+
+  /** Opens a new note (with `text`), or a text file in a note; a note of the file already open is focused. */
+  openNote(how: { path?: string; text?: string; placement?: SplitPlacement; targetPaneId?: string } = {}): NotePane {
+    const notes = [...this.panes.values()].filter((p): p is NotePane => p instanceof NotePane);
+    const open = how.path ? notes.find((p) => p.path.toLowerCase() === how.path!.toLowerCase()) : undefined;
+    if (open) {
+      this.setActivePane(open.id, true);
+      return open;
+    }
+    const ref = { id: uid('n-'), name: nextNoteName(notes.map((p) => p.name)), path: how.path ?? '', wrap: false };
+    const pane = new NotePane(ref, this, how.text);
+    this.add(pane, how.placement ?? 'tab', how.targetPaneId);
     return pane;
   }
 
@@ -1012,9 +1029,14 @@ export class Workspace implements PaneHost, RequestHost {
     for (const t of [...this.tabs]) if (t !== keep) this.removeTab(t);
   }
 
-  /** Panes with unsaved changes (asked about before quitting). */
+  /** Panes with unsaved changes that quitting would lose (asked about before quitting). */
   unsavedPanes(): WorkspacePane[] {
-    return [...this.panes.values()].filter((p) => p.dirty);
+    return [...this.panes.values()].filter((p) => p.dirty && !p.keptOnQuit);
+  }
+
+  /** Writes what panes keep for the next start (notes' unsaved text). */
+  async flush(): Promise<void> {
+    await Promise.all([...this.panes.values()].map((p) => p.flush?.()));
   }
 
   /** Panes whose shell is running a program (used to confirm quitting). */

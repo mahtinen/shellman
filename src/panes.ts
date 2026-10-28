@@ -14,7 +14,7 @@ export type HeaderAction = 'zoom' | 'tab' | 'close';
 
 export interface WorkspacePane {
   readonly id: string;
-  readonly kind: 'terminal' | 'request' | 'files';
+  readonly kind: 'terminal' | 'request' | 'files' | 'note';
   /** The `.pane` element, with `data-pane` set to the id (drag and drop finds panes by it). */
   readonly el: HTMLElement;
   /** Shown in its header, and in dialogs about it. */
@@ -47,6 +47,10 @@ export interface WorkspacePane {
   readonly dirty: boolean;
   /** Saves the changes; false when that failed or was cancelled. */
   save?(): Promise<boolean>;
+  /** Its unsaved changes are kept for the next start, so quitting doesn't ask about them. */
+  readonly keptOnQuit?: boolean;
+  /** Writes what is kept for the next start now (before quitting). */
+  flush?(): Promise<void>;
   openSearch(): void;
   /** How it is saved for the next start; null when it isn't reopened. */
   snapshot(): SnapshotLeaf | null;

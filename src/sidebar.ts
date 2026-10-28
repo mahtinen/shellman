@@ -4,6 +4,7 @@ import { childGroups, groupAndDescendants, groupColor, groupOptions, moveGroup, 
 import { connectionKindName, connectionLabel, connectionTarget, keyLabel } from './connection';
 import { h } from './dom';
 import { icons } from './icons';
+import { shortcutFor } from './keys';
 import { showMenu, showMenuBelow, type MenuEntry } from './menu';
 import type { OpenHow } from './requestActions';
 import { requestFolder, requestName } from './requestFile';
@@ -37,6 +38,7 @@ export interface SidebarActions {
   createGroup(parentId?: string | null): void;
   /** Imports sessions from another program (XShell), into `groupId` to start with. */
   importSessions(groupId: string | null): void;
+  newNote(): void;
   /** Name and colour. */
   editGroup(group: Group): void;
   removeGroup(group: Group): void;
@@ -128,6 +130,7 @@ export class Sidebar {
       showMenu(e.clientX, e.clientY, [
         { label: 'New session…', icon: 'plus', action: () => actions.create(null) },
         { label: 'New group…', icon: 'folderPlus', action: () => actions.createGroup(null) },
+        { label: 'New note', icon: 'note', shortcut: shortcutFor('newNote'), action: () => actions.newNote() },
         'separator',
         { label: 'Import sessions…', icon: 'globe', action: () => actions.importSessions(null) },
       ]);
@@ -143,6 +146,7 @@ export class Sidebar {
         h('span', { class: 'spacer' }),
         h('button', { class: 'icon-btn', title: 'New session', html: icons.plus, onclick: () => actions.create(null) }),
         h('button', { class: 'icon-btn', title: 'New group', html: icons.folderPlus, onclick: () => actions.createGroup() }),
+        h('button', { class: 'icon-btn', title: `New note (${shortcutFor('newNote')})`, html: icons.note, onclick: () => actions.newNote() }),
       ),
       h('div', { class: 'sidebar-search-wrap' }, this.search),
       this.list,

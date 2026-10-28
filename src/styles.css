@@ -3948,3 +3948,83 @@ select.input {
   margin: 6px 0;
   color: var(--ansi-yellow);
 }
+
+/* ---- note panes ---- */
+
+.note-pane {
+  background: var(--term-bg);
+}
+
+.note-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex: none;
+}
+
+.note-info {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-find {
+  width: 160px;
+}
+
+.note-find-count {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rq-tool.on {
+  color: var(--accent);
+}
+
+.note-problem {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.note-input {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  margin: 0;
+  padding: 8px 12px;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--ansi-fg, var(--text));
+  line-height: 1.4;
+  tab-size: 4;
+  white-space: pre;
+  overflow: auto;
+}
+
+.note-input.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.note-input::placeholder {
+  color: var(--muted);
+}
+
+.note-input::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.multi .pane.note-pane:not(.active) .note-input {
+  opacity: 0.82;
+}

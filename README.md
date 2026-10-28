@@ -20,6 +20,8 @@ a 2 MB installer.
   work as usual. Shellman never stores passwords or private keys.
 - **API requests, shared through git.** Request files in a folder your team shares, sent with Windows' curl,
   with secrets kept in `.env.local` or 1Password.
+- **Notes next to your terminals.** Keep commands and log output in a note tab (Ctrl+Shift+J). Notes reopen
+  after a restart as they were, also the ones you never saved; save one to a file when you want to.
 
 Also: PowerShell, cmd, Git Bash and WSL; splits to any depth; quick open; six themes; keyboard first.
 
@@ -87,6 +89,13 @@ Shellman runs at a time: starting it again brings the open window to the front.
 - **Picks up where you left off.** Tabs, splits and each terminal's folder are reopened on the next start,
   with startup commands run again (Settings → Terminal → On start can reopen plain shells or nothing).
   The screen contents of terminals aren't restored.
+- **Notes.** A note is a tab (or split) of plain text for things to keep: commands, log lines, results.
+  Ctrl+Shift+J opens one; "Add to note" on a terminal's menu (Shift+right-click) adds the selected text to the
+  note you used last. Notes don't have to be saved: like Notepad++, Shellman keeps their text and reopens every
+  note after a restart, saved or not (also when terminals aren't reopened). Ctrl+S saves a note to a file
+  (UTF-8, Windows line endings, or the ones the file already had), and "Open text file as note" (+ menu or quick
+  open) opens one. Closing a note asks before unsaved text is thrown away; quitting doesn't. Ctrl+F finds in a
+  note, and Wrap wraps long lines.
 - **"Same directory" everywhere.** New tab, splits and duplicate all start in the *current* directory
   of the active terminal. Shell integration makes PowerShell, cmd, Git Bash and WSL report `cd`
   (OSC 9;9 / OSC 7).
@@ -252,6 +261,7 @@ Ctrl+Enter, save with Ctrl+S.
 |---|---|
 | Quick open saved session (or type `user@host` to connect) | Ctrl+Shift+P |
 | New SSH or Telnet connection | Ctrl+Shift+N |
+| New note | Ctrl+Shift+J |
 | New tab in current directory | Ctrl+Shift+T |
 | Split right / down (current directory) | Ctrl+Shift+E / Ctrl+Shift+O |
 | Duplicate pane (re-runs its command) | Ctrl+Shift+D |
@@ -273,7 +283,7 @@ Ctrl+Enter, save with Ctrl+S.
 No shortcut uses Ctrl+Alt, because that's AltGr on Nordic and other European layouts (AltGr+2 = @).
 
 <details>
-<summary>Mouse, request panes and the Files pane</summary>
+<summary>Mouse, request panes, notes and the Files pane</summary>
 
 | Action | Keys |
 |---|---|
@@ -282,6 +292,7 @@ No shortcut uses Ctrl+Alt, because that's AltGr on Nordic and other European lay
 | Select text in Claude Code | Shift+drag |
 | Send / save a request (in a request pane) | Ctrl+Enter / Ctrl+S |
 | Open a request in a split | Middle-click it in the sidebar |
+| Save a note to a file / find in a note | Ctrl+S / Ctrl+F |
 | Move a request or folder | Drag it onto another folder in the sidebar |
 | Next / previous change (in a Files pane) | F7 / Shift+F7 |
 | Open a file path printed in a terminal (in the Files pane, at its line) | Ctrl+Click |

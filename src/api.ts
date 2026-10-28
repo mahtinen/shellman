@@ -232,6 +232,14 @@ export const api = {
   saveConfig: (config: Config) => invoke<void>('config_save', { config }),
   loadWorkspace: () => invoke<Loaded<unknown>>('workspace_load'),
   saveWorkspace: (workspace: WorkspaceSnapshot) => invoke<void>('workspace_save', { workspace }),
+  /** A note's kept text (null: nothing unsaved). */
+  noteBackupRead: (id: string) => invoke<string | null>('note_backup_read', { id }),
+  noteBackupWrite: (id: string, text: string) => invoke<void>('note_backup_write', { id, text }),
+  noteBackupDelete: (id: string) => invoke<void>('note_backup_delete', { id }),
+  /** Deletes the kept text of notes that aren't open (`keep` lists the open ones). */
+  noteBackupPrune: (keep: string[]) => invoke<void>('note_backup_prune', { keep }),
+  noteFileRead: (path: string) => invoke<string>('note_file_read', { path }),
+  noteFileWrite: (path: string, text: string) => invoke<void>('note_file_write', { path, text }),
   clipboardRead: () => invoke<string>('clipboard_read'),
   clipboardWrite: (text: string) => invoke<void>('clipboard_write', { text }),
   dirExists: (path: string) => invoke<boolean>('dir_exists', { path }),

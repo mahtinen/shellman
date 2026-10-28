@@ -4,6 +4,7 @@ mod connect;
 mod files;
 mod git;
 mod http;
+mod notes;
 mod proc;
 mod pty;
 mod shell;
@@ -356,6 +357,42 @@ async fn workspace_save(app: tauri::AppHandle, workspace: Value) -> Result<(), S
     config::save_file(&config_dir(&app)?, config::WORKSPACE_FILE, &workspace)
 }
 
+/// The kept text of a note (None: it has nothing unsaved).
+#[tauri::command]
+async fn note_backup_read(app: tauri::AppHandle, id: String) -> Result<Option<String>, String> {
+    let dir = config_dir(&app)?;
+    blocking(move || notes::read_backup(&dir, &id)).await
+}
+
+#[tauri::command]
+async fn note_backup_write(app: tauri::AppHandle, id: String, text: String) -> Result<(), String> {
+    let dir = config_dir(&app)?;
+    blocking(move || notes::write_backup(&dir, &id, &text)).await
+}
+
+#[tauri::command]
+async fn note_backup_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let dir = config_dir(&app)?;
+    blocking(move || notes::delete_backup(&dir, &id)).await
+}
+
+/// Deletes the kept text of every note that isn't in `keep` (the open ones).
+#[tauri::command]
+async fn note_backup_prune(app: tauri::AppHandle, keep: Vec<String>) -> Result<(), String> {
+    let dir = config_dir(&app)?;
+    blocking(move || Ok(notes::prune(&dir, &keep))).await
+}
+
+#[tauri::command]
+async fn note_file_read(path: String) -> Result<String, String> {
+    blocking(move || notes::read_text(&path)).await
+}
+
+#[tauri::command]
+async fn note_file_write(path: String, text: String) -> Result<(), String> {
+    blocking(move || notes::write_text(&path, &text)).await
+}
+
 #[tauri::command]
 async fn clipboard_read() -> Result<String, String> {
     arboard::Clipboard::new()
@@ -526,6 +563,12 @@ pub fn run() {
             config_save,
             workspace_load,
             workspace_save,
+            note_backup_read,
+            note_backup_write,
+            note_backup_delete,
+            note_backup_prune,
+            note_file_read,
+            note_file_write,
             clipboard_read,
             clipboard_write,
             dir_exists,
