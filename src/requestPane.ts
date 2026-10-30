@@ -102,6 +102,17 @@ export function formatSize(bytes: number): string {
 
 const time = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+/** A triple-click selects just this element's text, not the whole line it is on. */
+function selectOnTripleClick(e: MouseEvent): void {
+  if (e.detail !== 3) return;
+  e.preventDefault();
+  const range = document.createRange();
+  range.selectNodeContents(e.currentTarget as Node);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
 /** Copies a request as a curl command for the shell chosen in Settings. */
 export async function copyRequestAsCurl(group: Group, doc: RequestDoc): Promise<void> {
   const c = collections.get(group.id);
@@ -143,6 +154,8 @@ export class RequestPane implements WorkspacePane {
   readonly hasGpu = false;
   lastOutput = 0;
   ref: RequestRef;
+  /** The text selected in the pane when its menu opened, for the menu's Copy. */
+  menuSelection = '';
   /** What was last sent or received, for the status bar. */
   status = '';
 
@@ -299,7 +312,16 @@ export class RequestPane implements WorkspacePane {
       // Text fields keep their own menu (cut, copy, paste).
       if ((e.target as HTMLElement).closest('input, textarea, select')) return;
       e.preventDefault();
+      // Opening the menu focuses the pane (its URL field), which ends a selection: keep it for Copy and
+      // show it again.
+      const sel = window.getSelection();
+      const range = sel && !sel.isCollapsed && this.el.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
+      this.menuSelection = range?.toString() ?? '';
       host.onContextMenu(this, e);
+      if (range) {
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
     });
 
     this.resizeObserver = new ResizeObserver(() => this.queueFit());
@@ -1078,9 +1100,9 @@ export class RequestPane implements WorkspacePane {
           v
             ? h(
                 'span',
-                { class: 'rq-source-detail' },
+                null,
                 h('span', { class: 'muted' }, `${v.source} → `),
-                v.choices ? this.choiceSelect(group, v) : h('span', { class: 'mono' }, displayValue(v, store.settings.hideSecrets)),
+                v.choices ? this.choiceSelect(group, v) : h('span', { class: 'mono', onmousedown: selectOnTripleClick }, displayValue(v, store.settings.hideSecrets)),
                 isOpRef(v.value) ? h('span', { class: 'muted' }, ' (1Password, filled in when sending)') : null,
               )
             : h('span', { class: 'seg-missing' }, 'not defined'),

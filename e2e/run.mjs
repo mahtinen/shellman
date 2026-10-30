@@ -1176,10 +1176,14 @@ if (phase === 'main') {
       assert((await ev(`__t.ws.tabs.length`)) === tabs + 1, 'the preview tab was reused');
       await ev(`${row('me')}.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
       await waitFor(`!__t.ws.activeTab.preview`, 2000, 'pinned');
+      // The title above the URL: a request at the top of the folder shows only its name.
+      assert((await ev(`${active}.el.querySelector('.rq-title').textContent`)) === 'me', 'title at the top of the folder');
 
       // Variables: plain values filled in, the secret by curl.
       await ev(`${row('list')}.click()`);
       await waitFor(`${active}?.ref.path === 'users/list.request.json'`, 5000, 'list open');
+      // ...and one in a folder shows the folder too.
+      assert((await ev(`${active}.el.querySelector('.rq-title').textContent`)) === 'users/list', 'title in a folder');
       const listBody = await send();
       assert(listBody.includes('"Bearer s3cret-e2e"') && listBody.includes('"acme-test"'), 'variables: ' + listBody.slice(0, 300));
       await shot(path.join(OUT, '20-request-pane.png'));
@@ -1228,6 +1232,39 @@ if (phase === 'main') {
       await waitFor(sourcesShow('acme-changed'), 5000, 'variables used follow .env');
       put('.env', 'TENANT=acme-test\n');
       await waitFor(sourcesShow('acme-test'), 5000, 'variables used follow .env back');
+
+      // A value there can be selected: a real triple-click takes only the value, not its line, and Copy
+      // in the pane's right-click menu copies it. A hidden secret selects only its mask.
+      const valueOf = (name) => `[...${active}.el.querySelectorAll('.rq-source')].find(r => r.textContent.includes('{{${name}}}')).querySelector('.mono:not(button)')`;
+      const tripleClick = async (el) => {
+        const at = await ev(`(() => { const r = ${el}.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+        for (let n = 1; n <= 3; n++) {
+          await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'left', clickCount: n });
+          await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'left', clickCount: n });
+        }
+        return at;
+      };
+      const tenantValue = await tripleClick(valueOf('TENANT'));
+      const picked = await ev(`window.getSelection().toString()`);
+      assert(picked === 'acme-test', 'triple-click selected ' + js(picked));
+      const savedClip = await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_read')`);
+      try {
+        await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_write', { text: 'before' })`);
+        for (const type of ['mousePressed', 'mouseReleased']) await c.send('Input.dispatchMouseEvent', { type, x: tenantValue.x, y: tenantValue.y, button: 'right', clickCount: 1 });
+        const copyItem = `[...document.querySelectorAll('.menu-item')].find(m => m.querySelector('.menu-label')?.textContent === 'Copy')`;
+        await waitFor(`!!${copyItem} && !${copyItem}.classList.contains('disabled')`, 2000, 'Copy in the request menu');
+        await ev(`${copyItem}.click()`);
+        await waitFor(`window.__TAURI_INTERNALS__.invoke('clipboard_read').then((t) => t === 'acme-test')`, 2000, 'value copied');
+      } finally {
+        await ev(`window.__TAURI_INTERNALS__.invoke('clipboard_write', { text: ${js(savedClip ?? '')} })`);
+      }
+      await ev(`[...${active}.el.querySelectorAll('.rq-tab')].find(b => b.textContent.startsWith('Auth')).click()`);
+      await waitFor(`[...${active}.el.querySelectorAll('.rq-var-link')].some(b => b.textContent === '{{API_TOKEN}}')`, 3000, 'variables used in auth');
+      await tripleClick(valueOf('API_TOKEN'));
+      const mask = await ev(`${valueOf('API_TOKEN')}.textContent`);
+      const pickedSecret = await ev(`window.getSelection().toString()`);
+      assert(pickedSecret === mask && !pickedSecret.includes('s3cret'), 'secret selection ' + js(pickedSecret));
+      await ev(`window.getSelection().removeAllRanges(), [...${active}.el.querySelectorAll('.rq-tab')].find(b => b.textContent.startsWith('Headers')).click()`);
 
       // Variables are edited in the app: a new one goes to the environment's file.
       await ev(`[...${active}.el.querySelectorAll('.rq-tool')].find(b => b.textContent.includes('Variables')).click()`);
