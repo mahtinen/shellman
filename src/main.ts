@@ -1165,7 +1165,11 @@ class App {
     const tab = this.workspace.tabOf(pane);
     const split = !!tab && this.workspace.panesOf(tab).length > 1;
     const group = pane.group;
+    // Text selected in this pane (a variable's value, say); text fields have their own menu.
+    const selected = pane.menuSelection;
     showMenu(e.clientX, e.clientY, [
+      { label: 'Copy', icon: 'copy', shortcut: 'Ctrl+C', disabled: !selected, action: () => void api.clipboardWrite(selected) },
+      'separator',
       { label: 'Send', icon: 'play', shortcut: 'Ctrl+Enter', action: () => void pane.send() },
       { label: 'Save', icon: 'save', shortcut: 'Ctrl+S', action: () => void pane.save() },
       { label: 'Copy as curl', icon: 'copy', action: () => void pane.copyAsCurl() },

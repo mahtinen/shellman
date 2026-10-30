@@ -2026,10 +2026,25 @@ select.input {
   flex-direction: column;
 }
 
+.rq-title {
+  padding: 8px 12px 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rq-title .muted {
+  font-weight: 500;
+}
+
 .rq-urlbar {
   display: flex;
   gap: 8px;
-  padding: 10px 12px 4px;
+  padding: 8px 12px 4px;
 }
 
 .rq-method {
@@ -2481,6 +2496,16 @@ select.input {
 .rq-source .rq-choice {
   width: auto;
   max-width: 100%;
+}
+
+/* The values can be selected and copied (a hidden secret copies only its mask). The whole panel is
+   selectable so a selection can start before a value, not only on it. */
+.rq-sources {
+  user-select: text;
+}
+
+.rq-sources .rq-var-link {
+  user-select: none;
 }
 
 .rq-response-head {
