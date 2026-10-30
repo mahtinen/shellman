@@ -23,6 +23,7 @@ import {
   METHODS,
   newRequest,
   readRequest,
+  requestFolder,
   requestName,
   serializeRequest,
   splitUrl,
@@ -164,6 +165,8 @@ export class RequestPane implements WorkspacePane {
   private layout: 'below' | 'right' | null = null;
 
   private readonly header: ReturnType<typeof paneHeader>;
+  /** The request's folder and name above the URL; tabs cut long names short. */
+  private readonly titleEl = h('div', { class: 'rq-title' });
   private readonly methodEl: HTMLSelectElement;
   private readonly urlEl: HTMLInputElement;
   private readonly urlField: HTMLElement;
@@ -267,6 +270,7 @@ export class RequestPane implements WorkspacePane {
       h(
         'div',
         { class: 'rq' },
+        this.titleEl,
         h('div', { class: 'rq-urlbar' }, this.methodEl, this.urlField, this.envBtn, this.sendBtn),
         h(
           'div',
@@ -646,6 +650,10 @@ export class RequestPane implements WorkspacePane {
   private renderHeader(): void {
     this.header.name.textContent = this.name;
     this.header.title.textContent = this.dirty ? '● unsaved' : this.doc.method;
+    // Only the nearest folder: the full path is in the tooltip and the status bar.
+    const folder = requestFolder(this.ref.path).split('/').pop();
+    this.titleEl.replaceChildren(folder ? h('span', { class: 'muted' }, `${folder}/`) : '', this.name);
+    this.titleEl.title = this.ref.path;
     this.el.style.setProperty('--session-color', this.color || 'transparent');
     const group = this.group;
     const env = group ? collections.environment(group) : undefined;
@@ -1070,7 +1078,7 @@ export class RequestPane implements WorkspacePane {
           v
             ? h(
                 'span',
-                null,
+                { class: 'rq-source-detail' },
                 h('span', { class: 'muted' }, `${v.source} → `),
                 v.choices ? this.choiceSelect(group, v) : h('span', { class: 'mono' }, displayValue(v, store.settings.hideSecrets)),
                 isOpRef(v.value) ? h('span', { class: 'muted' }, ' (1Password, filled in when sending)') : null,
