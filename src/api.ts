@@ -4,6 +4,14 @@ import type { WorkspaceSnapshot } from './snapshot';
 import type { Config, ShellProfile, SystemInfo } from './types';
 import type { XshFile } from './xshell';
 
+/** A Claude Code running in a terminal. */
+export interface ClaudeInfo {
+  sessionId: string;
+  version: string;
+  /** "idle" while it waits for you; anything else means a reply (or a question) is on its way. */
+  status: string;
+}
+
 export type PtyMessage = string | { exit: number | null };
 
 /** A loaded file. `notice` says it was corrupt (and whether its backup was used instead). */
@@ -223,6 +231,10 @@ export const api = {
   hasChildren: (id: number) => invoke<boolean>('pty_has_children', { id }),
   /** The conversation the Claude Code in the terminal shows now (`known` is the one it was started with). */
   claudeSession: (id: number, known: string) => invoke<string | null>('pty_claude_session', { id, known }),
+  /** The Claude Code in the terminal: its conversation, version and status ("idle" while it waits for you). */
+  claudeInfo: (id: number, known: string) => invoke<ClaudeInfo | null>('pty_claude_info', { id, known }),
+  /** The Claude Code version a new terminal would start; null when it isn't installed. */
+  claudeInstalledVersion: () => invoke<string | null>('claude_installed_version'),
   listShells: () => invoke<ShellProfile[]>('list_shells'),
   /** The WSL home folder as a Windows path (\\wsl.localhost\Ubuntu\home\me). May start WSL. */
   wslHome: (shell: ShellProfile) => invoke<string>('wsl_home', { shell }),

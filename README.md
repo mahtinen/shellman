@@ -39,7 +39,7 @@ project's update key are accepted.
 <summary>Updates and where settings are stored</summary>
 
 Shellman checks GitHub Releases (`github.com/mahtinen/shellman`) 15 seconds after it starts and then every
-4 hours. By default a new version downloads in the background, and a **Restart to update** button appears in
+4 hours. By default a new version downloads in the background, and a **Restart to update Shellman** button appears in
 the tab bar. If you don't restart, the update installs when you close Shellman, and the next start runs the
 new version. Settings → Updates can switch this to "tell me when a new version is out" or turn checks off.
 The first start after an update shows what changed since the version you ran before (also when you skipped
@@ -125,6 +125,12 @@ Shellman runs at a time: starting it again brings the open window to the front.
   (uncommitted changes, commits that are only on its branch) and can delete the branch too. Settings → Worktrees
   sets the folder, the branch prefix and the ignored files to copy into new worktrees (like `.env.local`), or turns
   worktrees off altogether.
+- **Claude Code updates.** Claude Code updates itself, but a running Claude keeps its old version until it starts
+  again. When a newer Claude Code is installed than some Claude terminals run, a **Restart Claude terminals**
+  button appears in the tab bar; each terminal continues its conversation on the new version. The same command is
+  in the menu next to + at any time. If a Claude is still working, you can restart just the idle
+  ones. When a Shellman update is waiting too, Restart to update Shellman is enough: it starts every terminal
+  again. (WSL terminals are restarted too, but only Windows terminals are checked for a newer version.)
 - **Small things.** Shift+Enter inserts a newline. Ctrl+V forwards to Claude when the clipboard holds an image.
   Background tabs show when a session is producing output or has finished. Bells and OSC 9 / OSC 777
   notifications flash the taskbar and show a toast.

@@ -4,10 +4,11 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { api } from './api';
 import { bundledChangelog, releasesSince, type Release } from './changelog';
+import { compareVersions } from './claude';
 import { collections } from './collections';
 import { baseName, deleteGroup, groupColor, groupPath, newGroup, ownerSession, sessionColor, uid } from './config';
 import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, newSshConnection, parseQuickConnect } from './connection';
-import { confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
+import { choiceDialog, confirmDialog, isDialogOpen, promptDialog, toast } from './dialogs';
 import { FilesPane } from './filesPane';
 import { appendText } from './note';
 import { latestNote, NotePane } from './notePane';
@@ -66,6 +67,11 @@ class App {
   private readonly statusLeft = h('div', { class: 'status-left' });
   private readonly statusRight = h('div', { class: 'status-right' });
   private readonly updateBtn = h('button', { class: 'update-btn', hidden: true });
+  private readonly claudeBtn = h('button', { class: 'update-btn ready', hidden: true });
+  /** A newer Claude Code than some Claude terminals run (checked now and then). */
+  private claudeUpdate: { version: string; behind: number } | null = null;
+  private claudeCheckedAt = 0;
+  private claudeChecking = false;
   private appliedSettings = '';
   /** Last workspace.json written; nothing is saved until the previous one has been reopened. */
   private savedWorkspace = '';
@@ -201,8 +207,15 @@ class App {
       newTabMenu,
       h('span', { class: 'tabbar-fill' }),
       this.updateBtn,
+      this.claudeBtn,
     );
     updater.on(() => this.renderUpdateButton());
+    // Claude Code updates itself in the background; terminals keep the version they started with.
+    window.setTimeout(() => void this.checkClaude(), 20_000);
+    window.setInterval(() => void this.checkClaude(), 5 * 60_000);
+    window.addEventListener('focus', () => {
+      if (Date.now() - this.claudeCheckedAt > 60_000) void this.checkClaude();
+    });
     window.addEventListener('shellman:restart-to-update', () => void this.restartToUpdate());
     this.tabsEl.addEventListener('wheel', (e) => {
       if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
@@ -586,18 +599,96 @@ class App {
     b.disabled = st.kind === 'downloading';
     b.classList.toggle('ready', st.kind === 'ready');
     if (st.kind === 'available') {
-      b.textContent = `Update to ${st.version}`;
+      b.textContent = `Update Shellman to ${st.version}`;
       b.title = 'Download the new version in the background';
       b.onclick = () => void updater.download();
     } else if (st.kind === 'downloading') {
-      b.textContent = `Downloading ${st.version}${st.percent === null ? '…' : ` ${st.percent}%`}`;
+      b.textContent = `Downloading Shellman ${st.version}${st.percent === null ? '…' : ` ${st.percent}%`}`;
       b.title = '';
       b.onclick = null;
     } else if (st.kind === 'ready') {
-      b.textContent = 'Restart to update';
+      b.textContent = 'Restart to update Shellman';
       b.title = `Shellman ${st.version} is downloaded. Restart now, or it is installed when you close Shellman.`;
+      if (this.claudeUpdate) b.title += `\nClaude terminals also come back on Claude Code ${this.claudeUpdate.version}.`;
       b.onclick = () => void this.restartToUpdate();
     }
+    const c = this.claudeUpdate;
+    const cb = this.claudeBtn;
+    // Restarting Shellman starts every terminal again, so then that one restart is enough.
+    cb.hidden = !c || st.kind === 'ready';
+    if (c) {
+      cb.textContent = `Claude Code ${c.version} · Restart Claude terminals`;
+      cb.title = `${c.behind} Claude terminal${c.behind > 1 ? 's run' : ' runs'} an older version. Each one continues its conversation.`;
+      cb.onclick = () => void this.restartClaudeTerminals();
+    }
+  }
+
+  // ---- Claude Code updates -------------------------------------------
+
+  /** Terminals running the Claude Code they were started with. */
+  private claudePanes(): Pane[] {
+    return [...this.workspace.panes.values()].filter((p) => isTerminal(p) && p.isClaude) as Pane[];
+  }
+
+  /** Looks for Claude terminals that run an older Claude Code than the one installed now. */
+  private async checkClaude(): Promise<void> {
+    if (this.claudeChecking) return;
+    this.claudeCheckedAt = Date.now();
+    // WSL has its own Claude Code; only Windows terminals are compared with the Windows one.
+    const panes = this.claudePanes().filter((p) => !p.runsInWsl);
+    let update: { version: string; behind: number } | null = null;
+    if (panes.length) {
+      this.claudeChecking = true;
+      try {
+        const installed = await api.claudeInstalledVersion().catch(() => null);
+        if (installed) {
+          const infos = await Promise.all(panes.map((p) => p.claudeInfo()));
+          const behind = infos.filter((i) => !!i?.version && compareVersions(installed, i.version) > 0).length;
+          if (behind) update = { version: installed, behind };
+        }
+      } finally {
+        this.claudeChecking = false;
+      }
+    }
+    this.claudeUpdate = update;
+    this.renderUpdateButton();
+  }
+
+  /** Restarts every Claude terminal; each one continues its conversation (on the newest Claude Code). */
+  private async restartClaudeTerminals(): Promise<void> {
+    const panes = this.claudePanes();
+    if (!panes.length) {
+      toast('No Claude terminals are open');
+      return;
+    }
+    const infos = await Promise.all(panes.map((p) => p.claudeInfo()));
+    // Claude writes "idle" while it waits for you; anything else is a reply (or a question) on its way.
+    const working = panes.filter((_, i) => !!infos[i]?.status && infos[i]?.status !== 'idle');
+    let restart = panes;
+    if (working.length) {
+      const idle = panes.length - working.length;
+      const names = [...new Set(working.map((p) => p.name))].slice(0, 5).join(', ');
+      const many = working.length > 1;
+      const answer = await choiceDialog(
+        'Restart Claude terminals?',
+        `${working.length} Claude terminal${many ? 's are' : ' is'} still working (${names}). Restarting ${many ? 'them' : 'it'} stops the current reply. The conversation itself is kept.`,
+        [
+          { label: 'Cancel', value: 'cancel' as const },
+          ...(idle ? [{ label: `Restart ${idle} idle only`, value: 'idle' as const }] : []),
+          { label: panes.length > 1 ? `Restart all ${panes.length}` : 'Restart', value: 'all' as const, kind: 'danger' as const },
+        ],
+      );
+      if (answer !== 'idle' && answer !== 'all') return;
+      if (answer === 'idle') restart = panes.filter((p) => !working.includes(p));
+    }
+    for (const p of restart) p.restart();
+    toast(`Restarted ${restart.length} Claude terminal${restart.length > 1 ? 's' : ''}`);
+    if (restart.length === panes.length) {
+      this.claudeUpdate = null;
+      this.renderUpdateButton();
+    }
+    // Claude writes down its version once it has started.
+    window.setTimeout(() => void this.checkClaude(), 15_000);
   }
 
   /** Installs the downloaded update and starts the new version. */
@@ -930,6 +1021,8 @@ class App {
       'separator',
       { label: 'New note', icon: 'note', shortcut: shortcutFor('newNote'), action: () => this.workspace.openNote() },
       { label: 'Open text file as note…', icon: 'file', action: () => void this.openNoteFile() },
+      'separator',
+      { label: 'Restart Claude terminals', icon: 'refresh', action: () => void this.restartClaudeTerminals() },
       'separator',
       { label: 'Settings', icon: 'gear', shortcut: shortcutFor('settings'), action: () => openSettings() },
       { label: 'Keyboard shortcuts', icon: 'keyboard', action: () => openShortcuts() },

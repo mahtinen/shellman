@@ -75,3 +75,11 @@ export function claudeCommand(command: string, id: string, resume: boolean, shel
 export function isUuid(s: unknown): s is string {
   return typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 }
+
+/** Compares Claude Code versions like "2.1.319": below 0 when `a` is older, 0 when the same, above 0 when newer. */
+export function compareVersions(a: string, b: string): number {
+  const parts = (v: string) => v.split(/[.+-]/).slice(0, 3).map((n) => Number.parseInt(n, 10) || 0);
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0);
+  return 0;
+}

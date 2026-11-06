@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { claudeCommand, isTrackableClaude, isUuid } from './claude';
+import { claudeCommand, compareVersions, isTrackableClaude, isUuid } from './claude';
 
 describe('claude conversations', () => {
   it('tracks interactive claude started with options only', () => {
@@ -59,5 +59,15 @@ describe('claude conversations', () => {
     expect(isUuid('0b3f6c1e-6a52-4c9b-9d0e-2f3a4b5c6d7e')).toBe(true);
     expect(isUuid('nope')).toBe(false);
     expect(isUuid(undefined)).toBe(false);
+  });
+});
+
+describe('compareVersions', () => {
+  it('orders Claude Code versions by number, not as text', () => {
+    expect(compareVersions('2.1.41', '2.1.40')).toBeGreaterThan(0);
+    expect(compareVersions('2.1.100', '2.1.99')).toBeGreaterThan(0);
+    expect(compareVersions('2.2.0', '2.1.319')).toBeGreaterThan(0);
+    expect(compareVersions('2.1.40', '2.1.41')).toBeLessThan(0);
+    expect(compareVersions('2.1.319', '2.1.319')).toBe(0);
   });
 });

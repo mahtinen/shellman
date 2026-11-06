@@ -91,6 +91,30 @@ async fn pty_claude_session(state: State<'_, PtyManager>, id: u32, known: String
     blocking(move || Ok(finder.find(&known))).await
 }
 
+/// The Claude Code running in a terminal: its conversation, version and what it is doing.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeInfo {
+    session_id: String,
+    version: String,
+    status: String,
+}
+
+#[tauri::command]
+async fn pty_claude_info(state: State<'_, PtyManager>, id: u32, known: String) -> Result<Option<ClaudeInfo>, String> {
+    let Some(finder) = state.claude_finder(id) else { return Ok(None) };
+    blocking(move || {
+        Ok(finder.find_proc(&known).map(|c| ClaudeInfo { session_id: c.session_id, version: c.version, status: c.status }))
+    })
+    .await
+}
+
+/// The Claude Code version a new terminal would start (None when it isn't installed).
+#[tauri::command]
+async fn claude_installed_version() -> Result<Option<String>, String> {
+    blocking(|| Ok(pty::installed_claude_version())).await
+}
+
 #[tauri::command]
 async fn list_shells() -> Vec<ShellProfile> {
     shell::detect_shells()
@@ -597,6 +621,8 @@ pub fn run() {
             pty_kill_all,
             pty_has_children,
             pty_claude_session,
+            pty_claude_info,
+            claude_installed_version,
             list_shells,
             wsl_home,
             ssh_agent_keys,
