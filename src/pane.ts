@@ -4,7 +4,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { api, type PtyMessage } from './api';
+import { api, type ClaudeInfo, type PtyMessage } from './api';
 import { claudeCommand, isTrackableClaude, isUuid } from './claude';
 import { uid } from './config';
 import { connectionError, connectionLabel, connectionRequest, connectionTarget, needsLegacyAlgorithms } from './connection';
@@ -227,6 +227,22 @@ export class Pane implements WorkspacePane {
 
   get isRunning(): boolean {
     return this.state === 'running' || this.state === 'starting';
+  }
+
+  /** Runs the Claude Code it was started with, which a restart resumes. */
+  get isClaude(): boolean {
+    return !!this.spec.claudeId && this.isRunning;
+  }
+
+  get runsInWsl(): boolean {
+    return this.shell?.kind === 'wsl';
+  }
+
+  /** The Claude Code running in this terminal now (its version and whether it is working). */
+  async claudeInfo(): Promise<ClaudeInfo | null> {
+    const { claudeId } = this.spec;
+    if (!claudeId || this.ptyId === null || this.state !== 'running') return null;
+    return api.claudeInfo(this.ptyId, claudeId).catch(() => null);
   }
 
   /** True when the shell has started a program that is still running, or a connection is open. */

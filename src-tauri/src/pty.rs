@@ -453,6 +453,11 @@ impl ClaudeFinder {
     /// The conversation the Claude Code in this terminal shows now; `/resume` and `/clear` change it.
     /// `known` is the one it was started with. May take a few seconds the first time in WSL.
     pub fn find(&self, known: &str) -> Option<String> {
+        self.find_proc(known).map(|c| c.session_id)
+    }
+
+    /// The Claude Code running in this terminal, with its version and whether it is working.
+    pub fn find_proc(&self, known: &str) -> Option<ClaudeProc> {
         let session = &self.0;
         match session.claude.as_ref()? {
             ClaudeHome::Windows { dir, cwd } => windows_claude(session, dir, cwd, known),
@@ -463,7 +468,7 @@ impl ClaudeFinder {
 
 /// Found through the shell's process tree. Git Bash loses the parent links, so there it is the
 /// process that showed `known`, remembered once seen.
-fn windows_claude(session: &Session, dir: &Path, cwd: &str, known: &str) -> Option<String> {
+fn windows_claude(session: &Session, dir: &Path, cwd: &str, known: &str) -> Option<ClaudeProc> {
     let pid = session.pid?;
     let procs = processes();
     let alive = |c: &ClaudeProc| procs.iter().any(|p| p.pid == c.pid && (c.start == 0 || p.start == 0 || p.start == c.start));
@@ -478,12 +483,12 @@ fn windows_claude(session: &Session, dir: &Path, cwd: &str, known: &str) -> Opti
         live.iter().find(|c| *seen == Some((c.pid, c.start))).or_else(|| live.iter().find(|c| c.session_id == known))
     })?;
     *seen = Some((found.pid, found.start));
-    Some(found.session_id.clone())
+    Some(found.clone())
 }
 
 /// The Claude that carries this terminal's marker, read from Linux's `/proc` through the share.
 /// If it started another Claude (which inherits the marker), the older one is the terminal's.
-fn wsl_claude(wsl: &WslClaude, marker: &str) -> Option<String> {
+fn wsl_claude(wsl: &WslClaude, marker: &str) -> Option<ClaudeProc> {
     let proc_dir = |pid: u32| wsl.share.join("proc").join(pid.to_string());
     let alive = |c: &ClaudeProc| {
         let stat = std::fs::read_to_string(proc_dir(c.pid).join("stat")).ok();
@@ -495,7 +500,6 @@ fn wsl_claude(wsl: &WslClaude, marker: &str) -> Option<String> {
         .into_iter()
         .filter(|c| std::fs::read(proc_dir(c.pid).join("environ")).is_ok_and(|env| env.split(|&b| b == 0).any(|v| v == wanted.as_bytes())))
         .min_by_key(|c| c.start)
-        .map(|c| c.session_id)
 }
 
 /// When a Linux process started (clock ticks since boot), from `/proc/<pid>/stat`. The program name
@@ -516,7 +520,7 @@ fn claude_config_dir(env: &HashMap<String, String>) -> Option<PathBuf> {
 }
 
 /// A running Claude Code and the conversation it shows.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClaudeProc {
     pub pid: u32,
     /// Creation time as Claude wrote it (FILETIME ticks; in Linux clock ticks since boot); 0 when missing.
@@ -524,6 +528,10 @@ pub struct ClaudeProc {
     pub session_id: String,
     /// The folder it started in.
     pub cwd: String,
+    /// The Claude Code version this process runs; empty when not written.
+    pub version: String,
+    /// What it is doing ("idle", "busy", ...); empty when not written.
+    pub status: String,
 }
 
 /// One `<claude dir>\sessions\<pid>.json`, which Claude Code keeps while it runs. `claude -p`
@@ -538,6 +546,8 @@ pub fn parse_claude_proc(json: &str) -> Option<ClaudeProc> {
         start: v.get("procStart").and_then(|s| s.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0),
         session_id: v.get("sessionId")?.as_str()?.to_string(),
         cwd: v.get("cwd").and_then(|c| c.as_str()).unwrap_or_default().to_string(),
+        version: v.get("version").and_then(|c| c.as_str()).unwrap_or_default().to_string(),
+        status: v.get("status").and_then(|c| c.as_str()).unwrap_or_default().to_string(),
     })
 }
 
@@ -551,6 +561,30 @@ fn claude_sessions(dir: &Path, alive: impl Fn(&ClaudeProc) -> bool) -> Vec<Claud
         .filter_map(|e| parse_claude_proc(&std::fs::read_to_string(e.path()).ok()?))
         .filter(|c| alive(c))
         .collect()
+}
+
+/// The version of the Claude Code that a new terminal would start, from `claude --version`
+/// (through cmd, which also finds npm's `claude.cmd`). None when Claude Code isn't installed.
+pub fn installed_claude_version() -> Option<String> {
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/d", "/c", "claude --version"]);
+    crate::proc::no_window(&mut cmd);
+    let out = crate::proc::output_within(cmd, std::time::Duration::from_secs(20)).ok()??;
+    if !out.status.success() {
+        return None;
+    }
+    parse_claude_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The version in `claude --version` output, e.g. "2.1.319 (Claude Code)".
+pub fn parse_claude_version(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find(|w| {
+            let parts: Vec<&str> = w.split('.').collect();
+            parts.len() >= 3 && parts[..3].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        })
+        .map(str::to_string)
 }
 
 /// Git Bash's `ps.exe` next to (or below) the given bash.
@@ -918,14 +952,28 @@ mod tests {
                 start: 134375523612649951,
                 session_id: "0b3f6c1e-6a52-4c9b-9d0e-2f3a4b5c6d7e".into(),
                 cwd: r"C:\Projects\app".into(),
+                version: String::new(),
+                status: String::new(),
             })
         );
+        let newer = r#"{"pid":5,"sessionId":"x","version":"2.1.319","status":"busy","entrypoint":"cli"}"#;
+        let c = parse_claude_proc(newer).unwrap();
+        assert_eq!((c.version.as_str(), c.status.as_str()), ("2.1.319", "busy"));
         // `claude -p` isn't a conversation on screen.
         assert_eq!(parse_claude_proc(r#"{"pid":5,"sessionId":"x","entrypoint":"sdk-cli"}"#), None);
         assert!(parse_claude_proc(r#"{"pid":5,"sessionId":"x","entrypoint":"cli"}"#).is_some());
         assert_eq!(parse_claude_proc(r#"{"pid":5,"sessionId":"x"}"#).map(|c| c.start), Some(0));
         assert_eq!(parse_claude_proc(r#"{"sessionId":"x"}"#), None);
         assert_eq!(parse_claude_proc("not json"), None);
+    }
+
+    #[test]
+    fn reads_the_claude_version() {
+        assert_eq!(parse_claude_version("2.1.319 (Claude Code)
+").as_deref(), Some("2.1.319"));
+        assert_eq!(parse_claude_version("Claude Code 2.2.0").as_deref(), Some("2.2.0"));
+        assert_eq!(parse_claude_version("'claude' is not recognized as an internal or external command"), None);
+        assert_eq!(parse_claude_version("v1.2 (Claude Code)"), None);
     }
 
     #[test]
