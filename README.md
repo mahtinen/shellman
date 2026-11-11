@@ -190,10 +190,10 @@ it), so work Claude has already committed shows too.
 <summary><b>SSH and Telnet</b></summary>
 
 Save remote hosts next to your folders (same groups, colours and quick open), or connect without saving: type
-`user@host`, `ssh -p 2222 host` or `telnet 10.0.0.1 2323` in quick open, or use Ctrl+Shift+N. Shellman runs
-Windows' own clients (OpenSSH's `ssh.exe` and the Telnet Client), so your keys, the Windows ssh-agent or
-1Password's SSH agent, `~/.ssh/config` and `known_hosts` work as in any terminal, and Windows Update keeps the
-clients patched. Shellman never stores passwords or private keys.
+`user@host`, `ssh -p 2222 host` or `telnet 10.0.0.1 2323` in quick open, or use Ctrl+Shift+N. SSH runs
+Windows' own OpenSSH client (`ssh.exe`), so your keys, the Windows ssh-agent or 1Password's SSH agent,
+`~/.ssh/config` and `known_hosts` work as in any terminal, and Windows Update keeps the client patched. Shellman
+never stores passwords or private keys.
 
 - **Keys.** No agent is needed: without one, ssh uses your key files in `~/.ssh` (or a key file you choose). With
   many keys in an agent (1Password or the Windows ssh-agent), pick the session's key under **Log in with**
@@ -209,7 +209,10 @@ clients patched. Shellman never stores passwords or private keys.
 - **Reconnecting.** Enter reconnects a closed connection, Duplicate opens another connection to the same host,
   and new tabs or splits next to it are local shells. Reopened connection tabs wait for Enter instead of logging
   in to every host at start-up (Settings → Connections can change that).
-- **Telnet** needs the optional Windows feature "Telnet Client".
+- **Telnet** is built in, like PuTTY's, so there is nothing to install. Backspace sends Delete, as in PuTTY and
+  MobaXterm; for a device that only erases with Ctrl+H, set the session's **Backspace sends** to Ctrl+H. Devices
+  that don't echo (plain text services, too) get PuTTY's automatic local echo and line editing: the line is sent
+  on Enter, and what is typed after a password prompt isn't shown.
 - **Import sessions.** Right-click the sidebar (or a group) → Import sessions, or use quick open. Choose the
   program (XShell for now), tick the sessions you want, and import them into a new group or one you already
   have. For XShell it reads the `.xsh` files in `Documents\NetSarang Computer\<version>\Xshell\Sessions` (or a

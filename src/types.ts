@@ -11,7 +11,7 @@ export interface ShellProfile {
 export type ConnectionKind = 'ssh' | 'telnet';
 
 /**
- * A remote host, reached through Windows' own client (OpenSSH's ssh.exe or the Telnet Client).
+ * A remote host: SSH through Windows' own OpenSSH client (ssh.exe), Telnet through Shellman's own.
  * Keys and agents (Windows ssh-agent, 1Password) work as they do in any other terminal.
  */
 export interface Connection {
@@ -36,7 +36,11 @@ export interface Connection {
   jumpHost: string;
   /** SSH only: more options as typed, e.g. `-A -o ServerAliveInterval=30`. */
   extraArgs: string;
+  /** Telnet only: what Backspace sends. Delete (DEL), as PuTTY does, or Ctrl+H for hosts that want that. */
+  backspace: TelnetBackspace;
 }
+
+export type TelnetBackspace = 'delete' | 'ctrlH';
 
 /** A saved entry in the sidebar: "open a terminal here and run this", or a remote host. */
 export interface SavedSession {

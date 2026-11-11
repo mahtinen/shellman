@@ -1,7 +1,7 @@
-//! Remote sessions through Windows' own clients: OpenSSH's `ssh.exe` and the optional Telnet
-//! Client (`telnet.exe`). Shellman only starts the client in a pseudoconsole, so keys, agents
-//! (the Windows ssh-agent or 1Password's), `~/.ssh/config` and `known_hosts` work exactly as in
-//! any other terminal, and the clients are kept up to date by Windows.
+//! Remote sessions. SSH goes through Windows' own OpenSSH client (`ssh.exe`): Shellman only starts
+//! it in a pseudoconsole, so keys, agents (the Windows ssh-agent or 1Password's), `~/.ssh/config`
+//! and `known_hosts` work exactly as in any other terminal, and the client is kept up to date by
+//! Windows. Telnet is Shellman's own (see `telnet.rs`); this file only checks its host and port.
 //!
 //! Arguments are passed as a list, never spliced into a command line. Host, user and jump host
 //! must not start with `-`, and the destination follows `--`, so nothing typed or imported as a
@@ -50,6 +50,9 @@ pub struct Connection {
     /// More ssh options, already split into arguments.
     #[serde(default)]
     pub extra_args: Vec<String>,
+    /// Telnet only: what Backspace sends.
+    #[serde(default)]
+    pub backspace: crate::telnet::Backspace,
 }
 
 /// A host, user or jump host: no whitespace or control characters, and not an option.
@@ -60,7 +63,7 @@ fn check_word(what: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check(c: &Connection) -> Result<(), String> {
+pub fn check(c: &Connection) -> Result<(), String> {
     if c.host.is_empty() {
         return Err("No host given".into());
     }
@@ -272,12 +275,7 @@ pub fn build_connection(c: &Connection, client: &Path, key_file: Option<&Path>, 
             // What the remote side should expect from xterm.js.
             env.push(("TERM".into(), "xterm-256color".into()));
         }
-        ConnectionKind::Telnet => {
-            args.push(c.host.clone());
-            if let Some(port) = c.port {
-                args.push(port.to_string());
-            }
-        }
+        ConnectionKind::Telnet => return Err("Telnet doesn't run a client program".into()),
     }
     Ok(Launch {
         program: client.to_string_lossy().into_owned(),
@@ -317,23 +315,12 @@ pub fn ssh_client(custom: &str) -> Result<PathBuf, String> {
     })
 }
 
-pub fn telnet_client() -> Result<PathBuf, String> {
-    let p = system32().join("telnet.exe");
-    if p.is_file() {
-        Ok(p)
-    } else {
-        Err("The Windows Telnet Client isn't installed. Turn it on under \"Turn Windows features on or off\" → \
-             Telnet Client, or run as administrator: dism /online /Enable-Feature /FeatureName:TelnetClient"
-            .into())
-    }
-}
-
 /// The launch for `c`, finding its client. `ssh_path` is the client from Settings ('' = default);
 /// a chosen agent key's public key file is kept in `key_dir`.
 pub fn launch(c: &Connection, ssh_path: &str, key_dir: &Path) -> Result<Launch, String> {
     let client = match c.kind {
         ConnectionKind::Ssh => ssh_client(ssh_path)?,
-        ConnectionKind::Telnet => telnet_client()?,
+        ConnectionKind::Telnet => return Err("Telnet doesn't run a client program".into()),
     };
     let key_file = match c.kind {
         ConnectionKind::Ssh if !c.password_auth && !c.identity_key.is_empty() => Some(public_key_file(key_dir, &c.identity_key)?),
@@ -362,6 +349,7 @@ mod tests {
             legacy_algorithms: false,
             jump_host: String::new(),
             extra_args: Vec::new(),
+            backspace: Default::default(),
         }
     }
 
@@ -425,17 +413,17 @@ mod tests {
     }
 
     #[test]
-    fn telnet_host_and_port_only() {
+    fn telnet_checks_host_and_port() {
         let mut c = ssh("router");
         c.kind = ConnectionKind::Telnet;
-        c.user = "ignored".into();
-        c.extra_args = vec!["-x".into()];
-        assert_eq!(args(&c), ["router"]);
+        assert!(check(&c).is_ok());
+        c.port = Some(0);
+        assert!(check(&c).is_err());
         c.port = Some(2323);
-        let l = build_connection(&c, Path::new("telnet.exe"), None, &[]).unwrap();
-        assert_eq!(l.args, ["router", "2323"]);
-        assert!(l.env.is_empty());
-        c.host = "-a".into();
+        c.host = "bad host".into();
+        assert!(check(&c).is_err());
+        // Telnet is Shellman's own, not a program to start.
+        c.host = "router".into();
         assert!(build_connection(&c, Path::new("telnet.exe"), None, &[]).is_err());
     }
 

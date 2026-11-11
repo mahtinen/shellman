@@ -1,12 +1,12 @@
 /**
  * SSH and Telnet connections: validation, display, and parsing what is typed in quick open.
- * Shellman only starts Windows' own client (ssh.exe / telnet.exe); the backend builds its
- * arguments again from these fields and checks them too (src-tauri/src/connect.rs).
+ * SSH runs Windows' own ssh.exe, whose arguments the backend builds again from these fields and
+ * checks too (src-tauri/src/connect.rs); Telnet is Shellman's own (src-tauri/src/telnet.rs).
  */
 import type { Connection, ConnectionKind } from './types';
 
 export function emptyConnection(kind: ConnectionKind = 'ssh'): Connection {
-  return { kind, host: '', port: null, user: '', identityFile: '', identityKey: '', passwordAuth: false, legacyAlgorithms: false, jumpHost: '', extraArgs: '' };
+  return { kind, host: '', port: null, user: '', identityFile: '', identityKey: '', passwordAuth: false, legacyAlgorithms: false, jumpHost: '', extraArgs: '', backspace: 'delete' };
 }
 
 /**
@@ -38,6 +38,7 @@ export function normalizeConnection(v: unknown): Connection | null {
     legacyAlgorithms: v.legacyAlgorithms === true,
     jumpHost: str(v.jumpHost),
     extraArgs: str(v.extraArgs),
+    backspace: v.backspace === 'ctrlH' ? 'ctrlH' : 'delete',
   };
 }
 
@@ -166,6 +167,7 @@ export function connectionRequest(c: Connection) {
     legacyAlgorithms: c.kind === 'ssh' && c.legacyAlgorithms,
     jumpHost: c.kind === 'ssh' ? c.jumpHost : '',
     extraArgs: c.kind === 'ssh' ? splitArgs(c.extraArgs) : [],
+    backspace: c.kind === 'telnet' ? c.backspace : 'delete',
   };
 }
 

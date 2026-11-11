@@ -9,6 +9,7 @@ mod notes;
 mod proc;
 mod pty;
 mod shell;
+mod telnet;
 mod worktree;
 mod xshell;
 

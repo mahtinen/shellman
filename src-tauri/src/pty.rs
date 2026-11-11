@@ -1,4 +1,5 @@
-//! Pseudo-terminal sessions backed by Windows ConPTY (via `portable-pty`).
+//! Pseudo-terminal sessions backed by Windows ConPTY (via `portable-pty`), and Telnet
+//! connections, which are a TCP connection instead (see `telnet.rs`).
 //!
 //! Each session has:
 //! - a reader thread that streams decoded UTF-8 output to the frontend over a
@@ -7,7 +8,8 @@
 //!   pseudoconsole. On Windows the output pipe only reports EOF after the
 //!   pseudoconsole is closed, so this is what lets the reader finish.
 
-use crate::connect::{self, Connection};
+use crate::connect::{self, Connection, ConnectionKind};
+use crate::telnet;
 use crate::shell::{self, build_launch, ShellKind, ShellProfile, WslClaude, TERMINAL_ENV};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Deserialize;
@@ -34,6 +36,43 @@ struct Session {
     claude: Option<ClaudeHome>,
     /// The Claude Code process found in this terminal before, as (pid, start time).
     claude_proc: Mutex<Option<(u32, u64)>>,
+    /// A Telnet connection instead of a pseudoconsole.
+    telnet: Option<Arc<telnet::Link>>,
+}
+
+/// Ends a Telnet connection the way a process is killed.
+#[derive(Clone)]
+struct TelnetKiller(Arc<telnet::Link>);
+
+impl std::fmt::Debug for TelnetKiller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TelnetKiller")
+    }
+}
+
+impl ChildKiller for TelnetKiller {
+    fn kill(&mut self) -> std::io::Result<()> {
+        self.0.close();
+        Ok(())
+    }
+
+    fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
+/// For a Telnet connection still being made: there is nothing to end yet.
+#[derive(Clone, Debug)]
+struct NoKiller;
+
+impl ChildKiller for NoKiller {
+    fn kill(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+        Box::new(NoKiller)
+    }
 }
 
 /// Where Claude Code keeps `sessions\<pid>.json` for each one that runs. Only a Claude started in
@@ -102,7 +141,7 @@ pub struct SpawnRequest {
     /// The shell to start; ignored when `connection` is set.
     #[serde(default)]
     pub shell: Option<ShellProfile>,
-    /// Connect to a remote host with ssh.exe / telnet.exe instead of starting a shell.
+    /// Connect to a remote host (ssh.exe, or Shellman's own Telnet) instead of starting a shell.
     #[serde(default)]
     pub connection: Option<Connection>,
     /// ssh.exe from Settings; empty = Windows OpenSSH.
@@ -183,6 +222,10 @@ impl PtyManager {
             return Err(format!("Directory not found: {}", req.cwd));
         }
 
+        if let Some(c) = req.connection.as_ref().filter(|c| c.kind == ConnectionKind::Telnet) {
+            return self.spawn_telnet(c, req.cols, req.rows, output);
+        }
+
         let launch = match (&req.connection, &req.shell) {
             (Some(c), _) => {
                 let key_dir = req.key_dir.clone().unwrap_or_else(|| std::env::temp_dir().join("shellman-ssh-keys"));
@@ -253,6 +296,7 @@ impl PtyManager {
             msys_ps: if busy_check == BusyCheck::ThroughLauncher { msys_ps(Path::new(&launch.program)) } else { None },
             claude,
             claude_proc: Mutex::new(None),
+            telnet: None,
         });
 
         self.sessions.lock().unwrap().insert(id, session.clone());
@@ -314,6 +358,92 @@ impl PtyManager {
         Ok(id)
     }
 
+    /// A Telnet connection: connects in the background (showing where to), then streams the host's
+    /// text like a terminal's output. It ends with exit code 0 when the host closes it, 1 when it
+    /// couldn't connect.
+    fn spawn_telnet(&self, c: &Connection, cols: u16, rows: u16, output: Channel<InvokeResponseBody>) -> Result<u32, String> {
+        connect::check(c)?;
+        let (host, port, backspace) = (c.host.clone(), c.port.unwrap_or(23), c.backspace);
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        // Keys typed while connecting wait in the queue and go out once connected.
+        let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>();
+        let sessions = self.sessions.clone();
+        let send_text = move |output: &Channel<InvokeResponseBody>, text: &str| {
+            output.send(InvokeResponseBody::Json(serde_json::to_string(text).unwrap_or_default())).is_ok()
+        };
+        // Stands in until connected; if the pane is closed meanwhile, it is gone when the connection is made.
+        sessions.lock().unwrap().insert(id, Arc::new(Session {
+            master: Mutex::new(None),
+            input: Mutex::new(Some(input_tx.clone())),
+            killer: Mutex::new(Box::new(NoKiller)),
+            pid: None,
+            busy_check: BusyCheck::Children,
+            msys_ps: None,
+            claude: None,
+            claude_proc: Mutex::new(None),
+            telnet: None,
+        }));
+        std::thread::Builder::new()
+            .name(format!("telnet-{id}"))
+            .spawn(move || {
+                let target = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+                send_text(&output, &format!("\x1b[90mConnecting to {target}…\x1b[0m\r\n"));
+                let link = match telnet::connect(&host, port, cols, rows, backspace) {
+                    Ok(link) => link,
+                    Err(e) => {
+                        sessions.lock().unwrap().remove(&id);
+                        send_text(&output, &format!("\x1b[31m{e}\x1b[0m\r\n"));
+                        let _ = output.send(InvokeResponseBody::Json(serde_json::json!({ "exit": 1 }).to_string()));
+                        return;
+                    }
+                };
+                let session = Arc::new(Session {
+                    master: Mutex::new(None),
+                    input: Mutex::new(Some(input_tx)),
+                    killer: Mutex::new(Box::new(TelnetKiller(link.clone()))),
+                    pid: None,
+                    busy_check: BusyCheck::Children,
+                    msys_ps: None,
+                    claude: None,
+                    claude_proc: Mutex::new(None),
+                    telnet: Some(link.clone()),
+                });
+                {
+                    let mut all = sessions.lock().unwrap();
+                    // Closed while connecting: hang up again.
+                    if !all.contains_key(&id) {
+                        link.close();
+                        return;
+                    }
+                    all.insert(id, session);
+                }
+                let writer = link.clone();
+                let echo_output = output.clone();
+                std::thread::spawn(move || {
+                    for keys in input_rx {
+                        match writer.write_keys(&keys) {
+                            // While the host doesn't echo, Shellman shows the typing itself.
+                            Ok(screen) if !screen.is_empty() => {
+                                send_text(&echo_output, &String::from_utf8_lossy(&screen));
+                            }
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
+                    }
+                });
+                let mut decoder = Utf8Stream::default();
+                link.read_loop(|bytes| {
+                    let text = decoder.push(bytes);
+                    text.is_empty() || send_text(&output, &text)
+                });
+                link.close();
+                let _ = output.send(InvokeResponseBody::Json(serde_json::json!({ "exit": 0 }).to_string()));
+                sessions.lock().unwrap().remove(&id);
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+
     fn get(&self, id: u32) -> Option<Arc<Session>> {
         self.sessions.lock().unwrap().get(&id).cloned()
     }
@@ -330,6 +460,10 @@ impl PtyManager {
 
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
         let Some(session) = self.get(id) else { return Ok(()) };
+        if let Some(link) = &session.telnet {
+            link.resize(cols.max(2), rows.max(1));
+            return Ok(());
+        }
         let guard = session.master.lock().unwrap();
         match guard.as_ref() {
             Some(m) => m.resize(size(cols, rows)).map_err(|e| e.to_string()),
@@ -885,6 +1019,7 @@ mod tests {
                         legacy_algorithms: false,
                         jump_host: String::new(),
                         extra_args: vec!["-o".into(), "BatchMode=yes".into(), "-o".into(), "ConnectTimeout=5".into()],
+                        backspace: Default::default(),
                     }),
                     ssh_path: String::new(),
                     key_dir: None,
@@ -1179,5 +1314,116 @@ I    7000       1    7000       9999  ?          4096 17:00:00 /usr/bin/bash
             )
             .unwrap_err();
         assert!(err.contains("no shell or connection"), "{err}");
+    }
+
+    fn telnet_request(port: u16, backspace: crate::telnet::Backspace) -> SpawnRequest {
+        SpawnRequest {
+            shell: None,
+            connection: Some(Connection {
+                kind: ConnectionKind::Telnet,
+                host: "127.0.0.1".into(),
+                port: Some(port),
+                user: String::new(),
+                identity_file: String::new(),
+                identity_key: String::new(),
+                password_auth: false,
+                legacy_algorithms: false,
+                jump_host: String::new(),
+                extra_args: Vec::new(),
+                backspace,
+            }),
+            ssh_path: String::new(),
+            key_dir: None,
+            cwd: std::env::temp_dir().to_string_lossy().into(),
+            command: None,
+            env: HashMap::new(),
+            shell_integration: false,
+            cols: 80,
+            rows: 24,
+        }
+    }
+
+    /// Output as text, with `<<{"exit":..}>>` for the final message.
+    fn collecting_channel() -> (Channel<InvokeResponseBody>, Arc<Mutex<String>>) {
+        let out = Arc::new(Mutex::new(String::new()));
+        let sink = out.clone();
+        let channel = Channel::new(move |body| {
+            if let InvokeResponseBody::Json(s) = body {
+                match serde_json::from_str(&s) {
+                    Ok(serde_json::Value::String(text)) => sink.lock().unwrap().push_str(&text),
+                    Ok(other) => sink.lock().unwrap().push_str(&format!("<<{other}>>")),
+                    Err(_) => {}
+                }
+            }
+            Ok(())
+        });
+        (channel, out)
+    }
+
+    fn wait_for(out: &Mutex<String>, text: &str) {
+        let start = Instant::now();
+        while !out.lock().unwrap().contains(text) {
+            assert!(start.elapsed() < Duration::from_secs(10), "no {text:?} in {:?}", out.lock().unwrap());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn telnet_connection_is_shellmans_own() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            // This host echoes and goes character at a time, so keys go out as typed.
+            s.write_all(&[255, 251, 1, 255, 251, 3, 255, 253, 3]).unwrap();
+            s.write_all(b"Router> ").unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 256];
+            while !got.ends_with(b"\r\n") {
+                let n = s.read(&mut buf).unwrap();
+                assert!(n > 0, "closed early");
+                got.extend(&buf[..n]);
+            }
+            s.write_all(b"bye\r\n").unwrap();
+            // Closing ends the terminal.
+            got
+        });
+        let (channel, out) = collecting_channel();
+        let mgr = PtyManager::default();
+        // Ctrl+H for this host.
+        let id = mgr.spawn(telnet_request(port, crate::telnet::Backspace::CtrlH), channel).unwrap();
+        wait_for(&out, "Router> ");
+        mgr.resize(id, 100, 30).unwrap();
+        mgr.write(id, b"shw\x7fow\r").unwrap();
+        let got = server.join().unwrap();
+        // After the negotiation: the keys, Backspace as Ctrl+H and Enter as CR LF.
+        assert!(got.ends_with(b"shw\x08ow\r\n"), "{got:?}");
+        wait_for(&out, "<<{\"exit\":0}>>");
+        let text = out.lock().unwrap().clone();
+        assert!(text.starts_with("\x1b[90mConnecting to 127.0.0.1:"), "{text:?}");
+        assert!(text.contains("bye"), "{text:?}");
+        // The ended connection is gone.
+        wait_until(|| mgr.get(id).is_none());
+    }
+
+    #[test]
+    fn telnet_that_cannot_connect_says_why() {
+        let (channel, out) = collecting_channel();
+        let mgr = PtyManager::default();
+        // Nothing listens on port 1.
+        let id = mgr.spawn(telnet_request(1, Default::default()), channel).unwrap();
+        wait_for(&out, "<<{\"exit\":1}>>");
+        assert!(out.lock().unwrap().contains("Could not connect to 127.0.0.1:1"));
+        assert!(mgr.get(id).is_none());
+    }
+
+    fn wait_until(ok: impl Fn() -> bool) {
+        let start = Instant::now();
+        while !ok() {
+            assert!(start.elapsed() < Duration::from_secs(10), "timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

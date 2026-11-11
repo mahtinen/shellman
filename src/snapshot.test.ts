@@ -16,7 +16,7 @@ const spec = (cwd: string, extra: Partial<LaunchSpec> = {}): LaunchSpec => ({
 
 describe('snapshot', () => {
   it('keeps a pane\'s connection', () => {
-    const connection = { kind: 'ssh' as const, host: 'web1', port: 22, user: 'bob', identityFile: '', identityKey: '', passwordAuth: false, legacyAlgorithms: false, jumpHost: '', extraArgs: '-A' };
+    const connection = { kind: 'ssh' as const, host: 'web1', port: 22, user: 'bob', identityFile: '', identityKey: '', passwordAuth: false, legacyAlgorithms: false, jumpHost: '', extraArgs: '-A', backspace: 'delete' as const };
     const snap = normalizeSnapshot({ tabs: [{ root: { pane: spec('C:\\Users\\me', { connection }) } }, { root: { pane: spec('C:\\x', { connection: { kind: 'bogus' } as any }) } }] })!;
     expect(snapshotPanes(snap.tabs[0].root)[0].connection).toEqual(connection);
     expect(snapshotPanes(snap.tabs[1].root)[0].connection).toBeUndefined();

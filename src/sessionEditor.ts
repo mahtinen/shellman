@@ -7,7 +7,7 @@ import { h } from './dom';
 import type { MenuEntry } from './menu';
 import { store } from './store';
 import { SESSION_COLORS } from './themes';
-import type { Connection, ConnectionKind, Group, SavedSession, ShellProfile } from './types';
+import type { Connection, ConnectionKind, Group, SavedSession, ShellProfile, TelnetBackspace } from './types';
 
 export const COMMAND_SUGGESTIONS = [
   'claude',
@@ -292,6 +292,20 @@ export function editSession(
     const jump = h('input', { class: 'input mono', value: conn.jumpHost, placeholder: 'Optional, e.g. user@bastion', spellcheck: false });
     const legacy = h('input', { type: 'checkbox', checked: conn.legacyAlgorithms });
     const extra = h('input', { class: 'input mono', value: conn.extraArgs, placeholder: 'Optional, e.g. -A', spellcheck: false });
+    const backspace = h(
+      'select',
+      { class: 'input' },
+      h('option', { value: 'delete' }, 'Delete (like PuTTY)'),
+      h('option', { value: 'ctrlH' }, 'Ctrl+H'),
+    ) as HTMLSelectElement;
+    backspace.value = conn.backspace;
+    const backspaceField = h(
+      'label',
+      { class: 'field' },
+      h('span', null, 'Backspace sends'),
+      backspace,
+      h('small', { class: 'hint' }, 'Most devices want Delete. If Backspace doesn\'t erase, try Ctrl+H.'),
+    );
     // "user@host:port" typed or pasted into Host is split into the fields.
     host.addEventListener('change', () => {
       const d = parseDestination(host.value.trim());
@@ -476,6 +490,7 @@ export function editSession(
         legacyAlgorithms: ssh && legacy.checked,
         jumpHost: ssh ? jump.value.trim() : '',
         extraArgs: ssh ? extra.value.trim() : '',
+        backspace: ssh ? 'delete' : (backspace.value as TelnetBackspace),
       };
     };
 
@@ -590,6 +605,7 @@ export function editSession(
       userField,
       keyField,
       connectionHint,
+      backspaceField,
       sshAdvanced,
     );
     const showType = () => {
@@ -597,13 +613,14 @@ export function editSession(
       localFields.hidden = t !== 'local';
       connectionFields.hidden = t === 'local';
       userField.hidden = keyField.hidden = sshAdvanced.hidden = t !== 'ssh';
+      backspaceField.hidden = t !== 'telnet';
       if (t === 'ssh') loadKeys();
       if (openBtn) openBtn.textContent = t === 'local' ? 'Open' : 'Connect';
       port.placeholder = t === 'telnet' ? '23' : '22';
       connectionHint.textContent =
         t === 'ssh'
           ? 'Runs Windows OpenSSH (ssh.exe): your keys, SSH agent or 1Password, and ~/.ssh/config work as in any terminal.'
-          : 'Runs the Windows Telnet Client (telnet.exe). Telnet is not encrypted.';
+          : 'Shellman connects by itself, like PuTTY. Telnet is not encrypted.';
     };
     let openBtn: HTMLElement | null = null;
     type.addEventListener('change', showType);

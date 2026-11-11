@@ -65,7 +65,9 @@ describe('connectionRequest', () => {
   it('sends ssh-only fields only for SSH', () => {
     expect(connectionRequest(ssh({ extraArgs: '-A -o X=1' })).extraArgs).toEqual(['-A', '-o', 'X=1']);
     const t = connectionRequest({ ...emptyConnection('telnet'), host: 'r', user: 'u', extraArgs: '-x' });
-    expect(t).toMatchObject({ kind: 'telnet', host: 'r', user: '', extraArgs: [] });
+    expect(t).toMatchObject({ kind: 'telnet', host: 'r', user: '', extraArgs: [], backspace: 'delete' });
+    expect(connectionRequest({ ...emptyConnection('telnet'), host: 'r', backspace: 'ctrlH' }).backspace).toBe('ctrlH');
+    expect(connectionRequest(ssh({ backspace: 'ctrlH' })).backspace).toBe('delete');
   });
 
   it('sends keepalives for a new SSH session unless they are removed', () => {
@@ -81,6 +83,12 @@ describe('normalizeConnection', () => {
     expect(normalizeConnection({ kind: 'rdp', host: 'x' })).toBeNull();
     expect(normalizeConnection(null)).toBeNull();
     expect(normalizeConnection({ kind: 'ssh', host: 'x', port: '22' })?.port).toBeNull();
+  });
+
+  it('keeps what Telnet Backspace sends, Delete by default', () => {
+    expect(normalizeConnection({ kind: 'telnet', host: 'r' })?.backspace).toBe('delete');
+    expect(normalizeConnection({ kind: 'telnet', host: 'r', backspace: 'ctrlH' })?.backspace).toBe('ctrlH');
+    expect(normalizeConnection({ kind: 'telnet', host: 'r', backspace: 'junk' })?.backspace).toBe('delete');
   });
 });
 

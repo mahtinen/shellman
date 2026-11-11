@@ -336,7 +336,7 @@ export class Pane implements WorkspacePane {
     this.host.onInfoChange(this);
   }
 
-  /** Starts ssh.exe / telnet.exe for the pane's connection. */
+  /** Starts ssh.exe, or Shellman's own Telnet, for the pane's connection. */
   private async connect(): Promise<void> {
     const conn = this.spec.connection!;
     if (conn.kind === 'ssh' && !conn.user && !this.loginAsked) return this.askLogin();

@@ -342,7 +342,7 @@ export function openSettings(tab?: SettingsTab): void {
       section('Shells', h('small', { class: 'hint' }, 'Detected automatically:'), detected, h('small', { class: 'hint' }, 'Custom shells:'), customList),
       section(
         'Connections',
-        field('SSH client', sshPath, "Leave empty for Windows OpenSSH, which uses the Windows ssh-agent or 1Password's SSH agent. Telnet uses the Windows Telnet Client (an optional Windows feature)."),
+        field('SSH client', sshPath, "Leave empty for Windows OpenSSH, which uses the Windows ssh-agent or 1Password's SSH agent."),
         reconnectEl,
       ),
       section(
