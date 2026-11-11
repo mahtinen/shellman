@@ -68,6 +68,10 @@ starts from writing its session files. SSH tests only use
 
 ## Rules
 
+- **Shellman manages terminals; it doesn't implement protocols.** Shells, SSH, Telnet, HTTP (curl) and git are
+  existing programs that Shellman starts (in a pseudoconsole or through `proc.rs`). Don't build a protocol client
+  into Shellman (a Telnet or SSH stack, an HTTP client): it is code to maintain against every odd server. When a
+  program misbehaves, the answer is another program, run from a session's startup command (see `CONTRIBUTING.md`).
 - **Never splice user input into a command line.** Startup commands reach shells through `-EncodedCommand` or an
   environment variable (`shell.rs`). SSH/Telnet arguments are a list; host, user and jump host must not start
   with `-`, and the ssh destination follows `--`. New ssh options go into `connect.rs` (with tests) and the

@@ -209,7 +209,9 @@ clients patched. Shellman never stores passwords or private keys.
 - **Reconnecting.** Enter reconnects a closed connection, Duplicate opens another connection to the same host,
   and new tabs or splits next to it are local shells. Reopened connection tabs wait for Enter instead of logging
   in to every host at start-up (Settings → Connections can change that).
-- **Telnet** needs the optional Windows feature "Telnet Client".
+- **Telnet** needs the optional Windows feature "Telnet Client". For a device that `telnet.exe` doesn't handle
+  (Backspace typing the wrong key, for example), save a local session whose startup command runs another client:
+  `wsl telnet 10.0.0.1 2323` or PuTTY's `plink -telnet -P 2323 10.0.0.1`.
 - **Import sessions.** Right-click the sidebar (or a group) → Import sessions, or use quick open. Choose the
   program (XShell for now), tick the sessions you want, and import them into a new group or one you already
   have. For XShell it reads the `.xsh` files in `Documents\NetSarang Computer\<version>\Xshell\Sessions` (or a
