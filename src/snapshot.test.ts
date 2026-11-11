@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { leaf, type LayoutNode } from './layout';
+import { addToStack, leaf, showPane, splitPane, type LayoutNode } from './layout';
 import { layoutFromSnapshot, normalizeSnapshot, notesOnly, snapshotLeaves, snapshotNode, snapshotNotes, snapshotPanes, type SnapshotLeaf } from './snapshot';
 import type { LaunchSpec } from './types';
 
@@ -148,5 +148,44 @@ describe('snapshot', () => {
     expect(root.split).toBe('column');
     expect(root.sizes).toEqual([0.75, 0.25]);
     expect(root.children[0].pane).toEqual(spec('C:\\a', { name: 'Terminal', env: { A: '1' } }));
+  });
+
+  describe('tabs in a cell', () => {
+    const specs: Record<string, LaunchSpec> = { a: spec('C:\a'), b: spec('C:\b'), c: spec('C:\c') };
+    // a | [b c] with c shown
+    const tree = () => showPane(addToStack(splitPane(leaf('a'), 'a', 'b', 'row'), 'b', ['c']), 'c');
+
+    it('round-trips a stack and the tab it shows', () => {
+      const snap = snapshotNode(tree(), (id) => ({ pane: specs[id] }))!;
+      expect(snapshotPanes(snap).map((s) => s.cwd)).toEqual(['C:\a', 'C:\b', 'C:\c']);
+      const norm = normalizeSnapshot({ tabs: [{ root: snap }] })!;
+      let n = 0;
+      const back = layoutFromSnapshot(norm.tabs[0].root, () => `p${n++}`);
+      expect(back).toEqual({ type: 'split', direction: 'row', sizes: [0.5, 0.5], children: [leaf('p0'), { type: 'pane', paneId: 'p2', stack: ['p1', 'p2'] }] });
+    });
+
+    it('saves a stack left with one pane as a plain pane', () => {
+      const snap = snapshotNode(tree(), (id) => (id === 'b' ? null : { pane: specs[id] }))!;
+      expect(snap).toEqual({ split: 'row', sizes: [0.5, 0.5], children: [{ pane: specs.a }, { pane: specs.c }] });
+    });
+
+    it('shows the first tab when the shown one is not reopened', () => {
+      const snap = { stack: [{ pane: specs.a }, { pane: specs.b }, { pane: specs.c }], shown: 2 };
+      const back = layoutFromSnapshot(snap, (l) => ('pane' in l && l.pane.cwd === 'C:\c' ? null : ('pane' in l ? l.pane.cwd : null)));
+      expect(back).toEqual({ type: 'pane', paneId: 'C:\a', stack: ['C:\a', 'C:\b'] });
+    });
+
+    it('cleans up a stack from disk', () => {
+      const snap = normalizeSnapshot({ tabs: [{ root: { stack: [{ pane: specs.a }, { bogus: 1 }, { split: 'row', children: [] }, { pane: specs.b }], shown: 3 } }] })!;
+      expect(snap.tabs[0].root).toEqual({ stack: [{ pane: specs.a }, { pane: specs.b }], shown: 1 });
+      expect(normalizeSnapshot({ tabs: [{ root: { stack: [{ pane: specs.a }], shown: 7 } }] })!.tabs[0].root).toEqual({ pane: specs.a });
+      expect(normalizeSnapshot({ tabs: [{ root: { stack: [] } }] })).toBeNull();
+    });
+
+    it('keeps the notes of a stack', () => {
+      const note = { id: 'n1', name: 'Note 1', path: '', wrap: false };
+      const only = notesOnly({ version: 1, activeTab: 0, tabs: [{ title: null, activePane: 0, root: { stack: [{ pane: specs.a }, { note }], shown: 0 } }] });
+      expect(only?.tabs[0].root).toEqual({ note });
+    });
   });
 });

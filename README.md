@@ -86,8 +86,11 @@ Shellman runs at a time: starting it again brings the open window to the front.
   reorder. Terminals move between tabs and keep running: a pane goes out of its split into a tab of its own
   (Ctrl+Shift+M or the pane header), and another tab comes into the current one as a split (drag it onto a
   pane, or "Move into current tab" on the tab's right-click menu). A tab has the same name as its terminal
-  in the sidebar: Claude's task title if there is one, otherwise the session's name. Tabs shrink and cut their
-  names as more of them open (hover for the full name).
+  in the sidebar: Claude's task title if there is one, otherwise the session's name. A split tab names every
+  pane on screen ("api | logs"). Tabs shrink and cut their names as more of them open (hover for the full name).
+- **Tabs inside a split.** A pane can hold several terminals as tabs of its own: drop a tab or a pane (drag
+  it by its header) in the middle of another pane, or use "New tab in this pane" on the pane's menu. Drag
+  those tabs to reorder them, onto the side of a pane for a split, or onto the tab bar for a tab of their own.
 - **Picks up where you left off.** Tabs, splits and each terminal's folder are reopened on the next start,
   with startup commands run again (Settings → Terminal → On start can reopen plain shells or nothing).
   The screen contents of terminals aren't restored. Settings → Terminal → "Start Shellman when Windows starts"

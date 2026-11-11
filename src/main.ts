@@ -17,7 +17,6 @@ import { clamp, h, isEditableTarget, setChildren } from './dom';
 import { icons, type IconName } from './icons';
 import { importSessions } from './importDialog';
 import { matchKey, matchRequestKey, shortcutFor, type Match } from './keys';
-import type { FocusDirection } from './layout';
 import { showMenu, showMenuBelow, type MenuEntry } from './menu';
 import type { Pane } from './pane';
 import { isTerminal, type WorkspacePane } from './panes';
@@ -50,7 +49,7 @@ import { store } from './store';
 import { applyUiTheme, getTheme } from './themes';
 import type { Connection, Group, LaunchSpec, SavedSession, SplitPlacement } from './types';
 import { updater } from './updater';
-import { Workspace, type Tab } from './workspace';
+import { Workspace, type DropSide, type Tab } from './workspace';
 
 /** Browser shortcuts that must never reach WebView2 (reload, print, ...). */
 const BLOCKED_KEYS = new Set(['F3', 'F5', 'F7', 'F12', 'BrowserBack', 'BrowserForward', 'BrowserRefresh']);
@@ -80,6 +79,10 @@ class App {
       onShortcut: (m) => this.runAction(m),
       onPaneContextMenu: (p, e) => this.paneMenu(p, e),
       onTabContextMenu: (t, e) => this.tabMenu(t, e),
+      onNewInStack: (p) => {
+        this.workspace.setActivePane(p.id, false);
+        this.newTerminal('stack');
+      },
       onTerminalsInfo: () => {
         this.sidebar?.refreshTerminals();
         this.scheduleWorkspaceSave();
@@ -1100,6 +1103,7 @@ class App {
       'separator',
       { label: 'Split right', icon: 'splitRight', shortcut: shortcutFor('splitRight'), action: () => this.workspace.open(this.workspace.specFrom(pane, false), 'right', pane.id) },
       { label: 'Split down', icon: 'splitDown', shortcut: shortcutFor('splitDown'), action: () => this.workspace.open(this.workspace.specFrom(pane, false), 'down', pane.id) },
+      { label: 'New tab in this pane', icon: 'plus', action: () => this.workspace.open(this.workspace.specFrom(pane, false), 'stack', pane.id) },
       {
         label: 'Duplicate',
         icon: 'duplicate',
@@ -1147,6 +1151,7 @@ class App {
       'separator',
       { label: 'Terminal in split right', icon: 'splitRight', shortcut: shortcutFor('splitRight'), action: () => terminal('right') },
       { label: 'Terminal in split down', icon: 'splitDown', shortcut: shortcutFor('splitDown'), action: () => terminal('down') },
+      { label: 'Terminal as tab in this pane', icon: 'plus', action: () => terminal('stack') },
       { label: 'Move to new tab', icon: 'popOut', shortcut: shortcutFor('movePaneToTab'), disabled: !split, action: () => this.workspace.moveToNewTab(pane.id) },
       'separator',
       { label: 'Close pane', icon: 'x', danger: true, shortcut: shortcutFor('closePane'), action: () => void this.workspace.requestClosePane(pane.id) },
@@ -1171,6 +1176,7 @@ class App {
       { label: 'New note', icon: 'note', shortcut: shortcutFor('newNote'), action: () => this.workspace.openNote() },
       { label: 'Terminal in split right', icon: 'splitRight', shortcut: shortcutFor('splitRight'), action: () => this.newTerminal('right') },
       { label: 'Terminal in split down', icon: 'splitDown', shortcut: shortcutFor('splitDown'), action: () => this.newTerminal('down') },
+      { label: 'Terminal as tab in this pane', icon: 'plus', action: () => this.newTerminal('stack') },
       { label: 'Move to new tab', icon: 'popOut', shortcut: shortcutFor('movePaneToTab'), disabled: !split, action: () => this.workspace.moveToNewTab(pane.id) },
       'separator',
       { label: 'Close pane', icon: 'x', danger: true, shortcut: shortcutFor('closePane'), action: () => void this.workspace.requestClosePane(pane.id) },
@@ -1192,6 +1198,7 @@ class App {
       'separator',
       { label: 'Terminal in split right', icon: 'splitRight', shortcut: shortcutFor('splitRight'), action: () => this.newTerminal('right') },
       { label: 'Terminal in split down', icon: 'splitDown', shortcut: shortcutFor('splitDown'), action: () => this.newTerminal('down') },
+      { label: 'Terminal as tab in this pane', icon: 'plus', action: () => this.newTerminal('stack') },
       { label: 'Move to new tab', icon: 'popOut', shortcut: shortcutFor('movePaneToTab'), disabled: !split, action: () => this.workspace.moveToNewTab(pane.id) },
       'separator',
       { label: 'Rename…', icon: 'edit', disabled: !group, action: () => group && void renameRequest(this.workspace, group, pane.ref.path) },
@@ -1316,14 +1323,14 @@ class App {
    * "Move into current tab": `move` puts a tab or terminal next to the focused pane of the tab on
    * screen. Not offered for that tab itself.
    */
-  private moveIntoEntry(from: Tab | undefined, move: (targetPaneId: string, side: FocusDirection) => void): MenuEntry {
+  private moveIntoEntry(from: Tab | undefined, move: (targetPaneId: string, side: DropSide) => void): MenuEntry {
     const target = this.workspace.activePane();
-    const side = (label: string, icon: IconName, dir: FocusDirection): MenuEntry => ({ label, icon, action: () => target && move(target.id, dir) });
+    const side = (label: string, icon: IconName, dir: DropSide): MenuEntry => ({ label, icon, action: () => target && move(target.id, dir) });
     return {
       label: 'Move into current tab',
       icon: 'splitRight',
       disabled: !target || !from || from === this.workspace.activeTab,
-      submenu: [side('Split right', 'splitRight', 'right'), side('Split down', 'splitDown', 'down')],
+      submenu: [side('Split right', 'splitRight', 'right'), side('Split down', 'splitDown', 'down'), side('As tabs in the focused pane', 'plus', 'center')],
     };
   }
 
@@ -1336,7 +1343,7 @@ class App {
       disabled: !tab || this.workspace.panesOf(tab).length < 2,
       action: () => this.workspace.moveToNewTab(pane.id),
     };
-    const moveInto = this.moveIntoEntry(tab, (target, side) => this.workspace.movePaneInto(pane.id, target, side));
+    const moveInto = this.moveIntoEntry(tab, (target, side) => this.workspace.movePane(pane.id, target, side));
     if (pane.connection) {
       showMenu(e.clientX, e.clientY, [
         { label: 'Focus', icon: 'globe', action: () => this.workspace.setActivePane(pane.id, true) },
