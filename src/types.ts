@@ -225,7 +225,8 @@ export interface WorktreeRef {
   base: string;
 }
 
-export type SplitPlacement = 'tab' | 'right' | 'down';
+/** Where a new pane goes: a tab of its own, a split next to a pane, or another tab in that pane's cell. */
+export type SplitPlacement = 'tab' | 'right' | 'down' | 'stack';
 
 export interface SystemInfo {
   homeDir: string;

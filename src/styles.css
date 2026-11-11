@@ -853,6 +853,20 @@ select.input {
   height: 12px;
 }
 
+/* A split tab names every pane on screen; it may grow wider for that. */
+.tab.multi {
+  max-width: 340px;
+}
+
+.tab-sep {
+  margin: 0 5px;
+  opacity: 0.45;
+}
+
+.tab.active .tab-part:not(.current) {
+  color: var(--muted);
+}
+
 /* ---- terminal area ------------------------------------------------------ */
 
 .area {
@@ -973,6 +987,114 @@ select.input {
 .multi .pane-header,
 .zoomed .pane-header {
   display: flex;
+}
+
+/* A pane's header drags it: onto another pane (a split, or a tab there) or onto the tab bar. */
+.multi .pane-header {
+  cursor: grab;
+}
+
+.multi .pane-header button {
+  cursor: default;
+}
+
+/* Several panes in one cell: their tabs over the one shown, in place of its header. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.stack > .pane {
+  flex: 1;
+}
+
+.stack > .pane > .pane-header {
+  display: none;
+}
+
+.stack-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  /* As tall as a pane header, so cells side by side line up. */
+  height: 24px;
+  flex: none;
+  padding-right: 4px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.stack-tabs > .icon-btn {
+  align-self: center;
+}
+
+.stack-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 60px;
+  max-width: 180px;
+  padding: 0 2px 0 8px;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 1 auto;
+}
+
+.stack-tab::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--session-color, transparent);
+}
+
+.stack-tab:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.stack-tab.shown {
+  background: var(--term-bg);
+  color: var(--text);
+}
+
+/* The focused pane's tab, when there are other panes beside it. */
+.multi .stack-tab.active {
+  box-shadow: inset 0 -1px 0 var(--accent);
+}
+
+.stack-tab.exited .stack-tab-label {
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.stack-tab-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stack-tab:hover .tab-close,
+.stack-tab.shown .tab-close {
+  opacity: 1;
+}
+
+.stack-tab.drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.stack-tab.drop-after {
+  box-shadow: inset -2px 0 0 var(--accent);
 }
 
 .multi .pane.active .pane-header {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addToStack,
+  cellOf,
   equalize,
   insertNode,
   leaf,
@@ -8,7 +10,10 @@ import {
   paneRects,
   removePane,
   resizeAt,
+  showPane,
+  shownIds,
   splitPane,
+  successor,
   type LayoutNode,
   type SplitNode,
 } from './layout';
@@ -161,5 +166,77 @@ describe('resizeAt / equalize', () => {
   it('equalizes all splits', () => {
     const t = equalize({ type: 'split', direction: 'row', sizes: [0.9, 0.1], children: [leaf('a'), leaf('b')] }) as SplitNode;
     expect(t.sizes).toEqual([0.5, 0.5]);
+  });
+});
+
+describe('stacks (tabs in a cell)', () => {
+  // a | [b c d] with c shown
+  const tree = (): LayoutNode => {
+    let t = splitPane(leaf('a'), 'a', 'b', 'row');
+    t = addToStack(t, 'b', ['c']);
+    t = addToStack(t, 'c', ['d']);
+    return showPane(t, 'c');
+  };
+
+  it('adds tabs after the target and shows the new one', () => {
+    let t = addToStack(leaf('a'), 'a', ['b']);
+    expect(t).toEqual({ type: 'pane', paneId: 'b', stack: ['a', 'b'] });
+    t = addToStack(t, 'a', ['c'], true);
+    expect(t).toEqual({ type: 'pane', paneId: 'c', stack: ['c', 'a', 'b'] });
+  });
+
+  it('reorders a tab already in the cell', () => {
+    const t = addToStack({ type: 'pane', paneId: 'a', stack: ['a', 'b', 'c'] }, 'c', ['a']);
+    expect(t).toEqual({ type: 'pane', paneId: 'a', stack: ['b', 'c', 'a'] });
+  });
+
+  it('ignores adding a pane next to itself', () => {
+    expect(addToStack(leaf('a'), 'a', ['a'])).toEqual(leaf('a'));
+  });
+
+  it('lists every pane, and the shown ones apart', () => {
+    const t = tree();
+    expect(paneIds(t)).toEqual(['a', 'b', 'c', 'd']);
+    expect(shownIds(t)).toEqual(['a', 'c']);
+    expect(cellOf(t, 'd')?.paneId).toBe('c');
+    expect(cellOf(t, 'zzz')).toBeNull();
+  });
+
+  it('splits next to the whole cell, even from a hidden tab', () => {
+    const t = splitPane(tree(), 'd', 'e', 'row') as SplitNode;
+    expect(t.children.map((c) => (c.type === 'pane' ? c.stack : 'split'))).toEqual([['a'], ['b', 'c', 'd'], ['e']]);
+  });
+
+  it('shows the tab to the left when the shown one is removed', () => {
+    const t = removePane(tree(), 'c') as SplitNode;
+    expect(t.children[1]).toEqual({ type: 'pane', paneId: 'b', stack: ['b', 'd'] });
+    const first = removePane(showPane(tree(), 'b'), 'b') as SplitNode;
+    expect(first.children[1]).toEqual({ type: 'pane', paneId: 'c', stack: ['c', 'd'] });
+  });
+
+  it('keeps the shown tab when a hidden one is removed', () => {
+    const t = removePane(tree(), 'd') as SplitNode;
+    expect(t.children[1]).toEqual({ type: 'pane', paneId: 'c', stack: ['b', 'c'] });
+  });
+
+  it('removes the cell with its last tab', () => {
+    let t: LayoutNode | null = tree();
+    for (const id of ['b', 'c', 'd']) t = removePane(t!, id);
+    expect(t).toEqual(leaf('a'));
+  });
+
+  it('picks what to focus when a pane leaves', () => {
+    const t = tree();
+    expect(successor(t, 'c')).toBe('b');
+    expect(successor(t, 'd')).toBe('c');
+    expect(successor(t, 'a')).toBe('c');
+    expect(successor(leaf('a'), 'a')).toBeNull();
+  });
+
+  it('moves focus between cells by the pane they show', () => {
+    const t = tree();
+    expect(neighbor(t, 'a', 'right')).toBe('c');
+    expect(neighbor(t, 'd', 'left')).toBe('a');
+    expect([...paneRects(t).keys()]).toEqual(['a', 'c']);
   });
 });

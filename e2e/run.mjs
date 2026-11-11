@@ -250,6 +250,65 @@ if (phase === 'main') {
     await waitFor(`__t.ws.panesOf(__t.ws.activeTab).length === 1`, 5000, 'one pane again');
   });
 
+  // Drags the element `dragged` evaluates to and drops it on the middle (or near the bottom edge) of `onto`'s.
+  const dragTo = (dragged, onto, where = 'middle') =>
+    ev(`(() => {
+      const dt = new DataTransfer();
+      const src = ${dragged};
+      src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+      const r = (${onto}).getBoundingClientRect();
+      const at = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + r.width / 2, clientY: ${where === 'middle' ? 'r.top + r.height / 2' : 'r.bottom - 5'} };
+      const over = document.elementFromPoint(at.clientX, at.clientY);
+      over.dispatchEvent(new DragEvent('dragover', at));
+      over.dispatchEvent(new DragEvent('drop', at));
+      src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+      return true;
+    })()`);
+
+  await step('a split tab names all its panes; panes stack as tabs in a cell', async () => {
+    const tabs = await ev(`__t.ws.tabs.length`);
+    const from = await ev(`__t.ws.activeTab.id`);
+    const left = await ev(`__t.active().id`);
+    await key('KeyE', 'E', 69, ['ctrl', 'shift']);
+    await waitFor(`__t.ws.panesOf(__t.ws.activeTab).length === 2 && __t.active().state === 'running'`, 10000, 'split running');
+    const right = await ev(`__t.active().id`);
+    const label = await ev(`(() => { const el = __t.ws.activeTab.tabEl; const parts = [...el.querySelectorAll('.tab-part')]; return { n: parts.length, current: parts.findIndex((p) => p.classList.contains('current')), multi: el.classList.contains('multi') }; })()`);
+    assert(label.n === 2 && label.current === 1 && label.multi, 'tab names both panes, the focused one marked: ' + js(label));
+
+    // A background tab dropped in the middle of the right pane becomes a tab in that cell.
+    const moved = await backgroundTab(from, 'stack');
+    await dragTo(`__t.ws.tabOf(__t.ws.panes.get(${js(moved)})).tabEl`, `__t.ws.panes.get(${js(right)}).el.querySelector('.pane-term')`);
+    await waitFor(`__t.ws.tabs.length === ${tabs} && __t.ws.panesOf(__t.ws.activeTab).length === 3 && __t.active().id === ${js(moved)}`, 3000, 'stacked');
+    const st = await ev(`(() => {
+      const strip = [...__t.ws.activeTab.el.querySelectorAll('.stack-tab')];
+      const on = (id) => document.body.contains(__t.ws.panes.get(id).el);
+      return { ids: strip.map((t) => t.dataset.pane), shown: strip.findIndex((t) => t.classList.contains('shown')), right: on(${js(right)}), left: on(${js(left)}), parts: __t.ws.activeTab.tabEl.querySelectorAll('.tab-part').length };
+    })()`);
+    assert(js(st.ids) === js([right, moved]) && st.shown === 1 && !st.right && st.left && st.parts === 2, 'stack in the right cell: ' + js(st));
+    await shot(path.join(OUT, '04-pane-tabs.png'));
+
+    // A real click shows the other tab; output behind it marks the hidden one.
+    await click(`.stack-tab[data-pane="${right}"]`);
+    await waitFor(`__t.active().id === ${js(right)} && document.body.contains(__t.active().el)`, 2000, 'first tab shown');
+    // Output in the first moments after hiding (a redraw) doesn't count as new.
+    await sleep(400);
+    await ev(`__t.ws.panes.get(${js(moved)}).sendInput('echo "behind-$((6*7))"\\r')`);
+    await waitFor(`document.querySelector('.stack-tab[data-pane="${moved}"] .tab-status').dataset.state === 'unread'`, 5000, 'new output mark on the hidden tab');
+    assert(await ev(`__t.ws.snapshot().tabs.some((t) => 'split' in t.root && t.root.children.some((c) => 'stack' in c && c.stack.length === 2))`), 'saved as a stack');
+
+    // Dragged by its tab onto the tab bar, a pane gets a tab of its own.
+    await dragTo(`document.querySelector('.stack-tab[data-pane="${moved}"]')`, `document.querySelector('.tabs')`, 'edge');
+    await waitFor(`__t.ws.tabs.length === ${tabs + 1} && __t.active().id === ${js(moved)}`, 3000, 'own tab');
+    assert(await ev(`__t.text().includes('behind-42')`), 'kept its output');
+    assert(!(await ev(`!!__t.ws.tabs.find((t) => t.id === ${js(from)}).el.querySelector('.stack')`)), 'no tab strip with one pane left in the cell');
+
+    // Back to one pane for the steps below.
+    await ev(`__t.ws.closePane(${js(moved)})`);
+    await ev(`__t.ws.closePane(${js(right)})`);
+    await ev(`__t.ws.activateTab(${js(from)})`);
+    await waitFor(`__t.ws.tabs.length === ${tabs} && __t.ws.panesOf(__t.ws.activeTab).length === 1`, 3000, 'one pane again');
+  });
+
   await step('Shift+Enter sends ESC CR (newline for Claude Code)', async () => {
     await ev(`(() => { const p = __t.active(); window.__sent = []; const orig = p.sendInput.bind(p); p.sendInput = (d) => { window.__sent.push(d); orig(d); }; return true; })()`);
     await key('Enter', 'Enter', 13, ['shift']);
@@ -821,10 +880,12 @@ if (phase === 'main') {
   });
 
   await step('tabs use the same names as the sidebar tree', async () => {
+    // A split tab names every pane on screen; the focused one's part is the one to compare.
+    const name = `((t) => (t.tabEl.querySelector('.tab-part.current') ?? t.tabEl.querySelector('.tab-label')).textContent)`;
     await waitFor(`__t.ws.tabs.every((t) => {
       const row = document.querySelector('.term-row[data-pane="' + t.activePaneId + '"] .term-label');
-      return row && row.textContent === t.tabEl.querySelector('.tab-label').textContent;
-    })`, 3000, 'tab and tree names differ: ' + JSON.stringify(await ev(`__t.ws.tabs.map((t) => [t.tabEl.querySelector('.tab-label').textContent, document.querySelector('.term-row[data-pane="' + t.activePaneId + '"] .term-label')?.textContent])`)));
+      return row && row.textContent === ${name}(t);
+    })`, 3000, 'tab and tree names differ: ' + JSON.stringify(await ev(`__t.ws.tabs.map((t) => [${name}(t), document.querySelector('.term-row[data-pane="' + t.activePaneId + '"] .term-label')?.textContent])`)));
   });
 
   await step('many tabs shrink and cut their names instead of overflowing', async () => {

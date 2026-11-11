@@ -9,6 +9,8 @@ import { h } from './dom';
 import { icons } from './icons';
 import type { Match } from './keys';
 import {
+  addToStack,
+  cellOf,
   contains,
   equalize,
   insertNode,
@@ -17,9 +19,13 @@ import {
   paneIds,
   removePane,
   resizeAt,
+  showPane,
+  shownIds,
   splitPane,
+  successor,
   type FocusDirection,
   type LayoutNode,
+  type PaneNode,
   type SplitNode,
 } from './layout';
 import { Pane, type PaneHost } from './pane';
@@ -55,6 +61,8 @@ export interface WorkspaceEvents {
   onShortcut(match: Match): boolean;
   onPaneContextMenu(pane: WorkspacePane, e: MouseEvent): void;
   onTabContextMenu(tab: Tab, e: MouseEvent): void;
+  /** The + of a pane's tabs: a new terminal as another tab there. */
+  onNewInStack(pane: WorkspacePane): void;
   /** Some tab or pane's label, cwd, state or activity changed. */
   onTerminalsInfo(): void;
 }
@@ -63,11 +71,23 @@ export interface WorkspaceEvents {
 const MAX_GPU_PANES = 8;
 const BUSY_WINDOW_MS = 1500;
 const DRAG_TYPE = 'application/x-shellman-tab';
+/** A pane dragged by its header or its tab in a cell. */
+const PANE_DRAG_TYPE = 'application/x-shellman-pane';
 
-/** Where a dragged tab lands on a pane: the half of it nearest the pointer. */
+/** Where a dropped tab or pane goes next to a pane: a side (a split) or the middle (a tab in its cell). */
+export type DropSide = FocusDirection | 'center';
+
+/** Where a dragged tab or pane lands on a pane. */
 interface PaneDrop {
   paneId: string;
-  side: FocusDirection;
+  side: DropSide;
+}
+
+/** A pane stacked out of sight in its cell, and what happened there since. */
+interface HiddenPane {
+  since: number;
+  unread: boolean;
+  bell: boolean;
 }
 
 export class Workspace implements PaneHost, RequestHost {
@@ -82,6 +102,14 @@ export class Workspace implements PaneHost, RequestHost {
   keepPanesOnExit = false;
   /** The tab being dragged, which can be dropped onto a pane of the visible tab to join its split. */
   private draggingTab: Tab | null = null;
+  /** The pane being dragged by its header or its tab, to another place in the visible tab or a tab of its own. */
+  private draggingPane: string | null = null;
+  /** Panes stacked out of sight in their cells. */
+  private readonly hidden = new Map<string, HiddenPane>();
+  /** The tab of each stacked pane in its cell's tab strip. */
+  private readonly stackTabEls = new Map<string, HTMLElement>();
+  /** Reopened panes stacked out of sight: they are mounted once they are first in the document. */
+  private readonly unmounted = new Set<string>();
   private readonly dropEl = h('div', { class: 'pane-drop', hidden: true });
   /** The request pane a single click opened in a split ("Open requests in: split"); the next one replaces it. */
   private previewSplitId: string | null = null;
@@ -107,12 +135,53 @@ export class Workspace implements PaneHost, RequestHost {
     });
     this.areaEl.addEventListener('drop', (e) => {
       const drop = this.paneDrop(e);
-      const tab = this.draggingTab;
       this.showDrop(null);
-      if (!drop || !tab) return;
+      if (!drop) return;
       e.preventDefault();
-      this.moveTabInto(tab, drop.paneId, drop.side);
+      const { draggingTab, draggingPane } = this;
+      // What was dragged may be rebuilt by the move, and then never sees its dragend.
+      this.endDrag();
+      if (draggingTab) this.moveTabInto(draggingTab, drop.paneId, drop.side);
+      else if (draggingPane) this.movePane(draggingPane, drop.paneId, drop.side);
     });
+    // A pane's header drags the pane (see paneHeader).
+    this.areaEl.addEventListener('dragstart', (e) => {
+      const header = (e.target as Element | null)?.closest?.('.pane-header');
+      const id = header?.closest<HTMLElement>('.pane')?.dataset.pane;
+      if (id) this.startPaneDrag(e, id);
+    });
+    this.areaEl.addEventListener('dragend', () => this.endDrag());
+    // A pane dropped on the tab bar (not on a tab) gets a tab of its own.
+    this.tabsEl.addEventListener('dragover', (e) => {
+      if (this.draggingPane && this.canLeave(this.draggingPane)) e.preventDefault();
+    });
+    this.tabsEl.addEventListener('drop', (e) => {
+      const pane = this.draggingPane;
+      if (e.defaultPrevented || !pane) return;
+      e.preventDefault();
+      this.endDrag();
+      this.moveToNewTab(pane);
+    });
+  }
+
+  private startPaneDrag(e: DragEvent, paneId: string): void {
+    this.draggingPane = paneId;
+    e.dataTransfer?.setData(PANE_DRAG_TYPE, paneId);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  }
+
+  private endDrag(): void {
+    this.draggingTab = null;
+    this.draggingPane = null;
+    this.showDrop(null);
+    this.tabsEl.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+    this.areaEl.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+  }
+
+  /** A pane can leave its tab for one of its own when it isn't alone there. */
+  private canLeave(paneId: string): boolean {
+    const tab = this.paneTab.get(paneId);
+    return !!tab && paneIds(tab.root).length > 1;
   }
 
   // ---- PaneHost -------------------------------------------------------
@@ -296,7 +365,10 @@ export class Workspace implements PaneHost, RequestHost {
     return pane;
   }
 
-  /** Shows a new pane in a tab of its own, or split next to `targetPaneId` (default: the active pane). */
+  /**
+   * Shows a new pane in a tab of its own, split next to `targetPaneId` (default: the active pane),
+   * or as another tab in that pane's cell.
+   */
   add(pane: WorkspacePane, placement: SplitPlacement = 'tab', targetPaneId?: string): void {
     this.panes.set(pane.id, pane);
     const targetTab = targetPaneId ? this.paneTab.get(targetPaneId) : this.activeTab;
@@ -309,7 +381,7 @@ export class Workspace implements PaneHost, RequestHost {
       const target = targetPaneId ?? tab.activePaneId;
       tab.zoomedPaneId = null;
       tab.preview = false;
-      tab.root = splitPane(tab.root, target, pane.id, placement === 'right' ? 'row' : 'column');
+      tab.root = placement === 'stack' ? addToStack(tab.root, target, [pane.id]) : splitPane(tab.root, target, pane.id, placement === 'right' ? 'row' : 'column');
     }
     this.paneTab.set(pane.id, tab);
 
@@ -346,15 +418,16 @@ export class Workspace implements PaneHost, RequestHost {
   }
 
   /** Takes a pane out of its split into a tab of its own, next to the tab it was in. The terminal keeps running. */
-  moveToNewTab(paneId: string): void {
+  moveToNewTab(paneId: string): Tab | null {
     const pane = this.panes.get(paneId);
     const from = this.paneTab.get(paneId);
     const root = from && removePane(from.root, paneId);
-    if (!pane || !from || !root) return;
+    if (!pane || !from || !root) return null;
+    if (from.activePaneId === paneId) from.activePaneId = successor(from.root, paneId) ?? shownIds(root)[0];
     from.root = root;
     from.zoomedPaneId = null;
-    if (from.activePaneId === paneId) from.activePaneId = paneIds(root)[0];
     this.renderLayout(from);
+    this.updateTabEl(from);
 
     const tab = this.createTab(leaf(paneId), paneId, from);
     this.paneTab.set(paneId, tab);
@@ -363,33 +436,58 @@ export class Workspace implements PaneHost, RequestHost {
     this.renderLayout(tab);
     this.setActivePane(paneId, true);
     this.events.onChange();
+    return tab;
   }
 
-  /** Moves a whole tab, with its splits, next to `targetPaneId` in another tab. The terminals keep running. */
-  moveTabInto(source: Tab, targetPaneId: string, side: FocusDirection): void {
-    this.moveInto(source, source.root, null, targetPaneId, side, source.activePaneId);
+  /**
+   * Moves a whole tab, with its splits, next to `targetPaneId` in another tab, or (`center`) its
+   * panes as tabs into that pane's cell. The terminals keep running.
+   */
+  moveTabInto(source: Tab, targetPaneId: string, side: DropSide, before = false): void {
+    this.moveInto(source, source.root, null, targetPaneId, side, source.activePaneId, before);
   }
 
-  /** Moves one terminal next to `targetPaneId` in another tab; its old tab closes if it was alone there. */
-  movePaneInto(paneId: string, targetPaneId: string, side: FocusDirection): void {
+  /**
+   * Moves a pane next to `targetPaneId`, or (`center`) into its cell as a tab before or after it.
+   * Also within one tab; a pane's old tab closes if it was alone there.
+   */
+  movePane(paneId: string, targetPaneId: string, side: DropSide, before = false): void {
     const source = this.paneTab.get(paneId);
-    if (source) this.moveInto(source, leaf(paneId), removePane(source.root, paneId), targetPaneId, side, paneId);
+    const target = this.paneTab.get(targetPaneId);
+    if (!source || !target) return;
+    if (source !== target) return this.moveInto(source, leaf(paneId), removePane(source.root, paneId), targetPaneId, side, paneId, before);
+    // Onto its own cell: out of the stack, next to the tabs it leaves.
+    const anchor = targetPaneId === paneId ? cellOf(source.root, paneId)?.stack.find((id) => id !== paneId) : targetPaneId;
+    const rest = removePane(source.root, paneId);
+    if (!anchor || !rest || (side === 'center' && targetPaneId === paneId)) return;
+    source.root = this.place(rest, anchor, leaf(paneId), side, before);
+    source.zoomedPaneId = null;
+    this.renderLayout(source);
+    this.setActivePane(paneId, true);
+    this.events.onChange();
+  }
+
+  /** `added` next to `targetPaneId`, or its panes as tabs in that cell. */
+  private place(root: LayoutNode, targetPaneId: string, added: LayoutNode, side: DropSide, before: boolean): LayoutNode {
+    if (side === 'center') return addToStack(root, targetPaneId, paneIds(added), before);
+    return insertNode(root, targetPaneId, added, side === 'left' || side === 'right' ? 'row' : 'column', side === 'left' || side === 'up');
   }
 
   /** `moved` leaves `source` (which keeps `rest`, or closes when it is null) and joins the target's tab. */
-  private moveInto(source: Tab, moved: LayoutNode, rest: LayoutNode | null, targetPaneId: string, side: FocusDirection, focusId: string): void {
+  private moveInto(source: Tab, moved: LayoutNode, rest: LayoutNode | null, targetPaneId: string, side: DropSide, focusId: string, before = false): void {
     const target = this.paneTab.get(targetPaneId);
     if (!target || target === source) return;
+    const next = rest && !contains(rest, source.activePaneId) ? successor(source.root, source.activePaneId) : null;
     target.zoomedPaneId = null;
     target.preview = false;
-    target.root = insertNode(target.root, targetPaneId, moved, side === 'left' || side === 'right' ? 'row' : 'column', side === 'left' || side === 'up');
+    target.root = this.place(target.root, targetPaneId, moved, side, before);
     for (const id of paneIds(moved)) this.paneTab.set(id, target);
     this.renderLayout(target);
     this.activateTab(target.id, false);
     if (rest) {
       source.root = rest;
       source.zoomedPaneId = null;
-      if (!contains(rest, source.activePaneId)) source.activePaneId = paneIds(rest)[0];
+      if (!contains(rest, source.activePaneId)) source.activePaneId = next && contains(rest, next) ? next : shownIds(rest)[0];
       this.renderLayout(source);
       this.updateTabEl(source);
     } else {
@@ -399,18 +497,31 @@ export class Workspace implements PaneHost, RequestHost {
     this.events.onChange();
   }
 
-  /** The pane under a dragged tab, and which half of it the tab would take. */
+  /**
+   * The pane under a dragged tab or pane, and where it would go: the half nearest the pointer, or,
+   * in the middle of the pane or on its header, a tab in its cell.
+   */
   private paneDrop(e: DragEvent): PaneDrop | null {
     const tab = this.activeTab;
-    if (!this.draggingTab || !tab || this.draggingTab === tab) return null;
-    const el = (e.target as Element | null)?.closest<HTMLElement>('.pane');
+    const dragging = this.draggingPane;
+    if (!tab || (this.draggingTab ? this.draggingTab === tab : !dragging)) return null;
+    const target = e.target as Element | null;
+    const el = target?.closest<HTMLElement>('.pane');
     const paneId = el?.dataset.pane;
     if (!el || !paneId || this.paneTab.get(paneId) !== tab) return null;
     const r = el.getBoundingClientRect();
     const x = (e.clientX - r.left) / r.width;
     const y = (e.clientY - r.top) / r.height;
     const edges: [FocusDirection, number][] = [['left', x], ['right', 1 - x], ['up', y], ['down', 1 - y]];
-    return { paneId, side: edges.reduce((a, b) => (b[1] < a[1] ? b : a))[0] };
+    const nearest = edges.reduce((a, b) => (b[1] < a[1] ? b : a));
+    const side: DropSide = target?.closest('.pane-header') || nearest[1] > 0.25 ? 'center' : nearest[0];
+    if (dragging) {
+      const cell = cellOf(tab.root, paneId);
+      // Into the cell it is in already: nothing to do. Next to itself: only out of a stack.
+      if (side === 'center' && cell?.stack.includes(dragging)) return null;
+      if (paneId === dragging && (cell?.stack.length ?? 0) < 2) return null;
+    }
+    return { paneId, side };
   }
 
   private showDrop(drop: PaneDrop | null): void {
@@ -419,7 +530,12 @@ export class Workspace implements PaneHost, RequestHost {
     if (!drop || !el) return;
     const r = el.getBoundingClientRect();
     const area = this.areaEl.getBoundingClientRect();
-    const half = drop.side === 'left' || drop.side === 'right' ? { w: r.width / 2, h: r.height } : { w: r.width, h: r.height / 2 };
+    const half =
+      drop.side === 'center'
+        ? { w: r.width, h: r.height }
+        : drop.side === 'left' || drop.side === 'right'
+          ? { w: r.width / 2, h: r.height }
+          : { w: r.width, h: r.height / 2 };
     Object.assign(this.dropEl.style, {
       left: `${r.left - area.left + (drop.side === 'right' ? half.w : 0)}px`,
       top: `${r.top - area.top + (drop.side === 'down' ? half.h : 0)}px`,
@@ -535,8 +651,9 @@ export class Workspace implements PaneHost, RequestHost {
 
   /** Puts `pane` where `old` is in `tab` (a preview's place). */
   private replacePane(tab: Tab, old: WorkspacePane, pane: WorkspacePane): void {
+    const id = (x: string) => (x === old.id ? pane.id : x);
     const swap = (n: LayoutNode): LayoutNode =>
-      n.type === 'pane' ? (n.paneId === old.id ? leaf(pane.id) : n) : { ...n, children: n.children.map(swap) };
+      n.type === 'pane' ? { ...n, paneId: id(n.paneId), stack: n.stack.map(id) } : { ...n, children: n.children.map(swap) };
     this.disposePane(old);
     this.panes.set(pane.id, pane);
     this.paneTab.set(pane.id, tab);
@@ -582,8 +699,8 @@ export class Workspace implements PaneHost, RequestHost {
 
     this.renderTabBar();
     this.activateTab(tab.id, false);
+    for (const p of created) this.unmounted.add(p.id);
     this.renderLayout(tab);
-    for (const p of created) p.mount();
     this.setActivePane(active.id, false);
     this.ensureGpu(tab);
     for (const p of created) {
@@ -598,20 +715,32 @@ export class Workspace implements PaneHost, RequestHost {
 
   private renderLayout(tab: Tab): void {
     const zoomed = tab.zoomedPaneId ? this.panes.get(tab.zoomedPaneId) : null;
-    const multi = paneIds(tab.root).length > 1;
+    const multi = shownIds(tab.root).length > 1;
     tab.el.classList.toggle('multi', multi && !zoomed);
     tab.el.classList.toggle('zoomed', !!zoomed);
+    const panes = this.panesOf(tab);
+    for (const p of panes) this.stackTabEls.delete(p.id);
     tab.el.replaceChildren(zoomed ? zoomed.el : this.buildNode(tab.root, tab));
-    for (const p of this.panesOf(tab)) {
+    for (const p of panes) {
+      if (!this.unmounted.has(p.id) || !p.el.isConnected) continue;
+      this.unmounted.delete(p.id);
+      p.mount();
+    }
+    const shown = new Set(shownIds(tab.root));
+    const now = performance.now();
+    for (const p of panes) {
+      if (shown.has(p.id)) this.hidden.delete(p.id);
+      else if (!this.hidden.has(p.id)) this.hidden.set(p.id, { since: now, unread: false, bell: false });
       p.setActive(p.id === tab.activePaneId);
       p.setZoomed(p === zoomed);
       p.queueFit();
+      this.updateStackTab(p, tab);
     }
     this.events.onTerminalsInfo();
   }
 
   private buildNode(node: LayoutNode, tab: Tab): HTMLElement {
-    if (node.type === 'pane') return this.panes.get(node.paneId)!.el;
+    if (node.type === 'pane') return node.stack.length > 1 ? this.buildStack(node, tab) : this.panes.get(node.paneId)!.el;
     const box = h('div', { class: `split ${node.direction}` });
     node.children.forEach((child, i) => {
       if (i > 0) box.append(this.divider(node, i - 1, box, tab));
@@ -621,6 +750,132 @@ export class Workspace implements PaneHost, RequestHost {
       box.append(cell);
     });
     return box;
+  }
+
+  /**
+   * A cell with several panes: a strip of their tabs over the one shown. The strip stands in for
+   * that pane's header, so it has the header's buttons.
+   */
+  private buildStack(cell: PaneNode, tab: Tab): HTMLElement {
+    const shown = this.panes.get(cell.paneId)!;
+    const strip = h('div', { class: 'stack-tabs', role: 'tablist' });
+    for (const id of cell.stack) {
+      const pane = this.panes.get(id);
+      if (pane) strip.append(this.buildStackTab(pane));
+    }
+    const zoomed = !!tab.zoomedPaneId;
+    strip.append(
+      h('button', { class: 'icon-btn small stack-new', title: 'New terminal in this pane', html: icons.plus, onclick: () => this.events.onNewInStack(shown) }),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'icon-btn small', title: 'Move to new tab (Ctrl+Shift+M)', html: icons.popOut, onclick: () => this.moveToNewTab(shown.id) }),
+      h('button', {
+        class: 'icon-btn small',
+        title: zoomed ? 'Restore split (Ctrl+Shift+Z or Alt+arrows)' : 'Maximize (Ctrl+Shift+Z)',
+        html: zoomed ? icons.restore : icons.maximize,
+        onclick: () => this.toggleZoom(shown.id),
+      }),
+    );
+    // Dropped on the strip itself (past the last tab): the last tab.
+    strip.addEventListener('dragover', (e) => {
+      if (e.target !== strip || !this.stackDropOk(cell.stack[cell.stack.length - 1])) return;
+      e.preventDefault();
+    });
+    strip.addEventListener('drop', (e) => {
+      if (e.target !== strip) return;
+      e.preventDefault();
+      this.dropOnStack(cell.stack[cell.stack.length - 1], false);
+    });
+    return h('div', { class: 'stack' }, strip, shown.el);
+  }
+
+  private buildStackTab(pane: WorkspacePane): HTMLElement {
+    const el = h(
+      'div',
+      { class: 'stack-tab', draggable: true, role: 'tab', dataset: { pane: pane.id } },
+      h('span', { class: 'tab-status' }),
+      h('span', { class: 'stack-tab-label' }),
+      h('button', {
+        class: 'tab-close',
+        title: 'Close (Ctrl+Shift+W)',
+        html: icons.x,
+        onclick: (e: MouseEvent) => {
+          e.stopPropagation();
+          void this.requestClosePane(pane.id);
+        },
+      }),
+    );
+    el.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+    el.addEventListener('auxclick', (e) => {
+      if (e.button === 1) void this.requestClosePane(pane.id);
+    });
+    el.addEventListener('click', () => this.setActivePane(pane.id, true));
+    el.addEventListener('dblclick', (e) => {
+      if (!(e.target as Element).closest('.tab-close')) this.toggleZoom(pane.id);
+    });
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      this.onContextMenu(pane, e);
+    });
+    el.addEventListener('dragstart', (e) => {
+      e.stopPropagation();
+      this.startPaneDrag(e, pane.id);
+      el.classList.add('dragging');
+    });
+    el.addEventListener('dragend', () => {
+      el.classList.remove('dragging');
+      this.endDrag();
+    });
+    const before = (e: DragEvent) => {
+      const r = el.getBoundingClientRect();
+      return e.clientX < r.left + r.width / 2;
+    };
+    el.addEventListener('dragover', (e) => {
+      if (!this.stackDropOk(pane.id)) return;
+      e.preventDefault();
+      el.classList.toggle('drop-before', before(e));
+      el.classList.toggle('drop-after', !before(e));
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('drop-before', 'drop-after'));
+    el.addEventListener('drop', (e) => {
+      el.classList.remove('drop-before', 'drop-after');
+      if (!this.stackDropOk(pane.id)) return;
+      e.preventDefault();
+      this.dropOnStack(pane.id, before(e));
+    });
+    this.stackTabEls.set(pane.id, el);
+    return el;
+  }
+
+  /** Whatever is being dragged can join the cell of `paneId` as a tab (a pane, or another tab's panes). */
+  private stackDropOk(paneId: string): boolean {
+    if (this.draggingTab) return this.draggingTab !== this.paneTab.get(paneId);
+    return !!this.draggingPane && this.draggingPane !== paneId;
+  }
+
+  private dropOnStack(paneId: string, before: boolean): void {
+    const { draggingTab, draggingPane } = this;
+    this.endDrag();
+    if (draggingTab) this.moveTabInto(draggingTab, paneId, 'center', before);
+    else if (draggingPane) this.movePane(draggingPane, paneId, 'center', before);
+  }
+
+  /** A stacked pane's tab: its name, colour and state. */
+  private updateStackTab(pane: WorkspacePane, tab: Tab): void {
+    const el = this.stackTabEls.get(pane.id);
+    if (!el) return;
+    const label = this.paneLabel(pane);
+    const shown = !this.hidden.has(pane.id);
+    (el.querySelector('.stack-tab-label') as HTMLElement).textContent = label;
+    el.title = [label, pane.title && pane.title !== label ? pane.title : '', pane.location].filter(Boolean).join('\n');
+    el.classList.toggle('shown', shown);
+    el.classList.toggle('active', pane.id === tab.activePaneId);
+    el.classList.toggle('exited', pane.ended);
+    el.setAttribute('aria-selected', String(shown));
+    el.style.setProperty('--session-color', this.paneColor(pane) || 'transparent');
+    const out = this.hidden.get(pane.id);
+    this.setStatus(el.querySelector('.tab-status') as HTMLElement, pane.progress ? 'progress' : out?.bell ? 'bell' : out?.unread ? 'unread' : pane.dirty ? 'dirty' : '');
   }
 
   private divider(node: SplitNode, index: number, box: HTMLElement, tab: Tab): HTMLElement {
@@ -674,11 +929,15 @@ export class Workspace implements PaneHost, RequestHost {
 
   toggleZoom(paneId?: string): void {
     const tab = paneId ? this.paneTab.get(paneId) : this.activeTab;
-    if (!tab || paneIds(tab.root).length < 2) return;
+    if (!tab || shownIds(tab.root).length < 2) return;
     const id = paneId ?? tab.activePaneId;
     tab.zoomedPaneId = tab.zoomedPaneId ? null : id;
-    if (tab.zoomedPaneId) tab.activePaneId = id;
+    if (tab.zoomedPaneId) {
+      tab.activePaneId = id;
+      tab.root = showPane(tab.root, id);
+    }
     this.renderLayout(tab);
+    this.ensureGpu(tab);
     this.panes.get(tab.activePaneId)?.focus();
   }
 
@@ -694,12 +953,16 @@ export class Workspace implements PaneHost, RequestHost {
     const tab = this.paneTab.get(paneId);
     const pane = this.panes.get(paneId);
     if (!tab || !pane) return;
-    if (tab.zoomedPaneId && tab.zoomedPaneId !== paneId) {
-      tab.zoomedPaneId = null;
-      tab.activePaneId = paneId;
-      this.renderLayout(tab);
-    }
+    // Another pane of a maximized tab restores the split; a pane stacked out of sight is shown.
+    const unzoom = !!tab.zoomedPaneId && tab.zoomedPaneId !== paneId;
+    const hidden = cellOf(tab.root, paneId)?.paneId !== paneId;
     tab.activePaneId = paneId;
+    if (unzoom) tab.zoomedPaneId = null;
+    if (hidden) tab.root = showPane(tab.root, paneId);
+    if (unzoom || hidden) {
+      this.renderLayout(tab);
+      this.ensureGpu(tab);
+    }
     for (const p of this.panesOf(tab)) p.setActive(p.id === paneId);
     if (this.activeTabId !== tab.id) this.activateTab(tab.id, false);
     if (focus) pane.focus();
@@ -790,32 +1053,44 @@ export class Workspace implements PaneHost, RequestHost {
       el.classList.add('dragging');
     });
     el.addEventListener('dragend', () => {
-      this.draggingTab = null;
-      this.showDrop(null);
       el.classList.remove('dragging');
-      this.tabsEl.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+      this.endDrag();
     });
+    const before = (e: DragEvent) => {
+      const r = el.getBoundingClientRect();
+      return e.clientX < r.left + r.width / 2;
+    };
+    // A pane held over a tab for a moment opens that tab, so it can be dropped into its panes.
+    let hover = 0;
+    const stopHover = () => {
+      window.clearTimeout(hover);
+      hover = 0;
+    };
     el.addEventListener('dragover', (e) => {
-      if (!e.dataTransfer?.types.includes(DRAG_TYPE)) return;
+      const pane = this.draggingPane;
+      if (!this.draggingTab && !(pane && this.canLeave(pane))) return;
       e.preventDefault();
-      const r = el.getBoundingClientRect();
-      const before = e.clientX < r.left + r.width / 2;
-      el.classList.toggle('drop-before', before);
-      el.classList.toggle('drop-after', !before);
+      el.classList.toggle('drop-before', before(e));
+      el.classList.toggle('drop-after', !before(e));
+      if (pane && !hover && tab.id !== this.activeTabId) hover = window.setTimeout(() => this.draggingPane && this.activateTab(tab.id, false), 600);
     });
-    el.addEventListener('dragleave', () => el.classList.remove('drop-before', 'drop-after'));
-    el.addEventListener('drop', (e) => {
-      const id = e.dataTransfer?.getData(DRAG_TYPE);
+    el.addEventListener('dragleave', () => {
       el.classList.remove('drop-before', 'drop-after');
-      if (!id || id === tab.id) return;
+      stopHover();
+    });
+    el.addEventListener('drop', (e) => {
+      el.classList.remove('drop-before', 'drop-after');
+      stopHover();
+      const pane = this.draggingPane;
+      const dragged = this.draggingTab;
+      if (!dragged && !(pane && this.canLeave(pane))) return;
       e.preventDefault();
-      const r = el.getBoundingClientRect();
-      const before = e.clientX < r.left + r.width / 2;
-      const moving = this.tabs.find((t) => t.id === id);
+      this.endDrag();
+      const moving = dragged ?? (pane ? this.moveToNewTab(pane) : null);
       if (!moving) return;
+      if (moving === tab) return;
       this.tabs = this.tabs.filter((t) => t !== moving);
-      const at = this.tabs.indexOf(tab) + (before ? 0 : 1);
-      this.tabs.splice(at, 0, moving);
+      this.tabs.splice(this.tabs.indexOf(tab) + (before(e) ? 0 : 1), 0, moving);
       this.renderTabBar();
     });
     tab.tabEl = el;
@@ -832,22 +1107,48 @@ export class Workspace implements PaneHost, RequestHost {
     const label = this.tabLabel(tab);
     const progress = panes.some((p) => p.progress);
     const exited = panes.length > 0 && panes.every((p) => p.ended);
-    (el.querySelector('.tab-label') as HTMLElement).textContent = label;
-    el.title = [label, active?.title && active.title !== label ? active.title : '', active?.location, panes.length > 1 ? `${panes.length} panes` : '']
-      .filter(Boolean)
-      .join('\n');
+    this.renderTabLabel(tab, el.querySelector('.tab-label') as HTMLElement);
+    const about = [label, active?.title && active.title !== label ? active.title : '', active?.location].filter(Boolean);
+    const list = panes.length > 1 ? ['', `${panes.length} panes:`, ...panes.map((p) => `${p.id === tab.activePaneId ? '• ' : '   '}${this.paneLabel(p)}`)] : [];
+    el.title = [...about, ...list].join('\n');
     el.classList.toggle('active', tab.id === this.activeTabId);
     el.classList.toggle('exited', exited);
     el.classList.toggle('preview', tab.preview);
     el.style.setProperty('--session-color', (active ? this.paneColor(active) : '') || 'transparent');
     for (const p of panes) {
+      this.updateStackTab(p, tab);
       if (!isTerminal(p)) continue;
       const owner = this.ownerOf(p);
       p.setIdentity(owner?.name ?? p.spec.name, this.paneColor(p, owner));
     }
-    const status = el.querySelector('.tab-status') as HTMLElement;
     const dirty = panes.some((p) => p.dirty);
-    const state = progress ? 'progress' : tab.bell ? 'bell' : tab.busy ? 'busy' : tab.unread ? 'unread' : dirty ? 'dirty' : '';
+    this.setStatus(el.querySelector('.tab-status') as HTMLElement, progress ? 'progress' : tab.bell ? 'bell' : tab.busy ? 'busy' : tab.unread ? 'unread' : dirty ? 'dirty' : '');
+  }
+
+  /**
+   * A split tab is named after every pane on screen ("api | logs"), the focused one brighter, so
+   * the tab says what is in it; a renamed tab keeps its name.
+   */
+  private renderTabLabel(tab: Tab, el: HTMLElement): void {
+    const shown = shownIds(tab.root);
+    const multi = !tab.customTitle && shown.length > 1;
+    tab.tabEl?.classList.toggle('multi', multi);
+    if (!multi) {
+      el.textContent = this.tabLabel(tab);
+      return;
+    }
+    const focused = cellOf(tab.root, tab.activePaneId)?.paneId;
+    el.replaceChildren(
+      ...shown.flatMap((id, i) => {
+        const pane = this.panes.get(id);
+        if (!pane) return [];
+        const part = h('span', { class: `tab-part${id === focused ? ' current' : ''}` }, this.paneLabel(pane));
+        return i > 0 ? [h('span', { class: 'tab-sep' }, '|'), part] : [part];
+      }),
+    );
+  }
+
+  private setStatus(status: HTMLElement, state: string): void {
     if (status.dataset.state !== state) {
       status.dataset.state = state;
       status.innerHTML = state === 'bell' ? icons.bell : '';
@@ -868,6 +1169,14 @@ export class Workspace implements PaneHost, RequestHost {
 
   private tickActivity(): void {
     const now = performance.now();
+    // Output in a pane stacked out of sight marks its tab in the cell.
+    for (const [id, out] of this.hidden) {
+      const pane = this.panes.get(id);
+      const tab = this.paneTab.get(id);
+      if (!pane || !tab || out.unread || pane.lastOutput <= out.since + 250) continue;
+      out.unread = true;
+      this.updateStackTab(pane, tab);
+    }
     for (const tab of this.tabs) {
       if (tab.id === this.activeTabId) continue;
       const panes = this.panesOf(tab);
@@ -890,10 +1199,10 @@ export class Workspace implements PaneHost, RequestHost {
     void pane.el.offsetWidth;
     pane.el.classList.add('flash');
     if (visible) return;
-    if (tab.id !== this.activeTabId) {
-      tab.bell = true;
-      this.updateTabEl(tab);
-    }
+    const out = this.hidden.get(pane.id);
+    if (out) out.bell = true;
+    if (tab.id !== this.activeTabId) tab.bell = true;
+    this.updateTabEl(tab);
     if (!focused) void getCurrentWindow().requestUserAttention(UserAttentionType.Informational).catch(() => undefined);
     if (message) toast(`${this.tabLabel(tab)} — ${message}`, 'info', 8000, () => this.setActivePane(pane.id, true));
   }
@@ -902,7 +1211,7 @@ export class Workspace implements PaneHost, RequestHost {
 
   private ensureGpu(tab: Tab): void {
     if (!store.settings.gpuAcceleration) return;
-    const visible = new Set(paneIds(tab.root));
+    const visible = new Set(shownIds(tab.root));
     for (const id of visible) {
       this.panes.get(id)?.enableGpu();
       this.gpuOrder = [id, ...this.gpuOrder.filter((x) => x !== id)];
@@ -978,17 +1287,13 @@ export class Workspace implements PaneHost, RequestHost {
     const pane = this.panes.get(paneId);
     const tab = this.paneTab.get(paneId);
     if (!pane || !tab) return;
-    const order = paneIds(tab.root);
-    const idx = order.indexOf(paneId);
+    const next = successor(tab.root, paneId);
     this.disposePane(pane);
     const root = removePane(tab.root, paneId);
     if (!root) return this.removeTab(tab);
     tab.root = root;
     if (tab.zoomedPaneId === paneId) tab.zoomedPaneId = null;
-    if (tab.activePaneId === paneId) {
-      const remaining = paneIds(root);
-      tab.activePaneId = remaining[Math.max(0, idx - 1)] ?? remaining[0];
-    }
+    if (tab.activePaneId === paneId) tab.activePaneId = next ?? shownIds(root)[0];
     this.renderLayout(tab);
     this.updateTabEl(tab);
     if (tab.id === this.activeTabId) this.setActivePane(tab.activePaneId, true);
@@ -999,6 +1304,9 @@ export class Workspace implements PaneHost, RequestHost {
     pane.dispose();
     this.panes.delete(pane.id);
     this.paneTab.delete(pane.id);
+    this.hidden.delete(pane.id);
+    this.stackTabEls.delete(pane.id);
+    this.unmounted.delete(pane.id);
     this.gpuOrder = this.gpuOrder.filter((x) => x !== pane.id);
   }
 

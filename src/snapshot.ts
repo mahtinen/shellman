@@ -48,9 +48,36 @@ export interface NoteRef {
 /** One saved pane: a terminal, a request, a Files pane or a note. */
 export type SnapshotLeaf = { pane: LaunchSpec } | { request: RequestRef } | { files: FilesRef } | { note: NoteRef };
 
-export type SnapshotNode = SnapshotLeaf | { split: Direction; sizes: number[]; children: SnapshotNode[] };
+/** Panes stacked as tabs in one cell of a split; `shown` is the index of the one shown. */
+export interface SnapshotStack {
+  stack: SnapshotLeaf[];
+  shown: number;
+}
+
+export type SnapshotNode = SnapshotLeaf | SnapshotStack | { split: Direction; sizes: number[]; children: SnapshotNode[] };
 
 const isLeaf = (n: SnapshotNode): n is SnapshotLeaf => 'pane' in n || 'request' in n || 'files' in n || 'note' in n;
+const isStack = (n: SnapshotNode): n is SnapshotStack => 'stack' in n;
+
+/** A cell's saved form: one pane alone, or a stack (null when none is left). */
+function cell(leaves: SnapshotLeaf[], shown: number): SnapshotNode | null {
+  if (!leaves.length) return null;
+  if (leaves.length === 1) return leaves[0];
+  return { stack: leaves, shown: shown >= 0 && shown < leaves.length ? shown : 0 };
+}
+
+/** Keeps the leaves `keep` says to, and where the shown one went (-1 = left out). */
+function filterStack<T>(items: T[], shown: number, keep: (item: T) => SnapshotLeaf | null): { leaves: SnapshotLeaf[]; shown: number } {
+  const leaves: SnapshotLeaf[] = [];
+  let at = -1;
+  items.forEach((item, i) => {
+    const l = keep(item);
+    if (!l) return;
+    if (i === shown) at = leaves.length;
+    leaves.push(l);
+  });
+  return { leaves, shown: at };
+}
 
 export interface TabSnapshot {
   /** Name the user gave the tab, if any. */
@@ -71,7 +98,10 @@ const MAX_DEPTH = 12;
 
 /** Converts a tab's layout; `leaf` gives each pane's saved form (null: not reopened). */
 export function snapshotNode(node: LayoutNode, leaf: (paneId: string) => SnapshotLeaf | null): SnapshotNode | null {
-  if (node.type === 'pane') return leaf(node.paneId);
+  if (node.type === 'pane') {
+    const kept = filterStack(node.stack, node.stack.indexOf(node.paneId), leaf);
+    return cell(kept.leaves, kept.shown);
+  }
   const kids = node.children.map((c) => snapshotNode(c, leaf));
   const children: SnapshotNode[] = [];
   const sizes: number[] = [];
@@ -93,7 +123,13 @@ export function snapshotNode(node: LayoutNode, leaf: (paneId: string) => Snapsho
 export function layoutFromSnapshot(node: SnapshotNode, createPane: (leaf: SnapshotLeaf) => string | null): LayoutNode | null {
   if (isLeaf(node)) {
     const id = createPane(node);
-    return id ? { type: 'pane', paneId: id } : null;
+    return id ? { type: 'pane', paneId: id, stack: [id] } : null;
+  }
+  if (isStack(node)) {
+    const ids = node.stack.map(createPane);
+    const stack = ids.filter((id): id is string => !!id);
+    if (!stack.length) return null;
+    return { type: 'pane', paneId: ids[node.shown] ?? stack[0], stack };
   }
   const children: LayoutNode[] = [];
   const sizes: number[] = [];
@@ -111,7 +147,7 @@ export function layoutFromSnapshot(node: SnapshotNode, createPane: (leaf: Snapsh
 
 /** Every saved pane, in layout order. */
 export function snapshotLeaves(node: SnapshotNode): SnapshotLeaf[] {
-  return isLeaf(node) ? [node] : node.children.flatMap(snapshotLeaves);
+  return isLeaf(node) ? [node] : isStack(node) ? node.stack : node.children.flatMap(snapshotLeaves);
 }
 
 /** The notes, in layout order. */
@@ -126,6 +162,10 @@ export function snapshotNotes(node: SnapshotNode): NoteRef[] {
 export function notesOnly(snap: WorkspaceSnapshot): WorkspaceSnapshot | null {
   const keep = (node: SnapshotNode): SnapshotNode | null => {
     if (isLeaf(node)) return 'note' in node ? node : null;
+    if (isStack(node)) {
+      const kept = filterStack(node.stack, node.shown, (l) => ('note' in l ? l : null));
+      return cell(kept.leaves, kept.shown);
+    }
     const children: SnapshotNode[] = [];
     const sizes: number[] = [];
     node.children.forEach((c, i) => {
@@ -209,6 +249,13 @@ function normalizeNode(v: unknown, depth: number): SnapshotNode | null {
     const f = isObj(v.files) ? v.files : {};
     if (!str(f.root)) return null;
     return { files: { root: str(f.root), path: str(f.path), view: f.view === 'changes' || f.view === 'search' ? f.view : 'all', mode: f.mode === 'diff' ? 'diff' : 'file', base: str(f.base) || 'HEAD', baseLabel: str(f.base) ? str(f.baseLabel) : '' } };
+  }
+  if (Array.isArray(v.stack)) {
+    const kept = filterStack(v.stack, int(v.shown, v.stack.length), (c) => {
+      const n = normalizeNode(c, depth + 1);
+      return n && isLeaf(n) ? n : null;
+    });
+    return cell(kept.leaves, kept.shown);
   }
   if ((v.split !== 'row' && v.split !== 'column') || !Array.isArray(v.children)) return null;
   const rawSizes = Array.isArray(v.sizes) ? v.sizes : [];

@@ -8,9 +8,13 @@
 export type Direction = 'row' | 'column';
 export type FocusDirection = 'left' | 'right' | 'up' | 'down';
 
+/** A cell of a split: one pane, or several stacked as tabs with one of them shown. */
 export interface PaneNode {
   type: 'pane';
+  /** The pane shown. */
   paneId: string;
+  /** Every pane of the cell in tab order, the shown one included. */
+  stack: string[];
 }
 
 export interface SplitNode {
@@ -29,14 +33,73 @@ export interface Rect {
   h: number;
 }
 
-export const leaf = (paneId: string): PaneNode => ({ type: 'pane', paneId });
+export const leaf = (paneId: string): PaneNode => ({ type: 'pane', paneId, stack: [paneId] });
 
+/** Every pane, the stacked ones too, in layout order. */
 export function paneIds(node: LayoutNode): string[] {
-  return node.type === 'pane' ? [node.paneId] : node.children.flatMap(paneIds);
+  return node.type === 'pane' ? node.stack : node.children.flatMap(paneIds);
+}
+
+/** The pane shown in each cell, in layout order. */
+export function shownIds(node: LayoutNode): string[] {
+  return node.type === 'pane' ? [node.paneId] : node.children.flatMap(shownIds);
 }
 
 export function contains(node: LayoutNode, paneId: string): boolean {
   return paneIds(node).includes(paneId);
+}
+
+/** The cell a pane is in. */
+export function cellOf(node: LayoutNode, paneId: string): PaneNode | null {
+  if (node.type === 'pane') return node.stack.includes(paneId) ? node : null;
+  for (const c of node.children) {
+    const found = cellOf(c, paneId);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Applies `f` to the cell holding `paneId`. */
+function mapCell(node: LayoutNode, paneId: string, f: (cell: PaneNode) => PaneNode): LayoutNode {
+  if (node.type === 'pane') return node.stack.includes(paneId) ? f(node) : node;
+  return { ...node, children: node.children.map((c) => mapCell(c, paneId, f)) };
+}
+
+/** Shows `paneId` in its cell (picks its tab). */
+export function showPane(root: LayoutNode, paneId: string): LayoutNode {
+  return mapCell(root, paneId, (cell) => ({ ...cell, paneId }));
+}
+
+/**
+ * Adds panes as tabs to the cell of `targetId`, right after it (or before), and shows the first.
+ * Panes already in that cell move to the new place, which reorders the tabs.
+ */
+export function addToStack(root: LayoutNode, targetId: string, ids: string[], before = false): LayoutNode {
+  if (!ids.length || ids.includes(targetId)) return root;
+  return mapCell(root, targetId, (cell) => {
+    const rest = cell.stack.filter((id) => !ids.includes(id));
+    const at = rest.indexOf(targetId) + (before ? 0 : 1);
+    return { type: 'pane', paneId: ids[0], stack: [...rest.slice(0, at), ...ids, ...rest.slice(at)] };
+  });
+}
+
+/** The tab shown when the shown `paneId` leaves its stack: the one to its left, or else to its right. */
+function stackNeighbor(stack: string[], paneId: string): string | undefined {
+  const i = stack.indexOf(paneId);
+  return stack[i > 0 ? i - 1 : 1];
+}
+
+/**
+ * The pane to make active when `paneId` leaves: what its cell shows then, or else the pane
+ * before it (or after it) in the layout.
+ */
+export function successor(root: LayoutNode, paneId: string): string | null {
+  const cell = cellOf(root, paneId);
+  if (!cell) return null;
+  if (cell.stack.length > 1) return cell.paneId !== paneId ? cell.paneId : (stackNeighbor(cell.stack, paneId) ?? null);
+  const shown = shownIds(root);
+  const i = shown.indexOf(paneId);
+  return shown[i - 1] ?? shown[i + 1] ?? null;
 }
 
 function normalize(sizes: number[]): number[] {
@@ -82,12 +145,13 @@ export function insertNode(
       sizes: before ? [...ins, half] : [half, ...ins],
     };
   };
+  // Next to the target's whole cell, even when the target is one of its tabs.
   const insert = (node: LayoutNode): LayoutNode => {
     if (node.type === 'pane') {
-      if (node.paneId !== targetId) return node;
+      if (!node.stack.includes(targetId)) return node;
       return { type: 'split', direction, ...place(node, 1) };
     }
-    const idx = node.children.findIndex((c) => c.type === 'pane' && c.paneId === targetId);
+    const idx = node.children.findIndex((c) => c.type === 'pane' && c.stack.includes(targetId));
     if (idx >= 0 && node.direction === direction) {
       const { children, sizes } = place(node.children[idx], node.sizes[idx]);
       return {
@@ -101,9 +165,14 @@ export function insertNode(
   return insert(root);
 }
 
-/** Removes a pane. Returns null when the tree becomes empty. */
+/** Removes a pane (and its cell, when it was the only tab there). Returns null when the tree becomes empty. */
 export function removePane(root: LayoutNode, paneId: string): LayoutNode | null {
-  if (root.type === 'pane') return root.paneId === paneId ? null : root;
+  if (root.type === 'pane') {
+    if (!root.stack.includes(paneId)) return root;
+    const stack = root.stack.filter((id) => id !== paneId);
+    if (!stack.length) return null;
+    return { type: 'pane', paneId: root.paneId === paneId ? stackNeighbor(root.stack, paneId)! : root.paneId, stack };
+  }
   const children: LayoutNode[] = [];
   const sizes: number[] = [];
   root.children.forEach((child, i) => {
@@ -132,7 +201,7 @@ export function removePane(root: LayoutNode, paneId: string): LayoutNode | null 
   return { ...root, children: flatChildren, sizes: normalize(flatSizes) };
 }
 
-/** Unit-square rectangles of every pane, used for directional focus. */
+/** Unit-square rectangles of every cell, by the pane it shows; used for directional focus. */
 export function paneRects(root: LayoutNode, rect: Rect = { x: 0, y: 0, w: 1, h: 1 }): Map<string, Rect> {
   const out = new Map<string, Rect>();
   const walk = (node: LayoutNode, r: Rect) => {
@@ -160,11 +229,12 @@ const EPS = 1e-6;
 /** The pane adjacent to `paneId` in `dir`, preferring the largest overlap. */
 export function neighbor(root: LayoutNode, paneId: string, dir: FocusDirection): string | null {
   const rects = paneRects(root);
-  const cur = rects.get(paneId);
+  const shown = cellOf(root, paneId)?.paneId;
+  const cur = shown && rects.get(shown);
   if (!cur) return null;
   let best: { id: string; dist: number; overlap: number } | null = null;
   for (const [id, r] of rects) {
-    if (id === paneId) continue;
+    if (id === shown) continue;
     let dist: number;
     let overlap: number;
     switch (dir) {

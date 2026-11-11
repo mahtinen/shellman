@@ -79,7 +79,8 @@ export function paneHeader(onAction: (action: HeaderAction) => void) {
   const zoomBtn = h('button', { class: 'icon-btn small', onclick: () => onAction('zoom') });
   const el = h(
     'div',
-    { class: 'pane-header', ondblclick: () => onAction('zoom') },
+    // Draggable: the workspace moves a pane dragged by its header (see Workspace).
+    { class: 'pane-header', draggable: true, ondblclick: () => onAction('zoom') },
     dot,
     name,
     title,
