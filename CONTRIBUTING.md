@@ -1,5 +1,13 @@
 # Working on Shellman
 
+## Scope
+
+Shellman manages terminals. It starts programs that already exist (shells, `ssh.exe`, `telnet.exe`, curl, git,
+`op`) and doesn't implement their protocols itself: their makers keep them working and patched, and Shellman stays
+small enough to maintain. Pull requests that build a protocol client into Shellman (Telnet, SSH, serial, an HTTP
+client instead of curl) won't be merged. When one of those programs doesn't work for you, run another one from a
+saved session's startup command (for Telnet, see the README).
+
 ## Development
 
 Requirements: Rust (stable, MSVC toolchain), the VS C++ Build Tools with a Windows SDK, and Node 20+.
