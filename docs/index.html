@@ -57,7 +57,7 @@
       { "@type": "Question", "name": "How is Shellman different from Windows Terminal?", "acceptedAnswer": { "@type": "Answer", "text": "Windows Terminal opens shells; Shellman opens the places you work. A saved session is a folder and the command you run there, or an SSH or Telnet host, and the sidebar lists the terminals open in each one. On top of that come git worktrees for Claude Code, a read-only view of the changes and API requests. Coming from XShell or MobaXterm? Your SSH hosts sit next to your folders, and XShell sessions can be imported." } },
       { "@type": "Question", "name": "Is Shellman free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. It is free and open source under the MIT license, with no account and no telemetry. On its own it only checks GitHub for updates, and you can turn that off." } },
       { "@type": "Question", "name": "Does Shellman store my passwords or keys?", "acceptedAnswer": { "@type": "Answer", "text": "No. ssh asks for passwords in the terminal, and private keys stay in your key files, the Windows ssh-agent or 1Password. For a key you pick from an agent, Shellman keeps only its public half. API secrets stay in .env.local, which git ignores, or in 1Password, and reach curl through its environment, never a command line. Your sessions are saved on your own machine, in %APPDATA%\\app.shellman.desktop." } },
-      { "@type": "Question", "name": "Do I need Claude Code?", "acceptedAnswer": { "@type": "Answer", "text": "No. Shellman works with any shell or command. Claude Code gets a few extras: its own conversation in every terminal, git worktrees, notifications, Shift+Enter for new lines and pasting screenshots." } },
+      { "@type": "Question", "name": "Do I need Claude Code?", "acceptedAnswer": { "@type": "Answer", "text": "No. Shellman works with any shell or command. Claude Code gets a few extras: its own conversation in every terminal, a list of earlier conversations to resume, git worktrees, notifications, Shift+Enter for new lines and pasting screenshots." } },
       { "@type": "Question", "name": "What do I need to run it?", "acceptedAnswer": { "@type": "Answer", "text": "Windows 10 or 11, 64-bit, with the WebView2 runtime. Windows 11 has it, and most Windows 10 PCs get it with Edge. It installs per user, without admin rights. SSH uses Windows' own OpenSSH client; the Files pane and worktrees use git; Telnet needs the optional Telnet Client feature." } },
       { "@type": "Question", "name": "How do updates work?", "acceptedAnswer": { "@type": "Answer", "text": "New versions download in the background and install the next time you start Shellman. Only updates signed with the project's key are accepted. In Settings you can switch to notifications only or turn checks off, and Settings → About lists what changed." } },
       { "@type": "Question", "name": "Why does Windows SmartScreen warn about the installer?", "acceptedAnswer": { "@type": "Answer", "text": "The installer is not signed with a paid code-signing certificate yet, so SmartScreen asks you to confirm. Choose More info, then Run anyway. The source code and the build workflow are on GitHub." } }
@@ -139,6 +139,7 @@
             <p>Open in new worktree gives a terminal its own folder and branch, so two Claudes never edit the same files. It stays under its session in the sidebar, with its branch name.</p>
             <ul class="ticks">
               <li>Every Claude tab keeps its own conversation and gets it back after a restart.</li>
+              <li>Right-click a session to pick up an earlier conversation by its title, in Windows or WSL.</li>
               <li>The tab lights up when Claude finishes or needs you, and the taskbar flashes if Shellman is in the background.</li>
               <li>Removing a worktree tells you first what would be lost.</li>
               <li>Shift+Enter for new lines, Ctrl+V pastes screenshots.</li>
@@ -271,7 +272,7 @@
         </details>
         <details>
           <summary>Do I need Claude Code?</summary>
-          <p>No. Shellman works with any shell or command. Claude Code gets a few extras: its own conversation in every terminal, git worktrees, notifications, Shift+Enter for new lines and pasting screenshots.</p>
+          <p>No. Shellman works with any shell or command. Claude Code gets a few extras: its own conversation in every terminal, a list of earlier conversations to resume, git worktrees, notifications, Shift+Enter for new lines and pasting screenshots.</p>
         </details>
         <details>
           <summary>What do I need to run it?</summary>

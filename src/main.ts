@@ -4,7 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { api } from './api';
 import { bundledChangelog, releasesSince, type Release } from './changelog';
-import { compareVersions } from './claude';
+import { compareVersions, timeAgo, type RecentConversation } from './claude';
 import { collections } from './collections';
 import { baseName, deleteGroup, groupColor, groupPath, newGroup, ownerSession, sessionColor, uid } from './config';
 import { connectionCommand, connectionKindName, connectionLabel, connectionTarget, newSshConnection, parseQuickConnect } from './connection';
@@ -116,6 +116,7 @@ class App {
       showFiles: (s) => void this.workspace.openFiles(s.cwd),
       newWorktree: (s) => void this.openInNewWorktree(s, 'tab'),
       worktreesMenu: (s, x, y) => void this.worktreesMenu(s, x, y),
+      claudeMenu: (s, x, y) => void this.claudeMenu(s, x, y),
       copyCommand: (s) => s.connection && void this.copyConnectionCommand(s.connection),
       terminals: () => this.openTerminals(),
       focusTerminal: (id) => this.workspace.setActivePane(id, true),
@@ -789,6 +790,45 @@ class App {
     if (shellId !== undefined && !s.connection) spec.shellId = shellId;
     if (plain) spec.command = '';
     this.workspace.open(spec, pane ? placement : 'tab', pane?.id);
+  }
+
+  // ---- Claude conversations ---------------------------------------------
+
+  /** The newest Claude conversations in a session's folder; picking one resumes it in a new tab. */
+  private async claudeMenu(s: SavedSession, x: number, y: number): Promise<void> {
+    const shell = store.resolveShell(s.shellId);
+    if (!shell) return toast('No shell found. Add one in Settings.', 'error');
+    // The first look in WSL may have to start it.
+    const slow = setTimeout(() => toast(shell.kind === 'wsl' ? 'Asking WSL for its Claude conversations…' : 'Reading Claude conversations…'), 800);
+    const list = await api
+      .claudeRecent(shell, s.cwd, s.env, 15)
+      .catch((e) => (toast(String(e), 'error'), undefined))
+      .finally(() => clearTimeout(slow));
+    if (!list) return;
+    const open = (id: string) => [...this.workspace.panes.values()].find((p) => isTerminal(p) && p.spec.claudeId === id);
+    const entries: MenuEntry[] = list.length
+      ? list.map((c): MenuEntry => {
+          const pane = open(c.id);
+          // A worktree by its name, another subfolder by its path.
+          const where = c.subfolder.replace(/^\.claude\\worktrees\\/, '');
+          return {
+            label: where ? `${c.title} (${where})` : c.title,
+            icon: pane ? 'terminal' : 'play',
+            shortcut: pane ? 'open' : timeAgo(c.modified),
+            action: () => (pane ? this.workspace.setActivePane(pane.id, true) : this.resumeClaude(s, c)),
+          };
+        })
+      : [{ label: 'No Claude conversations here yet', disabled: true }];
+    showMenu(x, y, entries);
+  }
+
+  private resumeClaude(s: SavedSession, c: RecentConversation): void {
+    const pane = this.workspace.activePane();
+    const spec = this.sessionSpec(s);
+    if (c.subfolder) spec.cwd = `${s.cwd.replace(/[\\/]+$/, '')}\\${c.subfolder}`;
+    spec.claudeId = c.id;
+    spec.claudeStarted = true;
+    this.workspace.open(spec, 'tab', pane?.id);
   }
 
   // ---- worktrees --------------------------------------------------------

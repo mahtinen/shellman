@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { claudeCommand, compareVersions, isTrackableClaude, isUuid } from './claude';
+import { claudeCommand, compareVersions, isTrackableClaude, isUuid, timeAgo } from './claude';
 
 describe('claude conversations', () => {
   it('tracks interactive claude started with options only', () => {
@@ -69,5 +69,17 @@ describe('compareVersions', () => {
     expect(compareVersions('2.2.0', '2.1.319')).toBeGreaterThan(0);
     expect(compareVersions('2.1.40', '2.1.41')).toBeLessThan(0);
     expect(compareVersions('2.1.319', '2.1.319')).toBe(0);
+  });
+});
+
+describe('timeAgo', () => {
+  const now = Date.UTC(2026, 0, 31, 12);
+  it('says how long ago, briefly', () => {
+    expect(timeAgo(now - 20_000, now)).toBe('just now');
+    expect(timeAgo(now - 5 * 60_000, now)).toBe('5 min ago');
+    expect(timeAgo(now - 3 * 3600_000, now)).toBe('3 h ago');
+    expect(timeAgo(now - 30 * 3600_000, now)).toBe('yesterday');
+    expect(timeAgo(now - 5 * 86400_000, now)).toBe('5 days ago');
+    expect(timeAgo(now - 60 * 86400_000, now)).toBe(new Date(now - 60 * 86400_000).toLocaleDateString());
   });
 });

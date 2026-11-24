@@ -83,3 +83,26 @@ export function compareVersions(a: string, b: string): number {
   for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0);
   return 0;
 }
+
+/** A conversation from Claude's transcripts, as `claude_recent` lists it. */
+export interface RecentConversation {
+  id: string;
+  title: string;
+  /** Last written, in milliseconds since 1970. */
+  modified: number;
+  /** Where it ran, relative to the session's folder ('' for the folder itself, else e.g. `.claude\worktrees\x`). */
+  subfolder: string;
+}
+
+/** How long ago, short enough for the side of a menu line: "5 min ago", "yesterday", "3 days ago". */
+export function timeAgo(ms: number, now = Date.now()): string {
+  const min = Math.floor((now - ms) / 60_000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 2) return 'yesterday';
+  if (days < 30) return `${days} days ago`;
+  return new Date(ms).toLocaleDateString();
+}

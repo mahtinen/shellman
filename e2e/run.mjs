@@ -1135,6 +1135,90 @@ if (phase === 'main') {
     await waitFor(`document.querySelectorAll('.session-row').length === 1`, 3000, 'removed');
   });
 
+  await step('a Claude session lists its recent conversations and resumes one', async () => {
+    // Claude's own files, made up, in a config folder of the session's own (CLAUDE_CONFIG_DIR).
+    const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shellman-e2e-claude-'));
+    const sub = path.join(REPO, 'src');
+    const ids = { older: crypto.randomUUID(), newer: crypto.randomUUID() };
+    // Claude files a conversation under the folder it started in.
+    const transcript = (id, cwd, title, minutesAgo) => {
+      const project = path.join(claudeDir, 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+      fs.mkdirSync(project, { recursive: true });
+      const file = path.join(project, `${id}.jsonl`);
+      const lines = [{ type: 'user', cwd, sessionId: id, message: { role: 'user', content: 'hi' } }, { type: 'ai-title', aiTitle: title, sessionId: id }];
+      fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+      const at = new Date(Date.now() - minutesAgo * 60_000);
+      fs.utimesSync(file, at, at);
+    };
+    transcript(ids.older, REPO, 'E2E older conversation', 90);
+    transcript(ids.newer, sub, 'E2E newer conversation', 5);
+    const row = `[...document.querySelectorAll('.session-row')].find((r) => r.querySelector('.session-name span').textContent === 'Claude history')`;
+    const menuItem = (text) => `[...document.querySelectorAll('.menu-item')].find((m) => m.textContent.includes(${js(text)}))`;
+    const openMenu = async () => {
+      await ev(`${row}.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+      await waitFor(`!!${menuItem('Resume Claude conversation')}`, 2000, 'menu entry');
+      await ev(`${menuItem('Resume Claude conversation')}.click()`);
+      await waitFor(`!!${menuItem('E2E older conversation')}`, 10000, 'conversations menu');
+    };
+    try {
+      await click('.sidebar-header .icon-btn[title="New session"]');
+      await waitFor(`!!document.querySelector('.dialog')`);
+      await ev(`(() => {
+        const inputs = document.querySelectorAll('.dialog input.input');
+        const set = (el, v) => { el.value = v; el.dispatchEvent(new Event('input')); };
+        set(inputs[0], 'Claude history');
+        set(inputs[1], ${js(REPO)});
+        set(inputs[2], 'claude');
+        const env = document.querySelector('.dialog textarea');
+        env.value = ${js(`CLAUDE_CONFIG_DIR=${claudeDir}`)};
+        env.dispatchEvent(new Event('input'));
+        const r = [...document.querySelectorAll('.dialog .check')].find((l) => l.textContent.includes('Remember this session')).querySelector('input');
+        r.checked = true;
+        r.dispatchEvent(new Event('change'));
+        return true;
+      })()`);
+      const before = await ev(`__t.panes().length`);
+      await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Open').click()`);
+      await waitFor(`!document.querySelector('.dialog') && __t.panes().length === ${before + 1} && !!${row}`, 5000, 'session saved and opened');
+      // Its own new conversation isn't needed here.
+      await ev(`__t.ws.closePane(__t.active().id)`);
+      await waitFor(`__t.panes().length === ${before}`, 3000, 'closed');
+
+      await openMenu();
+      const labels = await ev(`[...document.querySelectorAll('.menu-item')].map((m) => m.textContent)`);
+      const [newer, older] = ['E2E newer', 'E2E older'].map((t) => labels.findIndex((l) => l.includes(t)));
+      assert(newer >= 0 && older > newer, `newest first: ${JSON.stringify(labels)}`);
+      assert(labels[newer].includes('(src)'), `subfolder shown: ${labels[newer]}`);
+      await shot(path.join(OUT, '13-claude-conversations.png'));
+      await ev(`${menuItem('E2E newer conversation')}.click()`);
+      await waitFor(`__t.panes().length === ${before + 1}`, 3000, 'resumed in a new tab');
+      const spec = await ev(`(({ cwd, claudeId, claudeStarted, sessionId }) => ({ cwd, claudeId, claudeStarted, sessionId }))(__t.active().spec)`);
+      assert(spec.claudeId === ids.newer && spec.claudeStarted === true && !!spec.sessionId, `resumes the conversation: ${JSON.stringify(spec)}`);
+      assert(spec.cwd.toLowerCase() === sub.toLowerCase(), `in the folder it started in: ${spec.cwd}`);
+
+      // An open one is focused, not opened twice.
+      const resumed = await ev(`__t.active().id`);
+      await ev(`__t.ws.setActivePane(${js((await ev(`__t.panes()[0].id`)))}, true)`);
+      await openMenu();
+      assert(await ev(`${menuItem('E2E newer conversation')}.textContent.includes('open')`), 'marked open');
+      await ev(`${menuItem('E2E newer conversation')}.click()`);
+      await waitFor(`__t.active().id === ${js(resumed)} && __t.panes().length === ${before + 1}`, 3000, 'focused the open one');
+      await ev(`__t.ws.closePane(${js(resumed)})`);
+      await waitFor(`__t.panes().length === ${before}`, 3000, 'closed');
+    } finally {
+      await ev(`document.querySelector('.menu') && document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`).catch(() => undefined);
+      if (await ev(`!!${row}`)) {
+        await ev(`${row}.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 160 }))`);
+        await waitFor(`!!${menuItem('Delete')}`, 2000, 'menu');
+        await ev(`${menuItem('Delete')}.click()`);
+        await waitFor(`!!document.querySelector('.dialog')`, 2000, 'confirm');
+        await ev(`[...document.querySelectorAll('.dialog .btn')].find(b => b.textContent === 'Delete').click()`);
+        await waitFor(`!${row}`, 3000, 'removed');
+      }
+      fs.rmSync(claudeDir, { recursive: true, force: true });
+    }
+  });
+
   await step('chosen XShell sessions are imported into a new group with subgroups, the rest later', async () => {
     // Made-up sessions the way XShell 7 writes them: UTF-16 with a byte-order mark, folders as subfolders.
     const dir = path.join(os.tmpdir(), 'shellman-e2e-xshell');
