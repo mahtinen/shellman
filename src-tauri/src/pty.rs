@@ -508,6 +508,16 @@ fn linux_start_time(stat: &str) -> Option<u64> {
     stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// The newest Claude Code conversations a terminal with `shell` in `cwd` could resume: Windows'
+/// Claude, or the one inside WSL for a WSL shell (asking WSL where it keeps its files).
+pub fn recent_claude(shell: &ShellProfile, cwd: &str, env: &HashMap<String, String>, limit: usize) -> Result<Vec<crate::claude::Conversation>, String> {
+    if shell.kind == ShellKind::Wsl {
+        let wsl = wsl_claude_home(&shell.path, &shell::wsl_args(shell, cwd), cwd).ok_or("WSL did not answer")?;
+        return Ok(crate::claude::recent(&wsl.dir, &wsl.cwd, true, limit));
+    }
+    Ok(claude_config_dir(env).map(|dir| crate::claude::recent(&dir, cwd, false, limit)).unwrap_or_default())
+}
+
 /// Claude Code's config folder: `CLAUDE_CONFIG_DIR` (the terminal's own, else Shellman's), or `~\.claude`.
 fn claude_config_dir(env: &HashMap<String, String>) -> Option<PathBuf> {
     // Windows names are the same in any case.

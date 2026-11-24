@@ -118,6 +118,10 @@ Shellman runs at a time: starting it again brings the open window to the front.
 
 - **Its own conversation in every terminal.** Every terminal started with `claude` has its own conversation,
   and it comes back in that terminal: three Claude tabs in one folder reopen three different conversations.
+- **Earlier conversations.** Right-click a Claude session → Resume Claude conversation… lists the newest
+  conversations started in its folder (or in a worktree or subfolder inside it), by the titles Claude gave them.
+  Pick one to continue it in a new tab, which then keeps it like any other; one already open is just shown. WSL
+  sessions list the conversations of the Claude Code inside WSL.
 - **Git worktrees, one per Claude.** Several Claudes can work in one repository without changing each other's
   files: right-click a session → Open in new worktree (or tick "Open each terminal in a new git worktree" for the
   session) gives the terminal a folder and branch of its own (`claude/<name>`, in `<repository>.worktrees` next to

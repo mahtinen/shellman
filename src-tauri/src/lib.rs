@@ -1,4 +1,5 @@
 ﻿mod autostart;
+mod claude;
 mod collection;
 mod config;
 mod connect;
@@ -107,6 +108,19 @@ async fn pty_claude_info(state: State<'_, PtyManager>, id: u32, known: String) -
         Ok(finder.find_proc(&known).map(|c| ClaudeInfo { session_id: c.session_id, version: c.version, status: c.status }))
     })
     .await
+}
+
+/// The newest Claude Code conversations started in a folder (or inside it), for a terminal with
+/// `shell` and `env` there.
+#[tauri::command]
+async fn claude_recent(
+    shell: ShellProfile,
+    cwd: String,
+    env: std::collections::HashMap<String, String>,
+    limit: usize,
+) -> Result<Vec<claude::Conversation>, String> {
+    // Reads files, and for WSL may ask WSL first.
+    blocking(move || pty::recent_claude(&shell, &cwd, &env, limit)).await
 }
 
 /// The Claude Code version a new terminal would start (None when it isn't installed).
@@ -623,6 +637,7 @@ pub fn run() {
             pty_claude_session,
             pty_claude_info,
             claude_installed_version,
+            claude_recent,
             list_shells,
             wsl_home,
             ssh_agent_keys,

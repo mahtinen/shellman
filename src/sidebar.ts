@@ -1,3 +1,4 @@
+import { isTrackableClaude } from './claude';
 import { collections, type RequestEntry } from './collections';
 import { gitSync } from './gitSync';
 import { childGroups, groupAndDescendants, groupColor, groupOptions, moveGroup, sessionColor } from './config';
@@ -49,6 +50,8 @@ export interface SidebarActions {
   newWorktree(session: SavedSession): void;
   /** The worktrees of the session's repository, as a menu at x, y. */
   worktreesMenu(session: SavedSession, x: number, y: number): void;
+  /** The newest Claude conversations in the session's folder, as a menu at x, y (to resume one). */
+  claudeMenu(session: SavedSession, x: number, y: number): void;
   /** Copies the ssh/telnet command for a connection. */
   copyCommand(session: SavedSession): void;
   /** Open terminals by saved session id; `null` holds the ones that belong to no session. */
@@ -663,6 +666,9 @@ export class Sidebar {
         { label: 'Open in split down', icon: 'splitDown', action: () => this.actions.open(s, 'down') },
         'separator',
         ...(conn ? [{ label: `Copy ${connectionKindName(conn.kind)} command`, icon: 'copy' as const, action: () => this.actions.copyCommand(s) }] : this.openEntries(s)),
+        ...(!conn && isTrackableClaude(s.command)
+          ? [{ label: 'Resume Claude conversation…', icon: 'list' as const, action: () => this.actions.claudeMenu(s, e.clientX, e.clientY) }]
+          : []),
         'separator',
         { label: 'Edit…', icon: 'edit', action: () => this.actions.edit(s) },
         { label: 'Duplicate', icon: 'duplicate', action: () => this.actions.duplicate(s) },

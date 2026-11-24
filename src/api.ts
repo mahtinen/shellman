@@ -1,4 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
+import type { RecentConversation } from './claude';
 import type { ConnectionRequest } from './connection';
 import type { WorkspaceSnapshot } from './snapshot';
 import type { Config, ShellProfile, SystemInfo } from './types';
@@ -235,6 +236,9 @@ export const api = {
   claudeInfo: (id: number, known: string) => invoke<ClaudeInfo | null>('pty_claude_info', { id, known }),
   /** The Claude Code version a new terminal would start; null when it isn't installed. */
   claudeInstalledVersion: () => invoke<string | null>('claude_installed_version'),
+  /** The newest Claude Code conversations started in `cwd` (or inside it), from Windows' Claude or, for a WSL shell, WSL's. */
+  claudeRecent: (shell: ShellProfile, cwd: string, env: Record<string, string>, limit: number) =>
+    invoke<RecentConversation[]>('claude_recent', { shell, cwd, env, limit }),
   listShells: () => invoke<ShellProfile[]>('list_shells'),
   /** The WSL home folder as a Windows path (\\wsl.localhost\Ubuntu\home\me). May start WSL. */
   wslHome: (shell: ShellProfile) => invoke<string>('wsl_home', { shell }),
